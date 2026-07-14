@@ -9,7 +9,7 @@ LIB_DIR="$INSTALL_DIR/lib"
 SHORTCUT_PATH="/usr/local/bin/pf"
 
 # 仓库地址
-REPO_RAW_URL="https://raw.githubusercontent.com/byby5555/realm-xwPF-offline/main"
+REPO_RAW_URL="https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-active-standby/main"
 
 # 模块列表（加载顺序）
 # failover.sh 必须在 ui.sh 之前 (ui.sh 调用 failover_proxy_menu)
