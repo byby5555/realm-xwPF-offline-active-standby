@@ -72,7 +72,7 @@ DTAG
  ⬇️ UDP下行 │ 10.0 Mbps (1.2 MB/s)      │ 0/26335 (0%)              │ 0.040 ms                 
 
 ─────────────────────────────────────────────────────────────────
-测试完成时间: 2025-08-28 20:12:29 | 脚本开源地址：https://github.com/byby5555/realm-xwPF-offline
+测试完成时间: 2025-08-28 20:12:29 | 脚本开源地址：https://github.com/byby5555/realm-xwPF-offline-active-standby
 ```
 
 </details>
@@ -82,25 +82,25 @@ DTAG
 ### 一键安装
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/byby5555/realm-xwPF-offline/main/xwPF.sh | sudo bash -s install
+wget -qO- https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-active-standby/main/xwPF.sh | sudo bash -s install
 ```
 
 或使用 `curl`：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/byby5555/realm-xwPF-offline/main/xwPF.sh | sudo bash -s install
+curl -fsSL https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-active-standby/main/xwPF.sh | sudo bash -s install
 ```
 
 ### 网络受限使用加速源,一键安装
 
 ```bash
-wget -qO- https://v6.gh-proxy.org/https://raw.githubusercontent.com/byby5555/realm-xwPF-offline/main/xwPF.sh | sudo bash -s install
+wget -qO- https://v6.gh-proxy.org/https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-active-standby/main/xwPF.sh | sudo bash -s install
 ```
 
 或使用 `curl`：
 
 ```bash
-curl -fsSL https://v6.gh-proxy.org/https://raw.githubusercontent.com/byby5555/realm-xwPF-offline/main/xwPF.sh | sudo bash -s install
+curl -fsSL https://v6.gh-proxy.org/https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-active-standby/main/xwPF.sh | sudo bash -s install
 ```
 若加速源失效，可多次重试或更换其他具有内置加速功能的代理源
 
@@ -130,9 +130,9 @@ sudo bash /usr/local/bin/xwPF.sh
 
 **1. 在有网络的设备上下载以下文件**
 
-- **主脚本**：[xwPF.sh](https://github.com/byby5555/realm-xwPF-offline/raw/main/xwPF.sh)
-- **模块文件**（全部需要）：https://github.com/byby5555/realm-xwPF-offline/tree/main/lib
-- **主备守护文件**（active/passive 热备功能）：https://github.com/byby5555/realm-xwPF-offline/tree/main/cmd
+- **主脚本**：[xwPF.sh](https://github.com/byby5555/realm-xwPF-offline-active-standby/raw/main/xwPF.sh)
+- **模块文件**（全部需要）：https://github.com/byby5555/realm-xwPF-offline-active-standby/tree/main/lib
+- **主备守护文件**（active/passive 热备功能）：https://github.com/byby5555/realm-xwPF-offline-active-standby/tree/main/cmd
 
 - **Realm 程序**（根据系统架构选择）：
 
