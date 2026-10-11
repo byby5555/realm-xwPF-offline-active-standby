@@ -649,17 +649,34 @@ failover_install_check() {
 
 failover_install_files() {
     mkdir -p "${XWPF_FAILOVER_CONF_DIR}"
-    local src_dir
+    local src_dir repo_cmd_base name f url
     src_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/cmd"
-    if [ -f "${src_dir}/xwpf-failover.py" ]; then
-        install -m 0755 "${src_dir}/xwpf-failover.py" "${XWPF_FAILOVER_BIN}"
-    else
-        echo -e "${RED}未找到源文件: ${src_dir}/xwpf-failover.py${NC}"
-        return 1
-    fi
-    if [ -f "${src_dir}/xwpf-failover.service" ]; then
-        install -m 0644 "${src_dir}/xwpf-failover.service" "${XWPF_FAILOVER_UNIT}"
-    fi
+    repo_cmd_base="https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-active-standby/main/cmd"
+
+    # Bootstrap 只下载 xwPF.sh + lib/；cmd/ 源文件按 README「按需索取」原则处理：
+    # 本地 cmd/ 已有文件优先（离线安装场景需手动放置），缺失时从 GitHub raw 自动下载。
+    for name in xwpf-failover.py xwpf-failover.service; do
+        f="${src_dir}/${name}"
+        if [ -f "$f" ]; then
+            continue
+        fi
+        url="${repo_cmd_base}/${name}"
+        mkdir -p "$src_dir"
+        if (curl -fL --retry 3 --retry-delay 2 --connect-timeout 10 --max-time 120 "$url" -o "${f}.tmp" ||
+            wget -q --timeout=60 "$url" -O "${f}.tmp") 2>/dev/null && [ -s "${f}.tmp" ]; then
+            mv -f "${f}.tmp" "$f"
+            echo -e "${GREEN}已下载 cmd/${name}${NC}"
+        else
+            rm -f "${f}.tmp"
+            echo -e "${RED}未找到源文件: ${f}${NC}"
+            echo -e "${YELLOW}本地与 GitHub 均无法获取: ${url}${NC}"
+            echo -e "${YELLOW}离线环境请按 README 手动放置该文件到 ${src_dir}/ 后重试${NC}"
+            return 1
+        fi
+    done
+
+    install -m 0755 "${src_dir}/xwpf-failover.py" "${XWPF_FAILOVER_BIN}"
+    install -m 0644 "${src_dir}/xwpf-failover.service" "${XWPF_FAILOVER_UNIT}"
     systemctl daemon-reload
     echo -e "${GREEN}已安装${NC}"
 }
