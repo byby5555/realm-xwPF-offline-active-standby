@@ -72,7 +72,9 @@ case_T110_now_us_unit_consistent() {
     local lib_bad="$SBX_ROOT/lib_health_nowus_ns.sh"
     sed 's|echo \$(( t / 1000 ))|echo "$t"|' "$SBX_RUN/lib/health.sh" > "$lib_bad" 2>/dev/null
     h_check_file "$lib_bad" "缺陷版 lib/health.sh（去掉了纳秒→微秒的换算）"
-    h_check_eq "0" "$(grep -c 't / 1000' "$lib_bad" 2>/dev/null || echo 0)" \
+    # ★ `grep -c` 在「0 处匹配」时会**打印 0 并以退出码 1 结束** ⇒ 这里只能 `|| true`，
+    #   写成 `|| echo 0` 会多打一个 0（断言拿到 "0\n0"）。
+    h_check_eq "0" "$(grep -c 't / 1000' "$lib_bad" 2>/dev/null || true)" \
         "退化生效自检：缺陷版里已没有纳秒→微秒的换算（没生效 ⇒ 负向对照失效、腿 A/B 恒真）"
     h_check_file_has "$lib_bad" 'echo "$t"' \
         "退化生效自检：缺陷版确实把换算去掉了（否则负向对照没生效）"
@@ -147,10 +149,14 @@ case_T111_fail_latency_recorded_in_window() {
     h_check_eq "" "$lat" "没有成功样本 ⇒ LAT_SEQ 为空（成功时延与失败时延分开存）"
 
     # ── 负向对照：注入「失败时延被丢弃」（= 修复前的行为）─────────
-    sed 's|"\$_q_seq" "\$_q_lat" "\$_q_fail_lat"|"$_q_seq" "$_q_lat" ""|' "$hc" > "$hc_bad" 2>/dev/null
-    h_check_file "$hc_bad" "缺陷版 health_check.sh（注入式退化：失败时延被丢弃）"
-    h_check_file_has "$hc_bad" 'push_quality_sample "$_q_seq" "$_q_lat" ""' \
-        "退化生效自检：缺陷版确实不再把失败时延传给窗口（否则负向对照没生效）"
+    #    退化点选在**落盘那一行**：把末列（失败时延）不写出去 ⇒
+    #    窗口里根本没有失败时延（修复前的真实形态）。
+    #    ★ 不能改成「传空的上次失败时延」—— 那样只会丢**历史**，
+    #      本次样本的失败时延照样会被记下来（退化不成形 ⇒ 负向对照没有判别力）。
+    sed 's#|\${_q_win}|\${_q_new_fail_lat}"#|\${_q_win}"#' "$hc" > "$hc_bad" 2>/dev/null
+    h_check_file "$hc_bad" "缺陷版 health_check.sh（注入式退化：失败时延不落盘）"
+    h_check_file_has "$hc_bad" '|${_q_win}" >> "$_quality_rows_new"' \
+        "退化生效自检：缺陷版的落盘行确实不再写失败时延列（否则负向对照没生效）"
 
     rm -f "$qm"
     for r in 1 2; do
@@ -256,9 +262,11 @@ case_T113_fail_latency_in_stats_and_display() {
     h_check_file "$qm" "造出来的质量指标文件（含 2 次失败 + 1 次成功）"
 
     local out stats disp
+    # ★ _run_in_sandbox 的位置参数：$1 = 冻结态根（SBX_RUN），$2 起 = 追加的参数。
+    #   ⇒ 追加的第一个参数是 $2、第二个是 $3（写错下标 ⇒ source 到不存在的路径 ⇒ 静默空输出）。
     out=$(_run_in_sandbox '
-        export QUALITY_METRICS_FILE="$1"
-        source "$2/lib/health.sh" >/dev/null 2>&1
+        export QUALITY_METRICS_FILE="$2"
+        source "$3/lib/health.sh" >/dev/null 2>&1
         stats=$(quality_window_stats "127.0.0.1:1" "1")
         disp=$(quality_window_display "127.0.0.1:1" "1")
         echo "STATS=$stats"
@@ -278,13 +286,13 @@ case_T113_fail_latency_in_stats_and_display() {
     local lib_bad="$SBX_ROOT/lib_health_nofaillat.sh"
     sed 's|\$3 "|" \$4 "|" \$6|\$3 "|" \$4 "|" ""|' "$SBX_RUN/lib/health.sh" > "$lib_bad" 2>/dev/null
     h_check_file "$lib_bad" "缺陷版 lib/health.sh（读窗口时不取失败时延列）"
-    h_check_eq "0" "$(grep -c '\$6; exit' "$lib_bad" 2>/dev/null || echo 0)" \
+    h_check_eq "0" "$(grep -c '\$6; exit' "$lib_bad" 2>/dev/null || true)" \
         "退化生效自检：缺陷版已不读失败时延列（没生效 ⇒ 负向对照失效、腿 A 恒真）"
 
     local out_bad stats_bad disp_bad
     out_bad=$(_run_in_sandbox '
-        export QUALITY_METRICS_FILE="$1"
-        source "$2" >/dev/null 2>&1
+        export QUALITY_METRICS_FILE="$2"
+        source "$3" >/dev/null 2>&1
         stats=$(quality_window_stats "127.0.0.1:1" "1")
         disp=$(quality_window_display "127.0.0.1:1" "1")
         echo "STATS=$stats"
