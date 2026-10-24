@@ -376,7 +376,7 @@ generate_endpoints_from_rules() {
                 local port_key="$LISTEN_PORT"
 
                 # 存储端口配置（使用第一个规则的配置作为基准）
-                if [ -z "${port_configs[$port_key]}" ]; then
+                if [ -z "${port_configs[$port_key]:-}" ]; then
                     # 根据角色决定默认监听IP
                     local default_listen_ip
                     if [ "$RULE_ROLE" = "2" ]; then
@@ -390,11 +390,11 @@ generate_endpoints_from_rules() {
                     # 存储权重配置和角色信息
                     port_weights[$port_key]="$WEIGHTS"
                     port_roles[$port_key]="$RULE_ROLE"
-                elif [ "${port_roles[$port_key]}" != "$RULE_ROLE" ]; then
+                elif [ "${port_roles[$port_key]:-}" != "$RULE_ROLE" ]; then
                     # 检测到同一端口有不同角色的规则，跳过此规则
-                    echo -e "${YELLOW}警告: 端口 $port_key 已被角色 ${port_roles[$port_key]} 的规则占用，跳过角色 $RULE_ROLE 的规则${NC}" >&2
+                    echo -e "${YELLOW}警告: 端口 $port_key 已被角色 ${port_roles[$port_key]:-} 的规则占用，跳过角色 $RULE_ROLE 的规则${NC}" >&2
                     continue
-                elif [[ "$WEIGHTS" == *","* ]] && [[ "${port_weights[$port_key]}" != *","* ]]; then
+                elif [[ "$WEIGHTS" == *","* ]] && [[ "${port_weights[$port_key]:-}" != *","* ]]; then
                     # 本规则带完整权重列表，优先用它作为端口组的权重序列
                     # （第一个启用的规则可能只存了单个权重）
                     port_weights[$port_key]="$WEIGHTS"
@@ -436,18 +436,18 @@ generate_endpoints_from_rules() {
                     IFS=',' read -ra target_list <<< "$targets_to_add"
                     for target in "${target_list[@]}"; do
                         target=$(echo "$target" | xargs)  # 去除空格
-                        if [[ "${port_groups[$port_key]}" != *"$target"* ]]; then
-                            if [ -z "${port_groups[$port_key]}" ]; then
+                        if [[ "${port_groups[$port_key]:-}" != *"$target"* ]]; then
+                            if [ -z "${port_groups[$port_key]:-}" ]; then
                                 port_groups[$port_key]="$target"
                             else
-                                port_groups[$port_key]="${port_groups[$port_key]},$target"
+                                port_groups[$port_key]="${port_groups[$port_key]:-},$target"
                             fi
                         fi
                     done
                 fi
 
                 # 记录规则文件以便后续检查故障转移状态
-                if [ -z "${port_rule_files[$port_key]}" ]; then
+                if [ -z "${port_rule_files[$port_key]:-}" ]; then
                     port_rule_files[$port_key]="$rule_file"
                 fi
             fi
@@ -457,7 +457,7 @@ generate_endpoints_from_rules() {
     # 第二步：对每个端口组应用故障转移过滤
     for port_key in "${!port_groups[@]}"; do
         # 读取该端口的负载均衡模式（port_configs 是以 '|' 分隔的字符串，第 5 个字段是 BALANCE_MODE）
-        local port_balance_mode=$(echo "${port_configs[$port_key]}" | awk -F'|' '{print $5}')
+        local port_balance_mode=$(echo "${port_configs[$port_key]:-}" | awk -F'|' '{print $5}')
 
         # 检查该端口的所有规则，只要有一个启用故障转移就应用过滤
         local failover_enabled="false"
@@ -472,7 +472,7 @@ generate_endpoints_from_rules() {
         done
 
         if [ "$failover_enabled" = "true" ]; then
-            IFS=',' read -ra all_targets <<< "${port_groups[$port_key]}"
+            IFS=',' read -ra all_targets <<< "${port_groups[$port_key]:-}"
 
             if [ "$port_balance_mode" = "active-standby" ]; then
                 # 主备模式（active-standby）：保留所有目标在列表中
@@ -486,7 +486,7 @@ generate_endpoints_from_rules() {
                 # 没有有效权重信息时退化为原始顺序。
                 local priority_targets=("${all_targets[@]}")
 
-                local user_weights="${port_weights[$port_key]}"
+                local user_weights="${port_weights[$port_key]:-}"
                 if [ -n "$user_weights" ]; then
                     IFS=',' read -ra _prio_w <<< "$user_weights"
                     if [ "${#_prio_w[@]}" -eq "${#all_targets[@]}" ]; then
@@ -588,7 +588,7 @@ generate_endpoints_from_rules() {
                 port_groups[$port_key]="$filtered_targets"
 
                 # 同步调整权重配置以匹配过滤后的目标数量
-                local original_weights="${port_weights[$port_key]}"
+                local original_weights="${port_weights[$port_key]:-}"
 
                 if [ -n "$original_weights" ]; then
                     IFS=',' read -ra weight_array <<< "$original_weights"
@@ -629,7 +629,7 @@ generate_endpoints_from_rules() {
         fi
 
         # 解析端口配置
-        IFS='|' read -r security_level tls_server_name tls_cert_path tls_key_path balance_mode listen_ip through_ip <<< "${port_configs[$port_key]}"
+        IFS='|' read -r security_level tls_server_name tls_cert_path tls_key_path balance_mode listen_ip through_ip <<< "${port_configs[$port_key]:-}"
         # 如果没有listen_ip字段（向后兼容），根据角色使用对应的默认值
         if [ -z "$listen_ip" ]; then
             local role="${port_roles[$port_key]:-1}"
@@ -648,7 +648,7 @@ generate_endpoints_from_rules() {
         fi
 
         # 解析目标地址
-        IFS=',' read -ra targets <<< "${port_groups[$port_key]}"
+        IFS=',' read -ra targets <<< "${port_groups[$port_key]:-}"
         local main_target="${targets[0]}"
         local main_host="${main_target%:*}"
         local main_port="${main_target##*:}"
@@ -688,7 +688,7 @@ generate_endpoints_from_rules() {
         if [ -n "$extra_remotes" ] && [ -n "$balance_mode" ] && [ "$balance_mode" != "off" ]; then
             # 生成权重配置
             local weight_config=""
-            local rule_weights="${port_weights[$port_key]}"
+            local rule_weights="${port_weights[$port_key]:-}"
 
             if [ -n "$rule_weights" ]; then
                 # 使用存储的权重（已在故障转移过滤中处理）
@@ -735,7 +735,7 @@ generate_endpoints_from_rules() {
 
         # 添加MPTCP网络配置 - 从对应的规则文件读取MPTCP设置
         local mptcp_config=""
-        local rule_file_for_port="${port_rule_files[$port_key]}"
+        local rule_file_for_port="${port_rule_files[$port_key]:-}"
 
         if [ -f "$rule_file_for_port" ]; then
             # 临时保存当前变量状态
@@ -947,7 +947,7 @@ generate_realm_config() {
 generate_service_file() {
     if [ "$INIT_SYSTEM" = "openrc" ]; then
         echo -e "${YELLOW}正在生成 OpenRC 服务文件...${NC}"
-        cat > /etc/init.d/realm <<'SVCEOF'
+        tr -d '\r' > /etc/init.d/realm <<'SVCEOF'
 #!/sbin/openrc-run
 name="realm-xwpf"
 command="/usr/local/bin/realm"
@@ -960,7 +960,7 @@ SVCEOF
         echo -e "${GREEN}✓ OpenRC 服务文件已生成${NC}"
     else
         echo -e "${YELLOW}正在生成 systemd 服务文件...${NC}"
-        cat > "$SYSTEMD_PATH" <<EOF
+        tr -d '\r' > "$SYSTEMD_PATH" <<EOF
 [Unit]
 Description=realm-xwpf
 After=network.target
@@ -987,7 +987,7 @@ start_empty_service() {
 
     mkdir -p "$CONFIG_DIR"
 
-    cat > "$CONFIG_PATH" <<EOF
+    tr -d '\r' > "$CONFIG_PATH" <<EOF
 {
     "endpoints": []
 }

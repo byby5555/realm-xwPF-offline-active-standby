@@ -95,7 +95,7 @@ get_effective_health_check_interval() {
 
 # 生成健康检查脚本（独立可执行，systemd 直接调用）
 health_check_script_body() {
-    cat << 'EOF'
+    cat << 'EOF' | tr -d '\r'
 #!/bin/bash
 
 # 健康检查脚本
@@ -302,7 +302,7 @@ start_health_check_service() {
     chmod +x "$health_script"
 
     # 创建systemd服务文件
-    cat > "$health_service" << EOF
+    tr -d '\r' > "$health_service" << EOF
 [Unit]
 Description=Realm Health Check Service
 After=network.target
@@ -321,7 +321,7 @@ WantedBy=multi-user.target
 EOF
 
     # 创建systemd定时器
-    cat > "$health_timer" << EOF
+    tr -d '\r' > "$health_timer" << EOF
 [Unit]
 Description=Realm Health Check Timer
 Requires=realm-health-check.service

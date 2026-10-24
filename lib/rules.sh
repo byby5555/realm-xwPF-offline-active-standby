@@ -1133,7 +1133,7 @@ generate_export_metadata() {
     local metadata_file="$1"
     local rules_count="$2"
 
-    cat > "$metadata_file" <<EOF
+    tr -d '\r' > "$metadata_file" <<EOF
 EXPORT_TIME=$(get_gmt8_time '+%Y-%m-%d %H:%M:%S')
 SCRIPT_VERSION=$SCRIPT_VERSION
 EXPORT_HOST=$(hostname 2>/dev/null || echo "unknown")
@@ -1800,7 +1800,7 @@ load_balance_management_menu() {
                 if read_rule_file "$rule_file" && [ "$RULE_ROLE" = "1" ]; then
                     local port_key="$LISTEN_PORT"
 
-                    if [ -z "${port_configs[$port_key]}" ]; then
+                    if [ -z "${port_configs[$port_key]:-}" ]; then
                         port_configs[$port_key]="$RULE_NAME"
                         port_balance_modes[$port_key]="${BALANCE_MODE:-off}"
                         port_weights[$port_key]="$WEIGHTS"
@@ -1813,21 +1813,21 @@ load_balance_management_menu() {
                         IFS=',' read -ra host_array <<< "$REMOTE_HOST"
                         for host in "${host_array[@]}"; do
                             local target="$host:$REMOTE_PORT"
-                            if [[ "${port_groups[$port_key]}" != *"$target"* ]]; then
-                                if [ -z "${port_groups[$port_key]}" ]; then
+                            if [[ "${port_groups[$port_key]:-}" != *"$target"* ]]; then
+                                if [ -z "${port_groups[$port_key]:-}" ]; then
                                     port_groups[$port_key]="$target"
                                 else
-                                    port_groups[$port_key]="${port_groups[$port_key]},$target"
+                                    port_groups[$port_key]="${port_groups[$port_key]:-},$target"
                                 fi
                             fi
                         done
                     else
                         local target="$REMOTE_HOST:$REMOTE_PORT"
-                        if [[ "${port_groups[$port_key]}" != *"$target"* ]]; then
-                            if [ -z "${port_groups[$port_key]}" ]; then
+                        if [[ "${port_groups[$port_key]:-}" != *"$target"* ]]; then
+                            if [ -z "${port_groups[$port_key]:-}" ]; then
                                 port_groups[$port_key]="$target"
                             else
-                                port_groups[$port_key]="${port_groups[$port_key]},$target"
+                                port_groups[$port_key]="${port_groups[$port_key]:-},$target"
                             fi
                         fi
                     fi
@@ -1839,17 +1839,17 @@ load_balance_management_menu() {
         echo -e "${GREEN}中转服务器:${NC}"
 
         for port_key in $(printf '%s\n' "${!port_groups[@]}" | sort -n); do
-            IFS=',' read -ra targets <<< "${port_groups[$port_key]}"
+            IFS=',' read -ra targets <<< "${port_groups[$port_key]:-}"
             local target_count=${#targets[@]}
 
             if [ $target_count -gt 1 ]; then
                 has_balance_groups=true
 
-                local balance_mode="${port_balance_modes[$port_key]}"
-                local balance_info=$(get_balance_info_display "${port_groups[$port_key]}" "$balance_mode")
+                local balance_mode="${port_balance_modes[$port_key]:-}"
+                local balance_info=$(get_balance_info_display "${port_groups[$port_key]:-}" "$balance_mode")
 
                 # 显示端口组标题
-                echo -e "  ${BLUE}端口 $port_key${NC}: ${GREEN}${port_configs[$port_key]}${NC} [$balance_info] - $target_count个服务器"
+                echo -e "  ${BLUE}端口 $port_key${NC}: ${GREEN}${port_configs[$port_key]:-}${NC} [$balance_info] - $target_count个服务器"
 
                 # 显示每个服务器及其权重
                 for ((i=0; i<target_count; i++)); do
@@ -1857,7 +1857,7 @@ load_balance_management_menu() {
 
                     # 获取权重信息
                     local current_weight=1
-                    local weights_str="${port_weights[$port_key]}"
+                    local weights_str="${port_weights[$port_key]:-}"
 
                     if [ -n "$weights_str" ] && [[ "$weights_str" == *","* ]]; then
                         IFS=',' read -ra weight_array <<< "$weights_str"
@@ -1890,7 +1890,7 @@ load_balance_management_menu() {
 
                     # 构建故障转移状态信息
                     local failover_info=""
-                    if [ "$balance_mode" != "off" ] && [ "${port_failover_status[$port_key]}" = "true" ]; then
+                    if [ "$balance_mode" != "off" ] && [ "${port_failover_status[$port_key]:-}" = "true" ]; then
                         local health_status_file="${HEALTH_STATUS_FILE}"
                         local node_status="healthy"
 
@@ -1984,7 +1984,7 @@ switch_balance_mode() {
                     local port_key="$LISTEN_PORT"
 
                     # 存储端口配置（使用第一个规则的配置作为基准）
-                    if [ -z "${port_configs[$port_key]}" ]; then
+                    if [ -z "${port_configs[$port_key]:-}" ]; then
                         port_configs[$port_key]="$RULE_NAME"
                         port_balance_modes[$port_key]="${BALANCE_MODE:-off}"
                     fi
@@ -1996,11 +1996,11 @@ switch_balance_mode() {
                         for host in "${host_array[@]}"; do
                             local target="$host:$REMOTE_PORT"
                             # 检查是否已存在，避免重复添加
-                            if [[ "${port_groups[$port_key]}" != *"$target"* ]]; then
-                                if [ -z "${port_groups[$port_key]}" ]; then
+                            if [[ "${port_groups[$port_key]:-}" != *"$target"* ]]; then
+                                if [ -z "${port_groups[$port_key]:-}" ]; then
                                     port_groups[$port_key]="$target"
                                 else
-                                    port_groups[$port_key]="${port_groups[$port_key]},$target"
+                                    port_groups[$port_key]="${port_groups[$port_key]:-},$target"
                                 fi
                             fi
                         done
@@ -2008,11 +2008,11 @@ switch_balance_mode() {
                         # REMOTE_HOST是单个地址
                         local target="$REMOTE_HOST:$REMOTE_PORT"
                         # 检查是否已存在，避免重复添加
-                        if [[ "${port_groups[$port_key]}" != *"$target"* ]]; then
-                            if [ -z "${port_groups[$port_key]}" ]; then
+                        if [[ "${port_groups[$port_key]:-}" != *"$target"* ]]; then
+                            if [ -z "${port_groups[$port_key]:-}" ]; then
                                 port_groups[$port_key]="$target"
                             else
-                                port_groups[$port_key]="${port_groups[$port_key]},$target"
+                                port_groups[$port_key]="${port_groups[$port_key]:-},$target"
                             fi
                         fi
                     fi
@@ -2027,7 +2027,7 @@ switch_balance_mode() {
 
         for port_key in "${!port_groups[@]}"; do
             # 计算目标服务器总数
-            IFS=',' read -ra targets <<< "${port_groups[$port_key]}"
+            IFS=',' read -ra targets <<< "${port_groups[$port_key]:-}"
             local target_count=${#targets[@]}
 
             # 只显示有多个目标服务器的端口组
@@ -2040,9 +2040,9 @@ switch_balance_mode() {
                 # 使用数字ID
                 local rule_number=$((${#rule_ports[@]} + 1))
                 rule_ports+=("$port_key")
-                rule_names+=("${port_configs[$port_key]}")
+                rule_names+=("${port_configs[$port_key]:-}")
 
-                local balance_mode="${port_balance_modes[$port_key]}"
+                local balance_mode="${port_balance_modes[$port_key]:-}"
                 local balance_display=""
                 case "$balance_mode" in
                     "roundrobin")
@@ -2056,7 +2056,7 @@ switch_balance_mode() {
                         ;;
                 esac
 
-                echo -e "${GREEN}$rule_number.${NC} ${port_configs[$port_key]} (端口: $port_key) $balance_display - $target_count个目标服务器"
+                echo -e "${GREEN}$rule_number.${NC} ${port_configs[$port_key]:-} (端口: $port_key) $balance_display - $target_count个目标服务器"
             fi
         done
 
@@ -2093,11 +2093,11 @@ switch_balance_mode() {
 
         # 计算数组索引（从0开始）
         local selected_index=$((choice - 1))
-        local selected_port="${rule_ports[$selected_index]}"
-        local current_balance_mode="${port_balance_modes[$selected_port]}"
+        local selected_port="${rule_ports[$selected_index]:-}"
+        local current_balance_mode="${port_balance_modes[$selected_port]:-}"
 
         echo ""
-        echo -e "${GREEN}当前选择: ${port_configs[$selected_port]} (端口: $selected_port)${NC}"
+        echo -e "${GREEN}当前选择: ${port_configs[$selected_port]:-} (端口: $selected_port)${NC}"
         echo -e "${BLUE}当前负载均衡模式: $current_balance_mode${NC}"
         echo ""
         echo "请选择新的负载均衡模式:"
@@ -2140,8 +2140,8 @@ switch_balance_mode() {
 
         # 计算端口组的目标数（用于把 WEIGHTS 重置为 1,1,1,...）
         local target_count_for_reset=0
-        if [ -n "${port_groups[$selected_port]}" ]; then
-            IFS=',' read -ra _tc_arr <<< "${port_groups[$selected_port]}"
+        if [ -n "${port_groups[$selected_port]:-}" ]; then
+            IFS=',' read -ra _tc_arr <<< "${port_groups[$selected_port]:-}"
             target_count_for_reset=${#_tc_arr[@]}
         fi
         # 构造 roundrobin/iphash 用的 1,1,1,... 串
@@ -2229,11 +2229,11 @@ weight_management_menu() {
                     local port_key="$LISTEN_PORT"
 
                     # 存储端口配置（优先使用包含完整权重的规则）
-                    if [ -z "${port_configs[$port_key]}" ]; then
+                    if [ -z "${port_configs[$port_key]:-}" ]; then
                         port_configs[$port_key]="$RULE_NAME"
                         port_weights[$port_key]="$WEIGHTS"
                         port_balance_modes[$port_key]="${BALANCE_MODE:-off}"
-                    elif [[ "$WEIGHTS" == *","* ]] && [[ "${port_weights[$port_key]}" != *","* ]]; then
+                    elif [[ "$WEIGHTS" == *","* ]] && [[ "${port_weights[$port_key]:-}" != *","* ]]; then
                         # 如果当前规则有完整权重而已存储的没有，更新为完整权重
                         port_weights[$port_key]="$WEIGHTS"
                     fi
@@ -2245,11 +2245,11 @@ weight_management_menu() {
                         for host in "${host_array[@]}"; do
                             local target="$host:$REMOTE_PORT"
                             # 检查是否已存在，避免重复添加
-                            if [[ "${port_groups[$port_key]}" != *"$target"* ]]; then
-                                if [ -z "${port_groups[$port_key]}" ]; then
+                            if [[ "${port_groups[$port_key]:-}" != *"$target"* ]]; then
+                                if [ -z "${port_groups[$port_key]:-}" ]; then
                                     port_groups[$port_key]="$target"
                                 else
-                                    port_groups[$port_key]="${port_groups[$port_key]},$target"
+                                    port_groups[$port_key]="${port_groups[$port_key]:-},$target"
                                 fi
                             fi
                         done
@@ -2257,11 +2257,11 @@ weight_management_menu() {
                         # REMOTE_HOST是单个地址
                         local target="$REMOTE_HOST:$REMOTE_PORT"
                         # 检查是否已存在，避免重复添加
-                        if [[ "${port_groups[$port_key]}" != *"$target"* ]]; then
-                            if [ -z "${port_groups[$port_key]}" ]; then
+                        if [[ "${port_groups[$port_key]:-}" != *"$target"* ]]; then
+                            if [ -z "${port_groups[$port_key]:-}" ]; then
                                 port_groups[$port_key]="$target"
                             else
-                                port_groups[$port_key]="${port_groups[$port_key]},$target"
+                                port_groups[$port_key]="${port_groups[$port_key]:-},$target"
                             fi
                         fi
                     fi
@@ -2276,9 +2276,9 @@ weight_management_menu() {
 
         for port_key in "${!port_groups[@]}"; do
             # 计算目标服务器总数
-            IFS=',' read -ra targets <<< "${port_groups[$port_key]}"
+            IFS=',' read -ra targets <<< "${port_groups[$port_key]:-}"
             local target_count=${#targets[@]}
-            local balance_mode="${port_balance_modes[$port_key]}"
+            local balance_mode="${port_balance_modes[$port_key]:-}"
 
             # 只显示有多个目标服务器的端口组
             if [ "$target_count" -gt 1 ] && [ "$balance_mode" != "off" ] && [ -n "$balance_mode" ]; then
@@ -2290,9 +2290,9 @@ weight_management_menu() {
                 # 数字ID
                 local rule_number=$((${#rule_ports[@]} + 1))
                 rule_ports+=("$port_key")
-                rule_names+=("${port_configs[$port_key]}")
+                rule_names+=("${port_configs[$port_key]:-}")
 
-                echo -e "${GREEN}$rule_number.${NC} ${port_configs[$port_key]} (端口: $port_key) [$balance_mode] - $target_count个目标服务器"
+                echo -e "${GREEN}$rule_number.${NC} ${port_configs[$port_key]:-} (端口: $port_key) [$balance_mode] - $target_count个目标服务器"
             fi
         done
 
@@ -2331,9 +2331,9 @@ weight_management_menu() {
         local selected_index=$((selected_number - 1))
 
         # 配置选中端口组的权重
-        local selected_port="${rule_ports[$selected_index]}"
-        local selected_name="${rule_names[$selected_index]}"
-        configure_port_group_weights "$selected_port" "$selected_name" "${port_groups[$selected_port]}" "${port_weights[$selected_port]}"
+        local selected_port="${rule_ports[$selected_index]:-}"
+        local selected_name="${rule_names[$selected_index]:-}"
+        configure_port_group_weights "$selected_port" "$selected_name" "${port_groups[$selected_port]:-}" "${port_weights[$selected_port]:-}"
     done
 }
 

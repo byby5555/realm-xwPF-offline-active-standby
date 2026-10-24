@@ -82,9 +82,35 @@ EOF
     sbx_build_mirror
     sbx_install_shims
     sbx_export_env
+    sbx_write_manifest
+}
+
+# 基线快照：把「这次到底测了哪一份代码」钉死（仓库在多人并发改动，基线必须可复现）
+sbx_write_manifest() {
+    local out="$SBX_ROOT/manifest.txt"
+    {
+        echo "# 被测产物基线快照"
+        echo "repo      : $SBX_REPO"
+        echo "head      : $(cd "$SBX_REPO" && git rev-parse HEAD 2>/dev/null)"
+        echo "time      : $(date '+%Y-%m-%d %H:%M:%S %z')"
+        echo "sandbox   : $SBX_ROOT"
+        echo
+        echo "--- git status --porcelain（测试时刻的工作区状态）---"
+        (cd "$SBX_REPO" && git status --porcelain 2>/dev/null)
+        echo
+        echo "--- sha256（LF 副本 = 本次被测产物）---"
+        local rel
+        while IFS= read -r rel; do
+            [ -z "$rel" ] && continue
+            [ -f "$SBX_SRC/$rel" ] || continue
+            printf '%s  %s\n' "$(sha256sum "$SBX_SRC/$rel" | cut -d' ' -f1)" "$rel"
+        done < <(cd "$SBX_REPO" && { git ls-files -- '*.sh' '*.py' '*.service'; git ls-files --others --exclude-standard -- '*.sh' '*.py' '*.service'; } | sort -u)
+    } > "$out"
 }
 
 # 仓库里被跟踪的 .sh（工作区副本，CRLF）→ LF 副本
+# 注意：同时收进「已跟踪」和「工作区存在但未跟踪」的脚本 —— 后者是本地开发中的新文件，
+# 它们在沙箱里必须能被加载；但离线镜像只放已跟踪内容（模拟 GitHub raw 上的真实文件）。
 sbx_build_lf_copies() {
     local rel src dst
     while IFS= read -r rel; do
@@ -98,12 +124,13 @@ sbx_build_lf_copies() {
         dst="$SBX_RUN/$rel"
         mkdir -p "$(dirname "$dst")"
         sbx_redirect "$SBX_SRC/$rel" "$dst"
-    done < <(cd "$SBX_REPO" && git ls-files -- '*.sh' '*.py' '*.service')
+    done < <(cd "$SBX_REPO" && { git ls-files -- '*.sh' '*.py' '*.service'; git ls-files --others --exclude-standard -- '*.sh' '*.py' '*.service'; } | sort -u)
 }
 
 # 路径重定向：先换成 @SBX@ 占位符（避免真实路径里含 /tmp 被二次替换），再换真实前缀
+# 用法：sbx_redirect <源> <目标> [沙箱基准目录]（默认 $SBX_ROOT）
 sbx_redirect() {
-    local src="$1" dst="$2"
+    local src="$1" dst="$2" base="${3:-$SBX_ROOT}"
     local args=() entry from to
     for entry in "${SBX_PATH_MAP[@]}"; do
         from="${entry%%|*}"
@@ -112,10 +139,11 @@ sbx_redirect() {
     done
     # root 模拟：EUID 判断改成 false
     args+=(-e 's|\[\[ \$EUID -ne 0 \]\]|false|g')
-    sed "${args[@]}" "$src" | sed -e "s|@SBX@|${SBX_ROOT}/|g" > "$dst"
+    sed "${args[@]}" "$src" | sed -e "s|@SBX@|${base}/|g" > "$dst"
 }
 
-# 离线镜像：把 LF 副本按仓库相对路径摆好，curl/wget 桩从这里取
+# 离线镜像：模拟 GitHub raw 上的内容 = 只放 git 已跟踪的文件。
+# 工作区里存在但没提交的新文件（例如 lib/health.sh）在这里是 404 —— 正是要暴露的问题。
 sbx_build_mirror() {
     local rel
     while IFS= read -r rel; do

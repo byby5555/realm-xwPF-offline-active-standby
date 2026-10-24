@@ -143,3 +143,20 @@ h_oneline() {
 h_trunc() {
     printf '%s' "$1" | tr '\n' ' ' | tr -s ' ' | cut -c1-"${2:-80}"
 }
+
+# 干净的行数统计：grep -c 没命中时会同时输出 "0" 和退出码 1，
+# 用 `|| echo 0` 会得到 "0\n0" 这种脏值，这里统一收口。
+h_count() {
+    local n
+    n=$(grep -c "$1" "$2" 2>/dev/null)
+    [ -z "$n" ] && n=0
+    printf '%s' "$n"
+}
+
+# 干净的非空行计数（管道输入）
+h_count_pipe() {
+    local n
+    n=$(grep -c "$1" 2>/dev/null)
+    [ -z "$n" ] && n=0
+    printf '%s' "$n"
+}

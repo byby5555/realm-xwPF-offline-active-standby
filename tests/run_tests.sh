@@ -71,12 +71,12 @@ CASES=(
     "T13:case_T13_weight_range"
     "T14:case_T14_active_standby_rule_state"
     "T15:case_T15_weights_contain_zero"
-    "T16:case_T15_health_timer_start"
-    "T17:case_T16_health_unit_consistency"
-    "T18:case_T17_no_nc_fallback"
-    "T19:case_T18_active_standby_flip"
-    "T20:case_T19_bootstrap_offline"
-    "T21:case_T20_xwpf_help_runtime"
+    "T16:case_T16_health_timer_start"
+    "T17:case_T17_health_unit_consistency"
+    "T18:case_T18_no_nc_fallback"
+    "T19:case_T19_active_standby_flip"
+    "T20:case_T20_bootstrap_offline"
+    "T21:case_T21_xwpf_help_runtime"
     "T22:case_T22_crlf_install_artifact"
 )
 
@@ -238,10 +238,12 @@ main() {
     local stable="是"
     if [ "$REPEAT" -gt 1 ]; then
         local first="" other
-        first=$(printf '%s' "$vectors" | head -1)
+        first=$(printf '%s' "$vectors" | grep -v '^$' | head -1)
         while IFS= read -r other; do
+            [ -z "$other" ] && continue
             [ "$other" = "$first" ] || stable="否"
         done <<< "$vectors"
+        echo "各轮结果向量: $(printf '%s' "$vectors" | tr '\n' ' ')"
     fi
 
     local pass=0 fail=0 i

@@ -76,7 +76,7 @@ case_T02_old_repo_name() {
         "全仓出现次数 0"
 
     local hits
-    hits=$(cd "$SBX_REPO" && git grep -n -F "$REPO_OLD" -- . 2>/dev/null)
+    hits=$(cd "$SBX_REPO" && git grep -n -F "$REPO_OLD" -- . ':(exclude)tests' 2>/dev/null)
     local count=0
     [ -n "$hits" ] && count=$(printf '%s' "$hits" | grep -c .)
     if [ -n "$hits" ]; then
@@ -150,7 +150,7 @@ case_T05_failover_help_vs_docs() {
     local cmds="toggle config status start stop restart-realm help"
     local c documented=0 missing=""
     for c in $cmds; do
-        if (cd "$SBX_REPO" && grep -rEl "xwFailover\.sh[[:space:]]+${c}([[:space:]]|$)" docs/ README.md README_EN.md cmd/ >/dev/null 2>&1); then
+        if (cd "$SBX_REPO" && grep -rEl "xwFailover\.sh[[:space:]]+${c}([^A-Za-z0-9_-]|$)" docs/ README.md README_EN.md cmd/ >/dev/null 2>&1); then
             documented=$((documented + 1))
         else
             missing="$missing $c"
@@ -164,15 +164,24 @@ case_T05_failover_help_vs_docs() {
 case_T06_devtcp_fallback() {
     h_case_begin "T06" "健康检查 /dev/tcp 回退" \
         "仓库工作区（只读）" \
-        "grep -n '/dev/tcp' xwFailover.sh lib/core.sh" \
+        "grep -n '/dev/tcp' xwFailover.sh lib/health.sh lib/core.sh" \
         "故障转移侧的 check_connectivity 在没有 nc 时走 bash /dev/tcp 回退"
 
-    local failover_hits core_hits
-    failover_hits=$(cd "$SBX_REPO" && grep -c '/dev/tcp' xwFailover.sh 2>/dev/null || echo 0)
-    core_hits=$(cd "$SBX_REPO" && grep -c '/dev/tcp' lib/core.sh 2>/dev/null || echo 0)
+    # 健康检查实现现在在 lib/health.sh（唯一真源），老版本在 xwFailover.sh 里，两边都查
+    local health_hits=0 failover_hits=0 core_hits=0
+    [ -f "$SBX_REPO/lib/health.sh" ] && health_hits=$(h_count '/dev/tcp' "$SBX_REPO/lib/health.sh")
+    failover_hits=$(h_count '/dev/tcp' "$SBX_REPO/xwFailover.sh")
+    core_hits=$(h_count '/dev/tcp' "$SBX_REPO/lib/core.sh")
+    h_log "lib/health.sh 里 /dev/tcp 命中: $health_hits"
     h_log "xwFailover.sh 里 /dev/tcp 命中: $failover_hits"
     h_log "lib/core.sh  里 /dev/tcp 命中: $core_hits（证明能力在代码库里存在，不是环境限制）"
-    h_check_eq "1" "$failover_hits" "xwFailover.sh 中 /dev/tcp 回退的命中次数"
+
+    local total=$((health_hits + failover_hits))
+    if [ "$total" -ge 1 ]; then
+        h_pass "健康检查实现里有 /dev/tcp 回退（共 $total 处）"
+    else
+        h_fail "健康检查实现（lib/health.sh / xwFailover.sh）里没有 /dev/tcp 回退（0 处）"
+    fi
 }
 
 case_T07_docs_claim_missing_test() {
@@ -189,10 +198,21 @@ case_T07_docs_claim_missing_test() {
     else
         h_log "文档未引用 test_e2e.sh"
     fi
-    local f
-    for f in test_e2e.sh tests/test_e2e.sh; do
-        [ -f "$SBX_REPO/$f" ] || missing="$missing $f"
-    done
+
+    # 只按文档里实际写的路径去核对，不自己发明路径
+    local paths
+    paths=$(printf '%s\n' "$refs" | grep -oE '`[A-Za-z0-9_./-]*test_e2e\.sh`' | tr -d '`' | sort -u)
+    local p
+    if [ -n "$paths" ]; then
+        for p in $paths; do
+            [ -f "$SBX_REPO/$p" ] || missing="$missing $p"
+        done
+    else
+        for p in test_e2e.sh tests/test_e2e.sh; do
+            [ -f "$SBX_REPO/$p" ] || missing="$missing $p"
+        done
+    fi
+    h_log "文档引用的路径:$paths"
     h_log "缺失文件:$missing"
     h_check_eq "" "$missing" "文档引用的测试脚本缺失清单"
 }

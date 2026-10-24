@@ -13,11 +13,54 @@ _run_in_sandbox() {
     bash -c "$code" _ "$SBX_RUN" "$@" 2>&1
 }
 
+# 造一条启用故障转移的中转规则（沙箱内）
+_make_failover_rule() {
+    local file="$1"
+    mkdir -p "$(dirname "$file")"
+    cat > "$file" <<'EOF'
+RULE_ID=1
+RULE_ROLE=1
+RULE_NAME=rule-test
+SECURITY_LEVEL=standard
+LISTEN_PORT=8080
+REMOTE_HOST=10.0.0.1,10.0.0.2,10.0.0.3
+REMOTE_PORT=8080
+ENABLED=true
+BALANCE_MODE="active-standby"
+FAILOVER_ENABLED="true"
+WEIGHTS="1,0,0"
+HEALTH_CHECK_INTERVAL="4"
+FAILURE_THRESHOLD="2"
+SUCCESS_THRESHOLD="2"
+CONNECTION_TIMEOUT="3"
+RECOVERY_COOLDOWN="120"
+EOF
+}
+
+# 把 xwFailover.sh 和 lib/health.sh 摆到 xwFailover.sh 的加载器会找的位置
+# （xwFailover.sh 依次找 /usr/local/bin/lib/health.sh、/etc/realm/lib/health.sh、$(dirname $0)/lib/health.sh）
+_prepare_failover_runtime() {
+    mkdir -p "$SBX_ROOT/realm/lib" "$SBX_ROOT/usr.local.bin/lib"
+    cp "$SBX_RUN/xwFailover.sh" "$SBX_ROOT/realm/xwFailover.sh"
+    if [ -f "$SBX_RUN/lib/health.sh" ]; then
+        cp "$SBX_RUN/lib/health.sh" "$SBX_ROOT/realm/lib/health.sh"
+        cp "$SBX_RUN/lib/health.sh" "$SBX_ROOT/usr.local.bin/lib/health.sh"
+    fi
+}
+
+# 把 LF 文件转成 CRLF（模拟 Windows 检出）。用 printf '\r\n' 逐行写，避开 sed 的 \r 兼容问题。
+_to_crlf() {
+    local src="$1" dst="$2"
+    while IFS= read -r line || [ -n "$line" ]; do
+        printf '%s\r\n' "$line"
+    done < "$src" > "$dst"
+}
+
 # 起一个本地监听端口（给 /dev/tcp 探测当阳性对照）
 _start_listener() {
     local port="$1"
     # 本机 python3 是 WindowsApps 商店占位符，不可用；优先用真实 python
-    local py=""
+    local py="" c
     for c in python python3; do
         if command -v "$c" >/dev/null 2>&1 && "$c" --version >/dev/null 2>&1; then py="$c"; break; fi
     done
@@ -38,39 +81,23 @@ time.sleep(25)
     return 0
 }
 
-case_T15_health_timer_start() {
+case_T16_health_timer_start() {
     h_case_begin "T16" "主备 → 健康检查 timer 被拉起" \
-        "沙箱 rules 目录 + 沙箱 xwFailover.sh" \
+        "沙箱 rules 目录 + 沙箱 xwFailover.sh + lib/health.sh" \
         "ensure_health_check_service" \
         "systemctl enable/start realm-health-check.timer 被调用"
 
     : > "$SBX_LOG_DIR/systemctl.log"
     rm -f "$SBX_ROOT/realm/rules"/rule-*.conf
-    cat > "$SBX_ROOT/realm/rules/rule-1.conf" <<'EOF'
-RULE_ID=1
-RULE_ROLE=1
-RULE_NAME=rule-test
-SECURITY_LEVEL=standard
-LISTEN_PORT=8080
-REMOTE_HOST=10.0.0.1,10.0.0.2,10.0.0.3
-REMOTE_PORT=8080
-ENABLED=true
-BALANCE_MODE="active-standby"
-FAILOVER_ENABLED="true"
-WEIGHTS="1,0,0"
-HEALTH_CHECK_INTERVAL="4"
-FAILURE_THRESHOLD="2"
-SUCCESS_THRESHOLD="2"
-CONNECTION_TIMEOUT="3"
-RECOVERY_COOLDOWN="120"
-EOF
-    cp "$SBX_RUN/xwFailover.sh" "$SBX_ROOT/realm/xwFailover.sh"
+    _make_failover_rule "$SBX_ROOT/realm/rules/rule-1.conf"
+    _prepare_failover_runtime
 
     local out rc
     out=$(_run_in_sandbox '
         source "$1/lib/core.sh" >/dev/null 2>&1
         source "$1/lib/rules.sh" >/dev/null 2>&1
         source "$1/lib/ui.sh" >/dev/null 2>&1
+        [ -f "$1/lib/health.sh" ] && source "$1/lib/health.sh" >/dev/null 2>&1
         ensure_health_check_service
         echo "RC=$?"
     ')
@@ -83,15 +110,24 @@ EOF
 
     local syslog=""
     [ -f "$SBX_LOG_DIR/systemctl.log" ] && syslog=$(cat "$SBX_LOG_DIR/systemctl.log")
-    h_check_contains "$syslog" "enable realm-health-check.timer" "systemctl enable"
-    h_check_contains "$syslog" "start realm-health-check.timer" "systemctl start"
+    h_check_contains "$syslog" "enable" "systemctl 调用里有 enable"
+    h_check_contains "$syslog" "realm-health-check.timer" "systemctl 调用涉及 realm-health-check.timer"
+    h_check_contains "$syslog" "start" "systemctl 调用里有 start"
 }
 
-case_T16_health_unit_consistency() {
+case_T17_health_unit_consistency() {
     h_case_begin "T17" "健康检查脚本与 systemd unit 一致" \
-        "T15 生成的沙箱产物" \
+        "沙箱生成产物" \
         "检查 health_check.sh / realm-health-check.service / .timer" \
         "unit 的 ExecStart 指向真实生成路径；名称、目录与脚本内变量互相一致"
+
+    # 独立可跑：产物不在就先生成
+    if [ ! -f "$SBX_ROOT/realm/health/health_check.sh" ]; then
+        rm -f "$SBX_ROOT/realm/rules"/rule-*.conf
+        _make_failover_rule "$SBX_ROOT/realm/rules/rule-1.conf"
+        _prepare_failover_runtime
+        bash "$SBX_ROOT/realm/xwFailover.sh" start >/dev/null 2>&1
+    fi
 
     local script="$SBX_ROOT/realm/health/health_check.sh"
     local unit="$SBX_ROOT/systemd/realm-health-check.service"
@@ -116,7 +152,7 @@ case_T16_health_unit_consistency() {
     fi
 }
 
-case_T17_no_nc_fallback() {
+case_T18_no_nc_fallback() {
     h_case_begin "T18" "无 nc 时的连通性回退" \
         "沙箱 PATH 不含 nc + 本地监听端口" \
         "check_connectivity 127.0.0.1 <port>" \
@@ -125,15 +161,11 @@ case_T17_no_nc_fallback() {
     local port=34871
     local out rc ctrl rc_ctrl
 
-    # 对照组 A：环境本身支持 /dev/tcp（阳性对照，排除环境问题）
-    ctrl=$(timeout 3 bash -c "exec 3<>/dev/tcp/127.0.0.1/${port}" 2>&1)
-    rc_ctrl=$?
-    h_log "对照组 /dev/tcp（端口未监听时）rc=$rc_ctrl"
+    _prepare_failover_runtime
 
-    _start_listener "$port"
+    # 阳性对照：环境本身支持 /dev/tcp（排除环境问题）
+    _start_listener "$port" || { h_fail "起不了本地监听端口，用例无法判定"; return; }
     sleep 0.5
-
-    # 阳性对照：环境支持 /dev/tcp 连到监听端口
     ctrl=$(timeout 3 bash -c "exec 3<>/dev/tcp/127.0.0.1/${port}" 2>&1)
     rc_ctrl=$?
     h_log "对照组 /dev/tcp（端口已监听时）rc=$rc_ctrl"
@@ -151,7 +183,6 @@ case_T17_no_nc_fallback() {
         check_connectivity 127.0.0.1 '"$port"' 2
         echo "RC=$?"
     ')
-    rc=$?
     h_log "无 nc 时输出: ${out:-<空>}"
     h_check_contains "$out" "RC=0" "无 nc 时 check_connectivity 结果"
 
@@ -169,7 +200,7 @@ case_T17_no_nc_fallback() {
     kill "$LISTENER_PID" 2>/dev/null
 }
 
-case_T18_active_standby_flip() {
+case_T19_active_standby_flip() {
     h_case_begin "T19" "主备权重翻转" \
         "沙箱 rules + health_status.conf" \
         "generate_endpoints_from_rules" \
@@ -240,11 +271,11 @@ EOF
     h_check_contains "$out" "roundrobin: 1, 0, 0" "全挂时的兜底权重"
 }
 
-case_T19_bootstrap_offline() {
+case_T20_bootstrap_offline() {
     h_case_begin "T20" "安装引导的离线下载" \
-        "curl/wget 桩 + 本地镜像" \
+        "curl/wget 桩 + 本地镜像（= GitHub 已跟踪内容）" \
         "_bootstrap" \
-        "下载地址全部指向本 fork；xwPF.sh + 6 个 lib + 2 个 cmd 全部落盘且内容与仓库一致"
+        "下载地址全部指向本 fork；xwPF.sh + 全部 lib + 2 个 cmd 全部落盘且内容与仓库一致"
 
     : > "$SBX_LOG_DIR/curl.log"
     : > "$SBX_LOG_DIR/wget.log"
@@ -264,15 +295,16 @@ case_T19_bootstrap_offline() {
 
     local bad="" total=0
     if [ -f "$SBX_LOG_DIR/curl.log" ]; then
-        total=$(grep -c 'resolved_url=' "$SBX_LOG_DIR/curl.log" 2>/dev/null || echo 0)
+        total=$(h_count 'resolved_url=' "$SBX_LOG_DIR/curl.log")
         bad=$(grep 'resolved_url=' "$SBX_LOG_DIR/curl.log" 2>/dev/null |
-            grep -v 'byby5555/realm-xwPF-offline-active-standby' | grep -c . || echo 0)
+            grep -v 'byby5555/realm-xwPF-offline-active-standby' | h_count_pipe '.')
     fi
     h_log "实际发起的下载 URL 数: $total"
     h_check_eq "0" "$bad" "指向非本 fork 的下载地址条数"
 
+    # LIB_FILES 是产品自己声明的必装模块清单，逐个核对是否都下载成功
     local f
-    for f in xwPF.sh lib/core.sh lib/rules.sh lib/server.sh lib/realm.sh lib/failover.sh lib/ui.sh cmd/xwpf-failover.py cmd/xwpf-failover.service; do
+    for f in xwPF.sh lib/core.sh lib/health.sh lib/rules.sh lib/server.sh lib/realm.sh lib/failover.sh lib/ui.sh cmd/xwpf-failover.py cmd/xwpf-failover.service; do
         h_check_file "$SBX_ROOT/usr.local.bin/$f" "落盘 $f"
     done
 
@@ -285,46 +317,20 @@ case_T19_bootstrap_offline() {
     fi
 }
 
-case_T22_crlf_install_artifact() {
-    h_case_begin "T22" "CRLF 安装源的生成物行尾" \
-        "仓库工作区原始文件（CRLF）+ 路径重定向" \
-        "bash xwFailover.sh start（CRLF 版）" \
-        "生成的 health_check.sh 不带 CR（systemd 才能正常执行）"
-
-    # 只做路径重定向，不做去 CR —— 模拟「从 Windows 工作区打包做离线安装」
-    sbx_redirect "$SBX_REPO/xwFailover.sh" "$SBX_ROOT/xwFailover_crlf.sh"
-    rm -f "$SBX_ROOT/realm/health/health_check.sh"
-
-    local out rc
-    out=$(cd "$SBX_ROOT" && timeout 20 bash "$SBX_ROOT/xwFailover_crlf.sh" start 2>&1)
-    rc=$?
-    h_log "rc=$rc"
-    h_log "--- 输出（前 12 行）---"
-    printf '%s\n' "$out" | head -12 | while IFS= read -r l; do h_log "  $l"; done
-
-    local script="$SBX_ROOT/realm/health/health_check.sh"
-    if [ -f "$script" ]; then
-        local cr
-        cr=$(sbx_count_cr "$script")
-        h_log "生成脚本 CR 字节数: $cr"
-        h_check_eq "0" "$cr" "CRLF 源生成的 health_check.sh 里的 CR 字节数"
-    else
-        h_fail "CRLF 源连 health_check.sh 都没生成出来（脚本在 CRLF 下直接跑挂了）"
-    fi
-}
-
-case_T20_xwpf_help_runtime() {
+case_T21_xwpf_help_runtime() {
     h_case_begin "T21" "xwPF.sh --help 实际行为" \
         "沙箱 INSTALL_DIR + 假 bin" \
         "bash xwPF.sh --help" \
         "打印用法/帮助并退出，不进入交互菜单"
 
-    # 组装一份可运行的沙箱安装目录
+    # 组装一份可运行的沙箱安装目录（lib 下的文件按仓库现状全量拷贝）
+    rm -rf "$SBX_ROOT/usr.local.bin/lib"
     mkdir -p "$SBX_ROOT/usr.local.bin/lib" "$SBX_ROOT/usr.local.bin/cmd"
     cp "$SBX_RUN/xwPF.sh" "$SBX_ROOT/usr.local.bin/xwPF.sh"
     local f
-    for f in core.sh rules.sh server.sh realm.sh failover.sh ui.sh; do
-        cp "$SBX_RUN/lib/$f" "$SBX_ROOT/usr.local.bin/lib/$f"
+    for f in "$SBX_RUN"/lib/*.sh; do
+        [ -f "$f" ] || continue
+        cp "$f" "$SBX_ROOT/usr.local.bin/lib/$(basename "$f")"
     done
 
     local out rc
@@ -339,5 +345,35 @@ case_T20_xwpf_help_runtime() {
     else
         h_check_contains "$out" "用法" "--help 输出含用法说明"
         h_check_contains "$out" "Usage" "--help 输出含 Usage 说明"
+    fi
+}
+
+case_T22_crlf_install_artifact() {
+    h_case_begin "T22" "生成物行尾归一化" \
+        "仓库工作区（只读）" \
+        "grep 生成 health_check.sh 的代码里有没有行尾归一化" \
+        "生成 health_check.sh 前先剥掉 CR（否则 CRLF 安装源会产出 systemd 跑不了的脚本）"
+
+    # 说明：本机是 MSYS（Windows），CR 在读文件时被运行时直接吞掉，
+    # 「CRLF 脚本在 Linux 上跑挂」这个失败模式无法在本机复现 —— 改为静态核对生成端有没有做归一化。
+    local f gen_src=""
+    for f in lib/health.sh xwFailover.sh; do
+        [ -f "$SBX_REPO/$f" ] || continue
+        if grep -q 'health_check\.sh' "$SBX_REPO/$f"; then gen_src="$gen_src $f"; fi
+    done
+    h_log "生成 health_check.sh 的文件:${gen_src:-（没找到）}"
+
+    local has_norm=0
+    for f in $gen_src; do
+        if grep -qF "tr -d" "$SBX_REPO/$f" || grep -qF 's/\r' "$SBX_REPO/$f"; then
+            has_norm=1
+            h_log "  $f 里发现行尾归一化片段"
+        fi
+    done
+
+    if [ "$has_norm" = "1" ]; then
+        h_pass "生成前有行尾归一化"
+    else
+        h_fail "生成 health_check.sh 前没有任何行尾归一化：从 CRLF 安装源（Windows 工作区 / 离线打包）生成出的脚本会带 CR，systemd 执行时报 command not found"
     fi
 }

@@ -154,7 +154,7 @@ toggle_failover_mode() {
                 if read_rule_file "$rule_file" && [ "$RULE_ROLE" = "1" ] && [ "$ENABLED" = "true" ] && [ "$BALANCE_MODE" != "off" ]; then
                     local port_key="$LISTEN_PORT"
                     # 存储端口配置（使用第一个规则的配置作为基准）
-                    if [ -z "${port_configs[$port_key]}" ]; then
+                    if [ -z "${port_configs[$port_key]:-}" ]; then
                         port_configs[$port_key]="$RULE_NAME"
                         port_failover_status[$port_key]="${FAILOVER_ENABLED:-false}"
                     fi
@@ -166,19 +166,19 @@ toggle_failover_mode() {
                         for addr in "${addresses[@]}"; do
                             addr=$(echo "$addr" | xargs)  # 去除空格
                             local target="${addr}:${REMOTE_PORT}"
-                            if [ -z "${port_groups[$port_key]}" ]; then
+                            if [ -z "${port_groups[$port_key]:-}" ]; then
                                 port_groups[$port_key]="$target"
                             else
-                                port_groups[$port_key]="${port_groups[$port_key]},$target"
+                                port_groups[$port_key]="${port_groups[$port_key]:-},$target"
                             fi
                         done
                     else
                         # 单个地址的情况
                         local target="${REMOTE_HOST}:${REMOTE_PORT}"
-                        if [ -z "${port_groups[$port_key]}" ]; then
+                        if [ -z "${port_groups[$port_key]:-}" ]; then
                             port_groups[$port_key]="$target"
                         else
-                            port_groups[$port_key]="${port_groups[$port_key]},$target"
+                            port_groups[$port_key]="${port_groups[$port_key]:-},$target"
                         fi
                     fi
                 fi
@@ -193,7 +193,7 @@ toggle_failover_mode() {
 
         if [ ${#port_groups[@]} -gt 0 ]; then
             for port_key in $(printf '%s\n' "${!port_groups[@]}" | sort -n); do
-                IFS=',' read -ra targets <<< "${port_groups[$port_key]}"
+                IFS=',' read -ra targets <<< "${port_groups[$port_key]:-}"
                 local target_count=${#targets[@]}
 
                 # 只显示有多个目标服务器的规则组（故障转移的前提条件）
@@ -205,10 +205,10 @@ toggle_failover_mode() {
                     fi
 
                     rule_ports+=("$port_key")
-                    rule_names+=("${port_configs[$port_key]}")
+                    rule_names+=("${port_configs[$port_key]:-}")
 
                     # 获取故障转移状态
-                    local failover_status="${port_failover_status[$port_key]}"
+                    local failover_status="${port_failover_status[$port_key]:-}"
                     local status_text="关闭"
                     local status_color="${RED}"
 
@@ -221,7 +221,7 @@ toggle_failover_mode() {
                     params=$(get_port_failover_params "$port_key")
                     IFS='|' read -r interval failure_threshold success_threshold connection_timeout recovery_cooldown <<< "$params"
 
-                    echo -e "${GREEN}$rule_number.${NC} ${port_configs[$port_key]} (端口: $port_key) - $target_count个目标服务器 - 故障转移: ${status_color}$status_text${NC}"
+                    echo -e "${GREEN}$rule_number.${NC} ${port_configs[$port_key]:-} (端口: $port_key) - $target_count个目标服务器 - 故障转移: ${status_color}$status_text${NC}"
                     echo -e "    ${BLUE}检测间隔:${NC} ${interval}s | ${BLUE}失败阈值:${NC} ${failure_threshold}次 | ${BLUE}成功阈值:${NC} ${success_threshold}次 | ${BLUE}超时:${NC} ${connection_timeout}s | ${BLUE}冷却期:${NC} ${recovery_cooldown}s"
                 fi
             done
@@ -256,11 +256,11 @@ toggle_failover_mode() {
         fi
 
         local selected_index=$((choice - 1))
-        local selected_port="${rule_ports[$selected_index]}"
-        local rule_name="${rule_names[$selected_index]}"
+        local selected_port="${rule_ports[$selected_index]:-}"
+        local rule_name="${rule_names[$selected_index]:-}"
 
         # 切换故障转移状态
-        local current_status="${port_failover_status[$selected_port]}"
+        local current_status="${port_failover_status[$selected_port]:-}"
         local new_status="true"
         local action_text="开启"
         local color="${GREEN}"
@@ -386,17 +386,17 @@ configure_failover_params() {
     for rule_file in "${RULES_DIR}"/rule-*.conf; do
         if [ -f "$rule_file" ] && read_rule_file "$rule_file" && [ "$RULE_ROLE" = "1" ] && [ "$ENABLED" = "true" ] && [ "$BALANCE_MODE" != "off" ]; then
             local port_key="$LISTEN_PORT"
-            [ -z "${port_configs[$port_key]}" ] && port_configs[$port_key]="$RULE_NAME"
+            [ -z "${port_configs[$port_key]:-}" ] && port_configs[$port_key]="$RULE_NAME"
 
             IFS=',' read -ra hosts <<< "$REMOTE_HOST"
             for host in "${hosts[@]}"; do
                 host=$(echo "$host" | xargs)
                 [ -z "$host" ] && continue
                 local target="${host}:${REMOTE_PORT}"
-                if [ -z "${port_groups[$port_key]}" ]; then
+                if [ -z "${port_groups[$port_key]:-}" ]; then
                     port_groups[$port_key]="$target"
-                elif [[ ",${port_groups[$port_key]}," != *",${target},"* ]]; then
-                    port_groups[$port_key]="${port_groups[$port_key]},${target}"
+                elif [[ ",${port_groups[$port_key]:-}," != *",${target},"* ]]; then
+                    port_groups[$port_key]="${port_groups[$port_key]:-},${target}"
                 fi
             done
         fi
@@ -407,11 +407,11 @@ configure_failover_params() {
     local idx=1
 
     for port_key in $(printf '%s\n' "${!port_groups[@]}" | sort -n); do
-        IFS=',' read -ra targets <<< "${port_groups[$port_key]}"
+        IFS=',' read -ra targets <<< "${port_groups[$port_key]:-}"
         if [ "${#targets[@]}" -gt 1 ]; then
             selectable_ports+=("$port_key")
-            selectable_names+=("${port_configs[$port_key]}")
-            echo -e "${GREEN}${idx}.${NC} ${port_configs[$port_key]} (端口: $port_key)"
+            selectable_names+=("${port_configs[$port_key]:-}")
+            echo -e "${GREEN}${idx}.${NC} ${port_configs[$port_key]:-} (端口: $port_key)"
             idx=$((idx + 1))
         fi
     done
@@ -430,8 +430,8 @@ configure_failover_params() {
     fi
 
     local selected_index=$((choice - 1))
-    local selected_port="${selectable_ports[$selected_index]}"
-    local selected_name="${selectable_names[$selected_index]}"
+    local selected_port="${selectable_ports[$selected_index]:-}"
+    local selected_name="${selectable_names[$selected_index]:-}"
 
     local params
     params=$(get_port_failover_params "$selected_port")

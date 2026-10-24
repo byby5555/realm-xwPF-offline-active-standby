@@ -156,7 +156,7 @@ init_config() {
     download_notification_modules >/dev/null 2>&1 || true
 
     if [ ! -f "$CONFIG_FILE" ]; then
-        cat > "$CONFIG_FILE" << 'EOF'
+        tr -d '\r' > "$CONFIG_FILE" << 'EOF'
 {
   "global": {
     "billing_mode": "double"
@@ -2135,7 +2135,7 @@ export_config() {
     cp -r "$CONFIG_DIR" "$package_dir"
 
     # 生成端口流量狗配置包信息文件
-    cat > "$package_dir/package_info.txt" << EOF
+    tr -d '\r' > "$package_dir/package_info.txt" << EOF
 ===================
 导出时间: $(get_beijing_time '+%Y-%m-%d %H:%M:%S')
 脚本版本: $SCRIPT_VERSION
@@ -2448,7 +2448,7 @@ install_update_script() {
 
 create_shortcut_command() {
     if [ ! -f "/usr/local/bin/$SHORTCUT_COMMAND" ]; then
-        cat > "/usr/local/bin/$SHORTCUT_COMMAND" << EOF
+        tr -d '\r' > "/usr/local/bin/$SHORTCUT_COMMAND" << EOF
 #!/bin/bash
 exec bash "$SCRIPT_PATH" "\$@"
 EOF
