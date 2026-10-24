@@ -19,6 +19,7 @@
 | 权重不生效 / 报错 | [§7](#7-权重不生效或报错) |
 | 端口冲突 | [§8](#8-端口冲突) |
 | 权限 / root 相关 | [§9](#9-权限相关) |
+| 非交互环境里 pf 直接退出 | [§12](#12-非交互环境里跑-pf-的行为) |
 
 ---
 
@@ -522,3 +523,55 @@ systemctl status realm --no-pager
 
 脚本包的回滚同理（把 `scripts-时间戳/` 里的文件拷回原位，同样走「临时文件 + mv」）。
 
+---
+
+## 12. 非交互环境里跑 pf 的行为
+
+### 12.1 现象
+
+```bash
+$ pf < /dev/null
+检测到标准输入不是终端（管道 / 后台 / 无人值守执行），已退出交互菜单。
+Interactive menu requires a terminal on stdin; exiting.
+$ echo $?
+0
+```
+
+（`lib/core.sh` 的 `ui_require_tty`）
+
+### 12.2 这是有意的行为变更，不是缺陷
+
+stdin 是 EOF 时（管道 / 后台 / cron / systemd / 终端被关闭），`read` 会**立刻返回
+非 0**（不阻塞）→ 读到的变量为空 → `case` 不匹配任何分支 → 回到菜单循环顶部 →
+**无限重绘 + 忙循环 + 输出量无上限**。
+
+`/tmp` 在真机上是 tmpfs（吃的是内存），无界输出会把它灌满 → 内存 + swap 耗尽 →
+**sshd 握不上手，整机被压垮**。这是本项目踩过的真实事故，不是理论风险。
+
+所以交互菜单入口加了 TTY 护栏：stdin 不是终端就**不进菜单**，直接干净退出
+（退出码 0）。
+
+### 12.3 该怎么办
+
+| 场景 | 做法 |
+|---|---|
+| 想在真终端里改配置 | 直接跑 `pf`（TTY 下菜单与子菜单照常，选数字、进子菜单都不受影响） |
+| 无人值守安装 | `wget -qO- https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-active-standby/main/xwPF.sh \| sudo bash -s install`；安装流程里的询问在 EOF 时**按默认值走**（不会静默空跑） |
+| 只想看用法 | `pf --help` |
+| 脚本里要改配置 | 走 `pf` 的子命令（见 [安装、升级与卸载](install-and-upgrade.md) 的「命令行接口」一节），不要指望管道喂数字进菜单 |
+
+### 12.4 自检（改过菜单相关代码后跑一遍）
+
+```bash
+# 非 TTY：必须**自己**退出，且输出量有上限
+timeout 5 bash /usr/local/bin/xwPF.sh < /dev/null > /tmp/nontty.out 2>&1
+echo "rc=$? bytes=$(wc -c < /tmp/nontty.out)"
+```
+
+判据：`rc` **不是 124**（124 = 被 `timeout` 杀掉 = 还在忙循环）；`bytes` 有上限
+（百字节量级；无界输出会到几百 KB）；输出非空且命中入口提示语（否则「根本没跑起来」
+也会表现为「输出很小」）。
+
+> 注意：从 Windows 工作区直接传上机的文件是 **CRLF**，bash 第一行就报
+> `$'\r': command not found`，看起来「输出很小、也退出了」，其实**根本没跑起来**。
+> 上机自测请用 `git show <SHA>:<path>` 取提交态（本来就是 LF），或先转 LF。

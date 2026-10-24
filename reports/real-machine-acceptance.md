@@ -4,6 +4,7 @@
 > **修订（2026-10-24，第 2 次）**：**A-4 一节按 N1 落地后的口径改写** —— 字段数 **7 → 9**（`LATENCY_MS` / `LATENCY_HISTORY` 是后加的）；「TARGET 只有 host、没有端口」由「不判 FAIL，但要登记」改为**判 FAIL**；新增 **A-4.1 旧格式兼容登记**（升级瞬间的老文件**不必手工删**）。A-3 / A-5 两处引用同一旧事实的表述一并更正。**A-4 一节的锚点推进到 `bfc99d3`（N1-R1）**，其余各节仍以 `a9102c1` 为基线。
 > **修订（2026-10-24，第 3 次）**：按 Chief 派单复核 A-4 判据 —— ① 字段数判据确认为 **9**（以冻结态 `a7e23fc` 的 `lib/health.sh` 的 `health_check_script_body` 为准，第 2 次修订已改到位）；② 「末字段是时间戳」已改到第 6/7 字段，并区分「时延历史为空」与「时延历史是数字列表」两种合法形态；③ **TARGET 判据由「一律判 FAIL」改为三档分级**（裸 host 是**旧格式**不是设计：归属已失效的孤儿行**有条件接受 + 登记**；归属可确定却没迁移、或裸 host 占多数，仍**判 FAIL**），并补「裸 host 残留对同 host 多端口场景的影响」对照表。**新增 A-X（旧格式状态文件 + 新代码 → 仍能正确切换）与 A-Y（同 host 两个端口 → 状态互不覆盖）两节**。全文的「文件:行号」引用按纪律改成「文件 的 符号」。**本节锚点：`a7e23fc`**（消费端与展示端的行为以 `bfc99d3` 为准，见 A-4 锚点说明）。
 > **修订（2026-10-24，第 4 次）**：入库前收口 —— ① **A-X / A-Y 的锚点 SHA 写全**（被测产物 `a7e23fc`、期望所依据的行为 `bfc99d3`、复核时 HEAD `14aef0c`；原先「HEAD 不带 SHA」的浮动写法已改成 `a7e23fc..14aef0c`）；② **T01 预检**：用**逐字复刻 T01「下载地址一致性」** 的脚本在工作区扫（含未提交文件），**违例 0 条**（T01 扫 `.md` 且**不排除 `reports/`**，本文件与其它审稿报告里出现的下载类 URL 全部指向本 fork `byby5555/realm-xwPF-offline-active-standby`；引用 systemd 源码处一律写成「仓库路径 + tag」而非 raw URL，故 T01 抓不到）；③ 全文「文件:行号」引用复查 = **0 处**。
+> **修订（2026-10-24，第 5 次）**：新增 **A-Z（非交互环境里 pf 必须快速退出且输出量有上限）** —— 这是 N1（stdin EOF 忙循环）事故的**验收条目**：非 TTY 下必须**自己**退出（退出码 ≠ 124）、退出码 0、输出字节数有上限、输出非空且命中入口提示语。同时把「交互式提示的真终端显示」一条的适用范围写清：**TTY 下不受影响**。
 > 适用范围：本机无 WSL / Docker / systemd / realm，下列全部项**只能在真实 Linux VPS 上验**。
 > 本清单只做**验收**，不修改 `lib/`、`tests/`、`docs/`、`xwFailover.sh`；发现问题登记缺陷单交 Chief 路由。
 
@@ -995,6 +996,60 @@ sudo cat /etc/xwpf/failover.json | jq . 2>/dev/null
 
 | 项 | 目标 | 结果 | 现象 / 证据 | 备注 |
 |---|---|---|---|---|
+## A-Z　非交互环境（管道 / 后台 / cron）下 `pf` 必须快速退出且输出量有上限
+
+**验收目标**：stdin **不是终端**时执行交互菜单，必须**自己**退出（不是靠 `timeout` 才结束），退出码 0，且**输出字节数有上限**。
+
+**前置**：A-1 已完成。本项**只读** —— 不改配置、不重启服务、不碰规则文件。
+
+**为什么单列这一项**：`read` 在 stdin 是 EOF 时**立刻返回非 0**（不阻塞）→ 读到的变量为空 → `case` 不匹配任何分支 → 回到 `while true` 顶部 → **无限重绘 + 忙循环 + 无界输出**。`/tmp` 在真机上是 tmpfs（吃的是内存），无界输出会把它灌满 → 内存 + swap 耗尽 → **sshd 握不上手，整机被压垮**。这是本项目的真实事故，不是理论风险。
+
+**判据**（四条都要满足）：
+
+| 判据 | 期望 |
+|---|---|
+| 退出方式 | **自己**退出 —— 退出码 **≠ 124**（124 = 被 `timeout` 杀掉 = 还在忙循环） |
+| 退出码 | 0 |
+| 输出字节数 | 有上限（上限取 **64 KB**；无界输出会到几百 KB 量级） |
+| 输出内容 | 非空，且命中入口提示语（防空过：根本没跑起来也会表现为「输出很小」） |
+
+**命令**
+
+```bash
+# ① 非 TTY：stdin 是 /dev/null
+timeout 5 bash /usr/local/bin/xwPF.sh < /dev/null > /tmp/acc-z.out 2>&1
+rc=$?
+echo "rc=$rc bytes=$(wc -c < /tmp/acc-z.out)"
+
+# ② 用法输出走的是另一条分支，仍然正常
+timeout 5 bash /usr/local/bin/xwPF.sh --help < /dev/null > /tmp/acc-z-help.out 2>&1
+echo "rc=$? bytes=$(wc -c < /tmp/acc-z-help.out)"
+
+# ③ 首屏提示
+head -3 /tmp/acc-z.out
+
+# ④ 防空过：确认落盘产物没有 CRLF（CRLF 会让 bash 第一行就报错退出，
+#    表现为「输出很小、也退出了」，其实是根本没跑起来）
+for f in /usr/local/bin/xwPF.sh /usr/local/bin/lib/*.sh; do
+  if grep -q $'\r' "$f"; then echo "FAIL-CRLF: $f"; else echo "OK: $f"; fi
+done
+```
+
+**失败排查**
+
+| 现象 | 原因 | 处置 |
+|---|---|---|
+| `rc=124`（被 `timeout` 杀掉） | 菜单入口的 TTY 护栏没生效，或读入没做 EOF 处理 → 忙循环 | 检查 `lib/core.sh` 的 `ui_require_tty` 与 `ui_read_into`；菜单里不得出现裸 `read` |
+| 输出字节数很大（几十 KB 以上） | 同上，无界输出 | 同上 |
+| 输出为空 / 只有一行报错 | 根本没跑起来（路径错，或落盘产物是 CRLF 导致 bash 解析失败） | 先 `bash -n`；再查 `grep -c $'\r'` |
+| 管道里喂数字进不了菜单 | **这是有意的行为变更**（见下），不是缺陷 | 需要交互就在真终端里跑 |
+
+**适用范围说明（重要）**：本项只约束 **stdin 不是终端**的场合。**真终端（TTY）下的交互不受影响** —— 菜单照常显示、照常能选数字、照常能进子菜单。
+
+**与 A-2 的关系**：A-2 验 `pf --help` 的三种写法与退出码；A-Z 验的是**无参 `pf` 在非 TTY 下**的行为。两者走的是不同分支（`--help` 显式处理，非 TTY 时不落进菜单），不要用 A-2 的结论覆盖 A-Z。
+
+---
+
 | A-1 | 一键安装落盘 | ☐PASS ☐FAIL ☐BLOCKED | | 重点：落盘文件含 CR 数 = |
 | A-2 | `pf --help` | ☐PASS ☐FAIL ☐BLOCKED | | 三种写法退出码 |
 | A-3 | 权重 1,0 → 主备 + timer | ☐PASS ☐FAIL ☐BLOCKED | | timer enabled/active |
@@ -1007,6 +1062,7 @@ sudo cat /etc/xwpf/failover.json | jq . 2>/dev/null
 | A-10 | xwpf-failover 热切换 | ☐PASS ☐FAIL ☐BLOCKED | | 需双节点 |
 | A-X | 旧格式状态文件 → 仍能切换 | ☐PASS ☐FAIL ☐BLOCKED | | 老故障没被洗白 = / 迁完字段数 = |
 | A-Y | 同 host 两端口 → 互不覆盖 | ☐PASS ☐FAIL ☐BLOCKED | | 坏一个另一个仍 healthy = / 两形态各记一次 |
+| A-Z | 非 TTY 下 pf 快速退出 | ☐PASS ☐FAIL ☐BLOCKED | | rc≠124 / rc=0 / bytes≤64K / 输出命中入口提示语 |
 
 **缺陷单请直接交 Chief 路由**（按第 1 轮约定：审稿只出报告与清单，不改 `lib/`、`tests/`、`docs/`、`xwFailover.sh`）。
 
