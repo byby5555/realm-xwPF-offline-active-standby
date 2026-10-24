@@ -194,6 +194,25 @@ _t54_loops_without_sleep() {
     done
 }
 
+# ── 判定器 7：ui_read_default 的调用点**是否传了非空默认值** ─────────
+#   ★ 为什么钉这条（据审稿 reports/round9-n1-menu-eof-verification.md 的提醒）：
+#     ui_read_default 在 EOF 时**不退出**，而是取默认值并返回 1。
+#     若某个调用点传了非空默认值（例如 "y"），EOF 就会从
+#     「取默认（否）」变成「**自动确认**」—— 无人值守场景下等于替用户
+#     做了决定。当前全部调用点都只传 2 个参数（提示语 + 变量名），
+#     这条不变式把它钉死，防止将来有人顺手加了第三个参数。
+_t54_default_with_nonempty_default() {
+    local root="$1"
+    {
+        # 第三个参数是**非空字符串**
+        grep -rn --include='*.sh' -E 'ui_read_default[[:space:]]+"[^"]*"[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]+"[^"]+"' "$root" 2>/dev/null
+        # 第三个参数是**未加引号的变量/字面量**
+        grep -rn --include='*.sh' -E 'ui_read_default[[:space:]]+"[^"]*"[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]+[^[:space:]";&|)]' "$root" 2>/dev/null
+    } | grep -v '/tests/' | grep -v '/reports/' \
+      | grep -vE ':[[:space:]]*#' \
+      | sort -u
+}
+
 # ── 判定器 6：ui_read_default 的实现（单独抽，便于退化）──────────
 _t54_extract_default() {
     awk '
@@ -356,6 +375,17 @@ case_T54_ui_eof_closure_invariants() {
     txt_bad=$(cat "$out_bad" 2>/dev/null)
     h_log "退化副本输出: $(printf '%s' "$txt_bad" | tr '\n' ' ' | cut -c1-200)"
     h_check_not_contains "$txt_bad" "VALUE=[T54DEFAULT]" "负向对照 · 兜底去掉后 EOF 不再取默认值（坏情况确实发生）"
+
+    # ── 第五层附：调用点不得传非空默认值（否则 EOF = 自动确认）────────
+    local nonempty_def
+    nonempty_def=$(_t54_default_with_nonempty_default "$SBX_SRC")
+    h_check_eq "0" "$(_t54_count "$nonempty_def")" "ui_read_default 的调用点传了非空默认值的条数（传了就等于 EOF 自动确认）"
+    if [ -n "$nonempty_def" ]; then
+        while IFS= read -r l; do
+            [ -z "$l" ] && continue
+            h_log "  违规: ${l#$SBX_SRC/}"
+        done <<< "$nonempty_def"
+    fi
 
     # ══ 负向对照 (a) · 真实修复前实现跑同一套判定器 → 必须抓到违规 ══
     h_log "准备修复前实现: $_T54_PRE_FIX_SHA 的产品文件树"
