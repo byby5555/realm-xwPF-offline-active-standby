@@ -89,6 +89,18 @@ xwPF 是一套跑在 Linux VPS 上的 Bash 转发管理工具。本目录是它�
 
 > **唯一真源约定**：健康检查服务逻辑的唯一真源是 `lib/health.sh`。
 > 需要复用就 `source` 它，不要在别处实现第二份。
+>
+> 两条具体约定：
+>
+> 1. **规则文件解析**（`read_rule_file`）只有 `lib/health.sh` 里那一份实现。
+>    它是白名单逐行解析，**不 `source` / 不 `eval`** 规则文件 ——
+>    生成的 `health_check.sh` 由 systemd 以 root 拉起，
+>    用 `source` 解析规则文件等于开了一个 root 提权面。
+> 2. **连通性探测**（`check_connectivity`）同样只有一份手写实现。
+>    生成的 `/etc/realm/health/health_check.sh` 里那份不是手抄副本，
+>    而是生成时由 `health_emit_function` 从 `lib/health.sh` **原样抽取**拼进去的
+>    （见 `health_check_script_body`）—— 所以两边不可能漂移，
+>    仓库里也不需要维护「两处必须手工同步」的注释。
 
 ---
 
@@ -98,12 +110,12 @@ xwPF 是一套跑在 Linux VPS 上的 Bash 转发管理工具。本目录是它�
 
 | 入口 | 覆盖点 | 怎么跑 |
 |------|--------|--------|
-| [../tests/run_tests.sh](../tests/run_tests.sh) | **离线台架主入口，22 条用例（T01–T22）**：下载地址一致性、旧仓库名残留、文档一致性、索引行尾、权重校验、主备规则状态、故障转移运行时（timer / systemd unit / 连通性回退 / 权重翻转 / 离线安装 / `--help`） | `bash tests/run_tests.sh`；`--only T10,T14` 只跑指定用例，`--repeat 3` 连跑 3 轮校验一致性，`--list` 列出编号，`--clean` 跑完删沙箱 |
-| [../tests/test_active_standby.sh](../tests/test_active_standby.sh) | 权重含 0 自动进主备、按权重选主、故障切换、全挂兜底、权重全 > 0 时反向切回轮询 | `bash tests/test_active_standby.sh` |
-| [../tests/test_connectivity.sh](../tests/test_connectivity.sh) | TCP 探测行为、缺 `nc` 时的 `/dev/tcp` 回退、两份探测实现（`lib/health.sh` 与生成的 `health_check.sh`）是否一致 | `bash tests/test_connectivity.sh` |
-| [../tests/test_e2e.sh](../tests/test_e2e.sh) | 主备 + 剔除两种故障转移模式的 11 个端到端场景，断言最终生成的 realm `balance` 字段 | `bash tests/test_e2e.sh` |
-| [../tests/test_set_u.sh](../tests/test_set_u.sh) | `set -u` 下关联数组未定义键的健壮性（避免 `config.json` 被写成空、realm 起不来） | `bash tests/test_set_u.sh` |
-| [../tests/README.md](../tests/README.md) | 上面 4 个独立脚本的逐项覆盖点与断言说明 | 直接读 |
+| [../tests/run_tests.sh](../tests/run_tests.sh) | **唯一入口**：下载地址一致性、旧仓库名残留、文档一致性、索引行尾、权重校验、主备规则状态、故障转移运行时（timer / systemd unit / 连通性回退 / 权重翻转 / 离线安装 / `--help`）、主备 6 态 + 剔除 5 态端到端、`set -u` 健壮性、探测实现单一真源的结构断言。用例编号以 `--list` 输出为准 | `bash tests/run_tests.sh`；`--only T10,T14` 只跑指定用例，`--repeat 3` 连跑 3 轮校验一致性，`--list` 列出编号，`--clean` 跑完删沙箱 |
+| [../tests/test_active_standby.sh](../tests/test_active_standby.sh) | 权重含 0 自动进主备、按权重选主、故障切换、全挂兜底、权重全 > 0 时反向切回轮询 | `bash tests/test_active_standby.sh`（薄封装，内部转调 `run_tests.sh --only ...`） |
+| [../tests/test_connectivity.sh](../tests/test_connectivity.sh) | TCP 探测行为、缺 `nc` 时的 `/dev/tcp` 回退、源实现与生成物里的探测副本是否一致 | `bash tests/test_connectivity.sh`（薄封装，内部转调 `run_tests.sh --only ...`） |
+| [../tests/test_e2e.sh](../tests/test_e2e.sh) | 主备 + 剔除两种故障转移模式的端到端场景，断言最终生成的 realm `balance` 字段 | `bash tests/test_e2e.sh`（薄封装，内部转调 `run_tests.sh --only ...`） |
+| [../tests/test_set_u.sh](../tests/test_set_u.sh) | `set -u` 下的健壮性（关联数组未定义键、规则缺可选字段），避免 `config.json` 被写成空、realm 起不来 | `bash tests/test_set_u.sh`（薄封装，内部转调 `run_tests.sh --only ...`） |
+| [../tests/README.md](../tests/README.md) | 各用例的逐项覆盖点与断言说明 | 直接读 |
 | [../tests/TEST-HARNESS.md](../tests/TEST-HARNESS.md) | 离线台架的目录结构、沙箱与外部依赖打桩机制、越界扫描 | 直接读 |
 
 > 断言的是**真实实现的行为**（例如 `generate_endpoints_from_rules` 真正生成的 `balance` 字段），

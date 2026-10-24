@@ -331,13 +331,18 @@ Monitor IP changes in real time from the client:
 
 - Active/Standby Mode (active-standby)
 
-Strict primary/standby: 1 primary + N standbys taking over in order. The health check probes
-every target independently (it does not rely on weights). When the primary fails its weight is
-set to 0 and the first healthy standby is set to 1; if the primary and standby 1 both fail,
+Strict primary/standby: 1 primary + N standbys taking over in order. **The standby order is
+decided by the weights you configure** (a larger weight comes first and becomes the primary;
+equal weights keep their original order — `1,0,0` means the first target is the primary and the
+other two are standbys). Here the weight means "who takes over first", not a traffic ratio.
+**At runtime** the health check probes every target independently and treats them all alike
+(the probe itself does not look at weights); the probe results only decide which target is
+currently healthy. When the primary fails its weight is set to 0 and the standby that takes
+over is set to 1 (all other targets keep weight 0); if the primary and standby 1 both fail,
 standby 2 takes over, and so on. When the primary recovers it switches back immediately
-(strict primary/standby — it never degrades into multi-active). Under the hood the script
-still emits `balance: roundrobin: 0, 1, 0` to realm; a target with weight 0 is effectively
-absent from traffic distribution.
+(strict primary/standby — it never degrades into multi-active). Only one target carries traffic
+at a time. Under the hood the script still emits `balance: roundrobin: 0, 1, 0` to realm;
+a target with weight 0 is effectively absent from traffic distribution.
 
 To use it: first configure multiple targets on the same port (either one rule with a
 comma-separated `REMOTE_HOST`, or several separate rules), then `pf` → Load Balancing
@@ -347,8 +352,13 @@ Enable/Disable Failover → pick the port → pick `2. 主备模式`. See
 
 You can also trigger it directly with **a weight of 0** (recommended): `pf` → Forwarding
 Config Management → Load Balancing Management → Weight Configuration → enter `1,0,0`
-(1 = primary, 0 = standby). The script then switches to active-standby mode, enables
-failover and starts the health-check service automatically. See
+(the larger weight becomes the primary, weight 0 targets become standbys; the weight only
+orders the standby priority, it is not a traffic ratio). The script then switches to
+active-standby mode, enables failover and starts a **resident health-check service**
+(a systemd timer that probes the target ports periodically); it asks for one extra confirmation
+before switching and states that this resident service will be started. Setting the weights
+back to all > 0 switches you back to the load-balancing mode you had chosen before
+(IP hash / round-robin) instead of forcing round-robin. See
 [Port Groups & Weights](docs/port-groups-and-weights.md).
 
 </details>
