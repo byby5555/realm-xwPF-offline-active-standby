@@ -11,7 +11,7 @@ xwPF 是一套跑在 Linux VPS 上的 Bash 转发管理工具。本目录是它�
 | **[安装、升级与卸载](install-and-upgrade.md)** | 第一次装机器、换版本、要清干净 | 前置依赖、一键安装、离线安装、升级、卸载、首次初始化、命令行接口 |
 | **[端口组与权重](port-groups-and-weights.md)** | 一个端口要转多个出口、想按比例分流、要做主备 | 端口组怎么分组、负载均衡四种模式、权重语义与校验、`1,0,0` 主备写法 |
 | **[健康检查与故障转移](health-check-and-failover.md)** | 想让出口挂了自动切走、主挂了自动切备 | 健康检查五项参数、systemd unit、健康状态文件、状态机、切换与回切逻辑 |
-| **[故障排查手册](troubleshooting.md)** | 出问题了 | 12 类常见症状的确认方法与修复步骤 |
+| **[故障排查手册](troubleshooting.md)** | 出问题了 | 9 类常见症状的确认方法与修复步骤 + 报 bug 前的信息收集清单 |
 | [主备模式状态转换推演](active-standby-logic.md) | 要理解主备每一步怎么翻权重 | 7 个状态的逐态推演、realm 配置输出对比、与剔除模式的差异 |
 
 另有仓库根目录的：
@@ -74,7 +74,9 @@ xwPF 是一套跑在 Linux VPS 上的 Bash 转发管理工具。本目录是它�
 
 ## 文档与源码的对应
 
-文档里的每条规则都标了 `文件:行号`。对照关系：
+文档里的每条规则都指向**具体函数**（写法：`文件` 的 `函数名`），不写行号 ——
+行号会随代码改动整体漂移，读者按行号跳过去常常落到无关代码。需要行号时现查：
+`grep -n '<函数名>' <文件>`。
 
 | 关注点 | 源码位置 |
 |--------|----------|
@@ -82,7 +84,7 @@ xwPF 是一套跑在 Linux VPS 上的 Bash 转发管理工具。本目录是它�
 | 端口组、负载均衡模式、权重校验 | `lib/rules.sh` |
 | realm 配置生成、故障转移过滤、主备权重翻转 | `lib/realm.sh` |
 | 菜单结构、按需下载脚本 | `lib/ui.sh` |
-| 健康检查脚本、参数、状态机、systemd unit | `xwFailover.sh`（迁移后为 `lib/health.sh`） |
+| 健康检查脚本、参数、状态机、systemd unit | `lib/health.sh`（唯一真源） |
 | 主备守护进程安装与版本比对 | `lib/failover.sh` |
 
 > **唯一真源约定**：健康检查服务逻辑的唯一真源是 `lib/health.sh`。
@@ -90,21 +92,41 @@ xwPF 是一套跑在 Linux VPS 上的 Bash 转发管理工具。本目录是它�
 
 ---
 
+## 测试台架
+
+回归测试在 `tests/`，**沙箱运行**：不碰真实 `/etc`、`/usr`、`/var`，不需要 root。
+
+| 入口 | 覆盖点 | 怎么跑 |
+|------|--------|--------|
+| [../tests/run_tests.sh](../tests/run_tests.sh) | **离线台架主入口，22 条用例（T01–T22）**：下载地址一致性、旧仓库名残留、文档一致性、索引行尾、权重校验、主备规则状态、故障转移运行时（timer / systemd unit / 连通性回退 / 权重翻转 / 离线安装 / `--help`） | `bash tests/run_tests.sh`；`--only T10,T14` 只跑指定用例，`--repeat 3` 连跑 3 轮校验一致性，`--list` 列出编号，`--clean` 跑完删沙箱 |
+| [../tests/test_active_standby.sh](../tests/test_active_standby.sh) | 权重含 0 自动进主备、按权重选主、故障切换、全挂兜底、权重全 > 0 时反向切回轮询 | `bash tests/test_active_standby.sh` |
+| [../tests/test_connectivity.sh](../tests/test_connectivity.sh) | TCP 探测行为、缺 `nc` 时的 `/dev/tcp` 回退、两份探测实现（`lib/health.sh` 与生成的 `health_check.sh`）是否一致 | `bash tests/test_connectivity.sh` |
+| [../tests/test_e2e.sh](../tests/test_e2e.sh) | 主备 + 剔除两种故障转移模式的 11 个端到端场景，断言最终生成的 realm `balance` 字段 | `bash tests/test_e2e.sh` |
+| [../tests/test_set_u.sh](../tests/test_set_u.sh) | `set -u` 下关联数组未定义键的健壮性（避免 `config.json` 被写成空、realm 起不来） | `bash tests/test_set_u.sh` |
+| [../tests/README.md](../tests/README.md) | 上面 4 个独立脚本的逐项覆盖点与断言说明 | 直接读 |
+| [../tests/TEST-HARNESS.md](../tests/TEST-HARNESS.md) | 离线台架的目录结构、沙箱与外部依赖打桩机制、越界扫描 | 直接读 |
+
+> 断言的是**真实实现的行为**（例如 `generate_endpoints_from_rules` 真正生成的 `balance` 字段），
+> 不是中间变量 —— 所以覆盖的是「规则文件 → realm 配置」整条链路。
+
+---
+
 ## 文档当前状态
 
-本目录文档以**实现**为准（命令、参数、默认值、文件路径均逐条对照源码，并标注 `文件:行号`）。
+本目录文档以**实现**为准：命令、参数、默认值、文件路径逐条对照源码，
+并按**函数名**定位（写法见上文「文档与源码的对应」）。
 
-有两处**并行进行中**的改动，文档已按当前工作区状态描述，但相关提交尚未落地：
+已落地的关键实现：
 
-- `lib/health.sh` 正在从 `xwFailover.sh` 抽出，**尚未落盘**；在此之前健康检查脚本仍由
-  `xwFailover.sh` 内联生成
-- 健康检查探测已增加 `bash /dev/tcp` 回退；`lib/realm.sh` 的主备优先级判定已改为按权重排序
-  —— 这两处改动目前只在工作区，**尚未提交**
+- 健康检查逻辑已抽到 `lib/health.sh`（**唯一真源**），`xwFailover.sh` 只负责加载、不再重复实现；
+  `xwPF.sh` 的 `LIB_FILES` 已包含 `health.sh`，`pf install` 会一并安装
+- 健康检查探测优先走 `nc -z -w`；缺 `nc`（或 `nc` 不支持 `-z`，如 busybox）时回退 `bash /dev/tcp`
+- 主备选主按权重优先级：权重含 0 时按权重从高到低排，同权重保持原始顺序
 
 对应章节：
 
 - [健康检查与故障转移 §0](health-check-and-failover.md#0--唯一真源约定)
 - [健康检查与故障转移 §3](health-check-and-failover.md#3-探测方式)
-- [健康检查与故障转移 §9](health-check-and-failover.md#9-待验证项)
+- [健康检查与故障转移 §9](health-check-and-failover.md#9-已知边界)
 - [端口组与权重 §5.3](port-groups-and-weights.md#53-主备优先级与权重的关系)
 - [端口组与权重 §7](port-groups-and-weights.md#7-已知边界)
