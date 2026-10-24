@@ -10,6 +10,11 @@
 - `FAILOVER_ENABLED=true`
 - 顺序：10.0.0.1 为主，10.0.0.2 为备1，10.0.0.3 为备2
 
+> **术语口径**：本文的「主备」= **规则级权重主备** —— 同一个端口组内的多个目标之间，
+> 靠健康检查翻转权重来切换（主故障切备、主恢复切回），**没有独立进程**。
+> 它**不是**已下线的「进程级主备池」（另一个进程自己持有监听口转发的那一套）——
+> 后者已随 2026-10-24 的删除整块下线。
+
 ## 核心规则
 
 - 所有目标始终保留在 `extra_remotes` 列表里（健康检查独立探测，不依赖权重）。
@@ -115,7 +120,7 @@
 | `lib/realm.sh` | `generate_endpoints_from_rules` | 故障转移过滤主备分支：保留所有目标 + 翻转 0/1 权重；并把 `active-standby` 映射为 `roundrobin` 输出给 realm |
 | `xwFailover.sh` | `toggle_failover_mode` | 开启故障转移时选择剔除 / 主备模式（提示条件含"主备"） |
 | `lib/health.sh` | `check_connectivity` | 健康检查的 TCP 探测（`nc` 优先，`bash /dev/tcp` 回退） |
-| `lib/health.sh` | `health_check_script_body` | 生成独立的 `health_check.sh`（内含一份同源的探测副本，改动需两处同步） |
+| `lib/health.sh` | `health_check_script_body` | 生成独立的 `health_check.sh`（探测实现由 `lib/health.sh` 的 `health_emit_function` 原样抽取注入，与真源逐字一致，无需手工同步） |
 | `lib/health.sh` | `start_health_check_service` | 生成 `realm-health-check.service` / `.timer` 并启停 |
 | `lib/health.sh` | `stop_health_check_service` | 停止并清理健康检查服务 |
 
@@ -150,6 +155,6 @@
 另外还有：
 
 - `tests/test_active_standby.sh` —— 权重含 0 自动进主备、选主、故障切换、兜底、反向切回
-- `tests/test_connectivity.sh` —— TCP 探测与 `/dev/tcp` 回退，以及两份探测实现的一致性
+- `tests/test_connectivity.sh` —— TCP 探测与 `/dev/tcp` 回退，以及探测真源与生成物是否逐字一致
 
 完整台架索引见 [文档索引 · 测试台架](README.md#测试台架索引)。

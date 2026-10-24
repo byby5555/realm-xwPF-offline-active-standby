@@ -8,34 +8,7 @@
 #   - 权重超出 0-10 必须被拒绝
 #   - 权重 1,0,0 → 规则里 BALANCE_MODE=active-standby、FAILOVER_ENABLED=true
 
-# 在沙箱里 source 产品代码，执行一个函数，返回 rc + 输出
-# 用法：_run_in_sandbox <bash 代码片段> [额外参数...]
-_run_in_sandbox() {
-    local code="$1"
-    shift
-    bash -c "$code" _ "$SBX_RUN" "$@" 2>&1
-}
-
-# 造一条规则文件（沙箱内）
-_make_rule() {
-    local file="$1" port="${2:-8080}" mode="${3:-roundrobin}" failover="${4:-false}" weights="${5:-1,0,0}" hosts="${6:-10.0.0.1,10.0.0.2,10.0.0.3}"
-    mkdir -p "$(dirname "$file")"
-    cat > "$file" <<EOF
-RULE_ID=1
-RULE_ROLE=1
-RULE_NAME=rule-test
-SECURITY_LEVEL=standard
-LISTEN_PORT=$port
-LISTEN_IP=0.0.0.0
-THROUGH_IP=::
-REMOTE_HOST=$hosts
-REMOTE_PORT=8080
-ENABLED=true
-BALANCE_MODE="$mode"
-FAILOVER_ENABLED="$failover"
-WEIGHTS="$weights"
-EOF
-}
+# 公共工具在 00_common.sh（_run_in_sandbox / _make_rule ...）
 
 case_T10_weight_valid() {
     h_case_begin "T10" "权重 1,0,0 合法" \
@@ -152,7 +125,48 @@ case_T14_active_standby_rule_state() {
     h_check_file_has "$rule" 'HEALTH_CHECK_INTERVAL="4"' "HEALTH_CHECK_INTERVAL"
     h_check_file_has "$rule" 'FAILURE_THRESHOLD="2"' "FAILURE_THRESHOLD"
     h_check_file_has "$rule" 'SUCCESS_THRESHOLD="2"' "SUCCESS_THRESHOLD"
-    h_check_file_has "$rule" 'CONNECTION_TIMEOUT="3"' "CONNECTION_TIMEOUT"
+    # CONNECTION_TIMEOUT 的期望值**从产品自己声明的默认值抽**
+    #   原因：探测预算 3s → 10s 是**产品侧**改动（check_connectivity 默认值 /
+    #   lib/health.sh 的 ${CONNECTION_TIMEOUT:-N} / 规则模板默认值）。
+    #   台架写死 "3" → 产品改一次就红一次（假红），而且红的原因会被误读成「台架坏了」。
+    local ct_def
+    ct_def=$(sed -n 's/.*_ensure_rule_field_default[^"]*"CONNECTION_TIMEOUT"[^"]*"\([0-9]\+\)".*/\1/p' "$SBX_SRC/lib/rules.sh" 2>/dev/null | head -1)
+    [ -z "$ct_def" ] && ct_def=$(sed -n 's/.*CONNECTION_TIMEOUT:-\([0-9]\+\).*/\1/p' "$SBX_SRC/lib/health.sh" 2>/dev/null | head -1)
+    if [ -z "$ct_def" ]; then
+        h_log "抽不到产品声明的 CONNECTION_TIMEOUT 默认值 → 退回区间断言（1..30）"
+        local ct_val
+        ct_val=$(sed -n 's/^CONNECTION_TIMEOUT="\([0-9]\+\)".*/\1/p' "$rule" 2>/dev/null | head -1)
+        if [ -n "$ct_val" ] && [ "$ct_val" -ge 1 ] && [ "$ct_val" -le 30 ]; then
+            h_pass "CONNECTION_TIMEOUT=$ct_val 在 1..30 区间内"
+        else
+            h_fail "CONNECTION_TIMEOUT 取不到或不在 1..30 区间（值=<$ct_val>）"
+        fi
+    else
+        h_log "产品声明的 CONNECTION_TIMEOUT 默认值 = $ct_def"
+        # ★ 断言方向（Chief 复核口径 + 产品真实契约）：
+        #   产品的 `_ensure_rule_field_default` 是「**缺字段时**补默认值」，**不覆盖已有值**。
+        #   所以「规则里 CONNECTION_TIMEOUT == 产品默认值」这条断言只有在**字段缺失**时才成立
+        #   —— 拿夹具里已写着 CONNECTION_TIMEOUT="3" 的规则去比，必然红，而且红的原因会被
+        #   误读成「产品没写默认值」。分两段验，缺一不可：
+        #     ① 已有值路径（当前规则）：产品**不得**覆盖运维已设的值 → 必须还是 3。
+        #     ② 缺字段路径：把该字段删掉再跑一次 → 产品必须补上**它自己声明**的默认值。
+        #   ★ 期望值仍从产品声明里抽 → 产品改默认值，台架不用改（不会假红）。
+        h_check_file_has "$rule" 'CONNECTION_TIMEOUT="3"' \
+            "CONNECTION_TIMEOUT（已有值时不得被默认值覆盖：夹具写的 3 必须保持 3）"
+
+        # ② 缺字段路径：删掉该字段 → 再跑一次 auto_enable_active_standby
+        sed -i '/^CONNECTION_TIMEOUT=/d' "$rule"
+        _run_in_sandbox '
+            source "$1/lib/core.sh" >/dev/null 2>&1
+            source "$1/lib/rules.sh" >/dev/null 2>&1
+            auto_enable_active_standby 8080 >/dev/null 2>&1
+        ' >/dev/null
+        local ct_after
+        ct_after=$(sed -n 's/^CONNECTION_TIMEOUT="\([0-9]\+\)".*/\1/p' "$rule" 2>/dev/null | head -1)
+        h_log "删掉字段后重跑，规则里的 CONNECTION_TIMEOUT = ${ct_after:-<取不到>}"
+        h_check_file_has "$rule" "CONNECTION_TIMEOUT=\"$ct_def\"" \
+            "CONNECTION_TIMEOUT（缺字段时必须补上产品自己声明的默认值）"
+    fi
     h_check_file_has "$rule" 'RECOVERY_COOLDOWN="120"' "RECOVERY_COOLDOWN"
 }
 

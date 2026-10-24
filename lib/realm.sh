@@ -164,7 +164,7 @@ compare_and_ask_update() {
         return 1
     else
         echo -e "${YELLOW}发现新版本: ${current_ver} → ${latest_version}${NC}"
-        read -p "是否更新到最新版本？(y/n) [默认: n]: " update_choice
+        ui_read_default "是否更新到最新版本？(y/n) [默认: n]: " update_choice
         if [[ ! "$update_choice" =~ ^[Yy]$ ]]; then
             echo -e "${BLUE}使用现有的 realm 安装${NC}"
             return 1
@@ -240,7 +240,7 @@ install_realm() {
 
     # 离线安装选项
     local download_file=""
-    read -p "离线安装realm输入完整路径(回车默认自动下载): " local_package_path
+    ui_read_default "离线安装realm输入完整路径(回车默认自动下载): " local_package_path
     
     if [ -n "$local_package_path" ] && [ -f "$local_package_path" ]; then
         echo -e "${GREEN}✓ 使用本地文件: $local_package_path${NC}"
@@ -250,32 +250,17 @@ install_realm() {
             echo -e "${RED}✗ 文件不存在，继续在线下载${NC}"
         fi
         
-        ARCH=$(uname -m)
-        # 检测 libc 类型（Alpine 使用 musl）
-        local libc_suffix="gnu"
-        if [ -f /etc/alpine-release ]; then
-            libc_suffix="musl"
+        # 架构型号 → 官方资产名（与更新中心共用 detect_realm_asset_name，不会两边对不上）
+        local asset_name
+        asset_name=$(detect_realm_asset_name)
+        if [ -z "$asset_name" ]; then
+            echo -e "${RED}不支持的CPU架构: $(uname -m)${NC}"
+            echo -e "${YELLOW}支持的架构: x86_64, aarch64, armv7l${NC}"
+            exit 1
         fi
 
-        case $ARCH in
-            x86_64)
-                ARCH="x86_64-unknown-linux-${libc_suffix}"
-                ;;
-            aarch64)
-                ARCH="aarch64-unknown-linux-${libc_suffix}"
-                ;;
-            armv7l|armv6l|arm)
-                ARCH="armv7-unknown-linux-gnueabihf"
-                ;;
-            *)
-                echo -e "${RED}不支持的CPU架构: ${ARCH}${NC}"
-                echo -e "${YELLOW}支持的架构: x86_64, aarch64, armv7l${NC}"
-                exit 1
-                ;;
-        esac
-
-        DOWNLOAD_URL="https://github.com/zhboner/realm/releases/download/${LATEST_VERSION}/realm-${ARCH}.tar.gz"
-        echo -e "${BLUE}目标文件: realm-${ARCH}.tar.gz${NC}"
+        DOWNLOAD_URL="https://github.com/zhboner/realm/releases/download/${LATEST_VERSION}/${asset_name}"
+        echo -e "${BLUE}目标文件: ${asset_name}${NC}"
 
         local file_path="$(pwd)/realm.tar.gz"
         local sources=(
@@ -344,20 +329,65 @@ generate_endpoints_from_rules() {
     reorder_rule_ids
 
     # 健康状态读取（直接读取健康状态文件）
+    #
+    # ★ TARGET 字段口径：host:port（与 docs/health-check-and-failover.md 一致）。
+    #   同一个 host 上的不同端口是**不同目标**，状态互不覆盖。
+    # 兼容旧格式：老文件的 TARGET 只有 host —— 按该行 RULE_ID 对应规则的 REMOTE_PORT
+    #   补出端口，入**精确键** host:port。
+    # ★ 认得出归属时**只**入精确键，**不**再存一份裸 host 的宽键：
+    #     宽键会把「一个端口的故障」传播给同 host 的其他端口 —— 同一主备组里
+    #     两个目标都是同 host 不同端口时，两个目标都读到 failed → 全挂兜底
+    #     → 保持原主不切备（该切不切的静默失效）。
+    #   认不出归属（规则已删）时**当无记录**：让健康检查重新探测生成精确键，
+    #     比留一份会跨端口污染的宽键安全。
+    # ★ 读端的状态索引：键 = (RULE_ID, 目标地址) 组合键 —— 与写端
+    #   （lib/health.sh 的 target_key="${RULE_ID}|${target_endpoint}"）同口径。
+    #   为什么不能只按目标地址建键：同一个后端被两条规则共用时，状态文件里
+    #   就有**两行同目标**（各属一条规则），只按地址建键 ⇒ 后读的行覆盖先读的
+    #   ⇒ 两条规则读到**同一个**状态 ⇒ 双向误切：
+    #     · 真实故障被另一条规则的 healthy 掩盖 ⇒ **该切不切**；
+    #     · 健康目标被另一条规则的 failed 拖着切 ⇒ **不该切却切**。
+    #   （两行 status 可以稳定不同：写端的 status 是「累计失败达到**该规则自己的**
+    #   FAILURE_THRESHOLD 才变 failed」⇒ 两条规则阈值不同 ⇒ 两行本来就不同。）
     declare -A health_status
+    # 端口组 → 目标 → **拥有该目标的规则**（读状态时用它拼组合键）
+    #   键 = "<LISTEN_PORT>|<目标地址>"（bash 没有嵌套关联数组，用扁平键）
+    declare -A port_target_rule
     local health_status_file="${HEALTH_STATUS_FILE}"
 
-    if [ -f "$health_status_file" ]; then
-        while read -r line; do
-            # 跳过注释行和空行
-            [[ "$line" =~ ^#.*$ ]] && continue
-            [[ -z "$line" ]] && continue
+    # 规则 ID → 远端端口（给旧格式的 TARGET 补端口用）
+    declare -A rule_remote_port
+    local _rf
+    for _rf in "${RULES_DIR}"/rule-*.conf; do
+        if [ -f "$_rf" ] && read_rule_file "$_rf"; then
+            if [ "$RULE_ROLE" = "1" ] && [ -n "$RULE_ID" ] && [ -n "$REMOTE_PORT" ]; then
+                rule_remote_port["$RULE_ID"]="$REMOTE_PORT"
+            fi
+        fi
+    done
 
-            # 解析格式: RULE_ID|TARGET|STATUS|...
-            if [[ "$line" =~ ^[0-9]+\|([^|]+)\|([^|]+)\| ]]; then
-                local host="${BASH_REMATCH[1]}"
-                local status="${BASH_REMATCH[2]}"
-                health_status["$host"]="$status"
+    if [ -f "$health_status_file" ]; then
+        while IFS='|' read -r _row_rule_id _row_target _row_status _row_rest; do   # xwpf:noninteractive-io（输入来自健康状态文件）
+            # 跳过注释行和空行
+            [[ "$_row_rule_id" =~ ^#.*$ ]] && continue
+            [[ -z "$_row_rule_id" ]] && continue
+            [ -z "$_row_target" ] && continue
+            [ -z "$_row_status" ] && continue
+
+            if [[ "$_row_target" != *:* ]]; then
+                # 旧格式：TARGET 只有 host → 用该行 RULE_ID 对应规则的 REMOTE_PORT 补出端口。
+                # 认得出归属 → **只**入精确键 host:port（同 host 不同端口因此互不覆盖）。
+                # ★ 不存裸 host 的宽键：宽键会把一个端口的故障传播给同 host 的其他端口
+                #   （同一主备组里两个目标同 host 不同端口时 → 两个都判 failed →
+                #    全挂兜底 → 保持原主不切备 → 该切不切的静默失效）。
+                # 认不出归属（规则已删、行号式的老记录）→ **当无记录**，
+                #   让健康检查下一轮重新探测、生成精确键；比留宽键安全。
+                local _row_port="${rule_remote_port[$_row_rule_id]:-}"
+                if [ -n "$_row_port" ]; then
+                    health_status["${_row_rule_id}|${_row_target}:${_row_port}"]="$_row_status"
+                fi
+            else
+                health_status["${_row_rule_id}|${_row_target}"]="$_row_status"
             fi
         done < "$health_status_file"
     fi
@@ -408,7 +438,10 @@ generate_endpoints_from_rules() {
                     targets_to_add="$FORWARD_TARGET"
                 else
                     # 中转服务器：优先使用TARGET_STATES，否则使用REMOTE_HOST
-                    if [ "$BALANCE_MODE" != "off" ] && [ -n "$TARGET_STATES" ]; then
+                    # 双保险：read_rule_file 已保证这两个键有值（缺失回落空串），
+                    # 这里再给默认值 —— 免得解析器将来被改坏时，
+                    # 「走 TARGET_STATES 还是 REMOTE_HOST」这个判定点在 set -u 下致命中断。
+                    if [ "${BALANCE_MODE:-}" != "off" ] && [ -n "${TARGET_STATES:-}" ]; then
                         # 负载均衡模式且有TARGET_STATES，使用TARGET_STATES
                         targets_to_add="$TARGET_STATES"
                     else
@@ -442,6 +475,17 @@ generate_endpoints_from_rules() {
                             else
                                 port_groups[$port_key]="${port_groups[$port_key]:-},$target"
                             fi
+                        fi
+                        # ★ 记录「这个目标在本端口组里归哪条规则」——读状态时用它拼组合键。
+                        #   端口组的目标列表是**跨规则合并**的（同一个目标只留一份），
+                        #   但状态文件里**每条规则各自有一行**（写端按 RULE_ID|目标 各写一行）。
+                        #   ⇒ 归属必须唯一确定：否则读端会把 A 规则的状态算到 B 规则头上
+                        #     （同后端被两条规则共用时 ⇒ 两行塌成一行 ⇒ 双向误切）。
+                        #   口径：**先声明者为准**（与端口组目标列表的合并口径一致：
+                        #   端口组的权重与顺序都按合并后的列表算，归属跟着同一个顺序走）。
+                        local _own_key="${port_key}|${target}"
+                        if [ -z "${port_target_rule[$_own_key]:-}" ]; then
+                            port_target_rule[$_own_key]="$RULE_ID"
                         fi
                     done
                 fi
@@ -479,7 +523,8 @@ generate_endpoints_from_rules() {
                 # （健康检查对所有目标独立探测，不依赖权重，因此列表需保持 REMOTE_HOST 原始顺序）
                 #
                 # 主备优先级：按用户在「权重配置管理」里填的权重从高到低排列，
-                # 权重大的目标当主、权重 0 的目标当备。
+                # 权重数值大的排在前（权重表示优先级，不是分流比例）；
+                # 同一时刻只有一个主承接流量，权重 0 的目标不参与主备。
                 #   例："10,0" → 第一个是主、第二个是备
                 #       "0,10" → 第二个是主
                 # 权重相同则保持原始顺序（稳定排序）。
@@ -515,8 +560,19 @@ generate_endpoints_from_rules() {
                 # 按优先级找第一个健康目标作为主
                 local primary_target=""
                 for _t in "${priority_targets[@]}"; do
-                    local _host="${_t%:*}"
-                    if [ "${health_status[$_host]:-healthy}" != "failed" ]; then
+                    # ★ 按 **(归属规则, 目标地址) 组合键**查状态：
+                    #   · 同 host 不同端口互不影响；
+                    #   · 同后端被两条规则共用时，各看各的那一行（**不塌缩**）
+                    #     —— 塌缩会让「真挂了的不切」「健康的被拖着切」两个方向都误切。
+                    #   查不到 = 无记录 = 视为健康（由健康检查重新探测生成精确键）
+                    local _own_key="${port_key}|${_t}"
+                    local _own_rule="${port_target_rule[$_own_key]:-}"
+                    local _st=""
+                    if [ -n "$_own_rule" ]; then
+                        local _st_key="${_own_rule}|${_t}"
+                        _st="${health_status[$_st_key]:-}"
+                    fi
+                    if [ "$_st" != "failed" ]; then
                         primary_target="$_t"
                         break
                     fi
@@ -565,8 +621,15 @@ generate_endpoints_from_rules() {
                 # 记录健康节点的索引位置
                 for i in "${!all_targets[@]}"; do
                     local target="${all_targets[i]}"
-                    local host="${target%:*}"
-                    local node_status="${health_status[$host]:-healthy}"
+                    # ★ 按 **(归属规则, 目标地址) 组合键**查状态（口径同上）
+                    #   查不到 = 无记录 = 视为健康（由健康检查重新探测生成精确键）
+                    local _own_key="${port_key}|${target}"
+                    local _own_rule="${port_target_rule[$_own_key]:-}"
+                    local node_status=""
+                    if [ -n "$_own_rule" ]; then
+                        local _st_key="${_own_rule}|${target}"
+                        node_status="${health_status[$_st_key]:-}"
+                    fi
 
                     if [ "$node_status" != "failed" ]; then
                         if [ -n "$filtered_targets" ]; then
@@ -653,6 +716,31 @@ generate_endpoints_from_rules() {
         local main_host="${main_target%:*}"
         local main_port="${main_target##*:}"
 
+        # ★ A-17 护栏（构造期 · 纯 bash，不依赖 jq）：
+        #   目标地址与策略名是**从规则文件带出来的**（规则文件可以被人手改），
+        #   而它们会被直接拼进 config.json 的 JSON 字面量里：
+        #     · 目标里带引号 / 反斜杠 / 空格 / 花括号 ⇒ JSON 破掉
+        #     · 策略名带冒号 ⇒ balance 变成 "xxx: 1: 1"
+        #   两种形态都会让 realm 解析失败 ⇒ panic ⇒ **整个 realm 挂掉 ⇒ 全站断流**
+        #   ⇒ 形态不合法就**不生成**（保留原配置）。
+        local _shape_bad=""
+        local _ti
+        for _ti in "${targets[@]}"; do
+            if ! printf '%s' "$_ti" | grep -qE '^[^"\\{},[:space:]]+$'; then
+                _shape_bad="目标地址形态非法: ${_ti}"
+                break
+            fi
+        done
+        if [ -z "$_shape_bad" ] && [ -n "$balance_mode" ] \
+            && ! printf '%s' "$balance_mode" | grep -qE '^[A-Za-z][A-Za-z0-9_-]*$'; then
+            _shape_bad="负载均衡策略名形态非法: ${balance_mode}"
+        fi
+        if [ -n "$_shape_bad" ]; then
+            echo -e "${RED}✗ ${_shape_bad}（端口组 ${port_key}）${NC}" >&2
+            echo -e "${RED}  该值会被直接拼进 config.json ⇒ realm 解析失败会崩溃（整个 realm 挂掉 ⇒ 全站断流）${NC}" >&2
+            return 1
+        fi
+
         # 构建extra_remotes
         local extra_remotes=""
         if [ ${#targets[@]} -gt 1 ]; then
@@ -701,6 +789,19 @@ generate_endpoints_from_rules() {
                     fi
                     weight_config="${weight_config}1"
                 done
+            fi
+
+            # ★ A-17 护栏：balance 的权重个数必须 == 目标数
+            #   对不上 ⇒ realm 解析 balance 时 panic ⇒ 整个 realm 挂掉 ⇒ 全站断流
+            #   （两条路径都保证相等：主备路径按目标顺序重生成 0/1；
+            #     剔除模式按保留下来的目标下标切权重）
+            local _wcount _tcount
+            _tcount="${#targets[@]}"
+            _wcount=$(printf '%s' "$weight_config" | tr ',' '\n' | grep -c '[^[:space:]]' || true)
+            if [ "$_wcount" -ne "$_tcount" ]; then
+                echo -e "${RED}✗ 权重个数（${_wcount}）与目标数（${_tcount}）不一致（端口组 ${port_key}）${NC}" >&2
+                echo -e "${RED}  balance 形态非法 ⇒ realm 解析时 panic（整个 realm 挂掉 ⇒ 全站断流）${NC}" >&2
+                return 1
             fi
 
             # 主备模式（active-standby）映射为 roundrobin 输出给 realm
@@ -903,7 +1004,10 @@ generate_realm_config() {
 
     if [ "$has_rules" = false ]; then
         echo -e "${BLUE}未找到启用的规则，生成空配置${NC}"
-        generate_complete_config ""
+        if ! generate_complete_config ""; then
+            echo -e "${RED}✗ 空配置未写入（已保留原配置）${NC}"
+            return 1
+        fi
         echo -e "${GREEN}✓ 空配置文件已生成${NC}"
         return 0
     fi
@@ -912,10 +1016,22 @@ generate_realm_config() {
     echo -e "${BLUE}找到 $enabled_count 个启用的规则，生成多规则配置${NC}"
 
     # 获取所有启用规则的endpoints
-    local endpoints=$(generate_endpoints_from_rules)
+    # ★ 端点生成失败（形态自检没过）时**必须把失败传上去**：
+    #   local var=$(cmd) 会把退出码吃掉（local 自己返回 0）
+    #   ⇒ 那样就会在生成失败后照样打「✓ 配置文件已生成」。
+    local endpoints
+    if ! endpoints=$(generate_endpoints_from_rules); then
+        echo -e "${RED}✗ 端点生成失败（已保留原配置）${NC}"
+        return 1
+    fi
 
     # 使用统一模板生成多规则配置
-    generate_complete_config "$endpoints"
+    # ★ 形态校验不通过时**不写**（保留原配置）→ 这里必须把失败传上去，
+    #   不能照样打「✓ 配置文件已生成」（那是在骗人）。
+    if ! generate_complete_config "$endpoints"; then
+        echo -e "${RED}✗ 配置文件未写入（已保留原配置）${NC}"
+        return 1
+    fi
 
     echo -e "${GREEN}✓ 多规则配置文件已生成${NC}"
     echo -e "${BLUE}配置详情: $enabled_count 个启用的转发规则${NC}"
@@ -1013,7 +1129,7 @@ smart_install() {
 
     # 脚本更新（首次安装跳过，菜单进入则询问）
     if [ "${_SKIP_SCRIPT_UPDATE:-}" != "1" ]; then
-        read -p "是否更新脚本？(y/N): " update_script
+        ui_read_default "是否更新脚本？(y/N): " update_script
         [[ "$update_script" =~ ^[Yy]$ ]] && _bootstrap
     fi
 
@@ -1021,6 +1137,33 @@ smart_install() {
     if install_realm; then
         echo -e "${GREEN}=== 安装完成！ ===${NC}"
         echo -e "${YELLOW}输入快捷命令 ${GREEN}pf${YELLOW} 进入脚本交互界面${NC}"
+
+        # ★ 用真源重新生成健康探测端产物（唯一真源 = lib/health.sh）
+        #   菜单里「安装服务」走的是本函数，**不经过 xwPF.sh install** ——
+        #   不在这里重生成，机器上跑的就还是旧产物 = 探测端静默失效
+        #   （日志照样每 4 秒打「健康检查完成」，状态却停在几小时前）。
+        # ★ 这里也是**首次安装** → 同样 fail fast（Chief 裁定）：
+        #   装完但探测端是坏的 = 主备切换不可用 = 用户以为装好了。
+        #   ⇒ 失败则中断安装（返回非 0，由调用方决定怎么退出）。
+        if declare -F health_check_script_regenerate >/dev/null 2>&1; then
+            if health_check_script_regenerate; then
+                echo -e "${GREEN}✓ 健康检查脚本已按真源重新生成${NC}"
+            else
+                echo -e "${RED}✗ 重新生成健康检查脚本失败：/etc/realm/health/health_check.sh 仍是旧产物${NC}"
+                echo -e "${RED}  健康探测不可用 → 权重 10,0 主备的切换不可用${NC}"
+                echo -e "${RED}  （探测端不再更新状态文件 → 该切不切，且界面看不出来）${NC}"
+                echo -e "${YELLOW}  可执行的修复步骤：${NC}"
+                echo -e "    1) 修好上面的报错原因后，重新执行一次「安装服务」"
+                echo -e "    2) 或手工重生成探测端脚本（需 root）："
+                echo -e "       ${BLUE}sudo bash -c 'source ${LIB_DIR}/health.sh && health_check_script_regenerate'${NC}"
+                # 写日志（写日志本身失败也不影响主流程：函数内部已吞掉所有错误）
+                if declare -F health_regenerate_log_failure >/dev/null 2>&1; then
+                    health_regenerate_log_failure "首次安装（菜单「安装服务」）：/etc/realm/health/health_check.sh 仍是旧产物" || true
+                fi
+                echo -e "${YELLOW}  详细日志：/var/log/xwPF/health-regenerate.log${NC}"
+                return 1
+            fi
+        fi
     else
         echo -e "${RED}错误: realm安装失败${NC}"
         echo -e "${YELLOW}输入快捷命令 ${GREEN}pf${YELLOW} 可进入脚本交互界面${NC}"
@@ -1048,11 +1191,34 @@ service_restart() {
         echo -e "${GREEN}✓ 规则排序优化完成${NC}"
     fi
 
+    # ★ 改动前先备份当前配置（A-17 护栏的回滚点）
+    #   万一新配置让 realm 崩了（panic ⇒ 全站断流），要能退回去。
+    local _cfg_prev=""
+    if [ -f "$CONFIG_PATH" ]; then
+        _cfg_prev="${CONFIG_PATH}.prev"
+        cp -f "$CONFIG_PATH" "$_cfg_prev" 2>/dev/null || _cfg_prev=""
+    fi
+
     # 重新生成配置文件
     echo -e "${BLUE}重新生成配置文件...${NC}"
-    generate_realm_config
+    if ! generate_realm_config; then
+        echo -e "${RED}✗ 配置生成失败（已保留原配置，realm 未重启）${NC}"
+        return 1
+    fi
 
     if svc_restart; then
+        # ★ A-17 判据 2（红线）：**不能只看「配置生成成功」**
+        #   必须确认 realm 重启后真的活着 —— 配置形态非法 ⇒ realm panic ⇒ 全站断流。
+        if ! svc_is_active; then
+            echo -e "${RED}✗ Realm 重启后未处于 active 状态（配置可能让 realm 崩溃）${NC}"
+            if [ -n "$_cfg_prev" ] && [ -f "$_cfg_prev" ]; then
+                if cp -f "$_cfg_prev" "$CONFIG_PATH" 2>/dev/null && svc_restart >/dev/null 2>&1; then
+                    echo -e "${YELLOW}  已回滚到改动前的配置并重启${NC}"
+                fi
+            fi
+            svc_status_detail
+            return 1
+        fi
         echo -e "${GREEN}✓ Realm 服务重启成功${NC}"
     else
         echo -e "${RED}✗ Realm 服务重启失败${NC}"

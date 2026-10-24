@@ -58,6 +58,28 @@ h_check_eq() {
     return 1
 }
 
+# 大于等于断言（用于「防空过护栏」：命中数太少说明解析器坏了，不是结论为真）
+h_check_ge() {
+    local floor="$1" actual="$2" desc="$3"
+    if [ "$actual" -ge "$floor" ] 2>/dev/null; then
+        h_pass "$desc = $actual（≥ $floor）"
+        return 0
+    fi
+    h_fail "$desc 期望 ≥ $floor，实际 $actual"
+    return 1
+}
+
+# 小于等于断言（用于「白名单不得超过 N 条」这类上限约束）
+h_check_le() {
+    local ceiling="$1" actual="$2" desc="$3"
+    if [ "$actual" -le "$ceiling" ] 2>/dev/null; then
+        h_pass "$desc = $actual（≤ $ceiling）"
+        return 0
+    fi
+    h_fail "$desc 期望 ≤ $ceiling，实际 $actual"
+    return 1
+}
+
 # 包含断言
 h_check_contains() {
     local haystack="$1" needle="$2" desc="$3"

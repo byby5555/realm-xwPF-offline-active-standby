@@ -71,11 +71,14 @@ BLUE='\033[0;34m'
 WHITE='\033[1;37m'
 NC='\033[0m'
 
-REALM_PATH="/usr/local/bin/realm"
-CONFIG_DIR="/etc/realm"
+REALM_PATH="${REALM_PATH:-/usr/local/bin/realm}"
+CONFIG_DIR="${CONFIG_DIR:-/etc/realm}"
 CONFIG_PATH="${CONFIG_DIR}/config.json"
 SYSTEMD_PATH="/etc/systemd/system/realm.service"
 RULES_DIR="${CONFIG_DIR}/rules"
+# 安装目录（xwPF.sh 会先定义 INSTALL_DIR，这里给默认值，测试可注入）
+INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
+LIB_DIR="${LIB_DIR:-${INSTALL_DIR}/lib}"
 # 健康状态文件：故障转移的探测结果落盘处（主备切换据此翻转权重）
 # 用变量统一，避免各处硬编码路径不一致（lib/rules.sh 之前引用过未定义的 $HEALTH_STATUS_FILE）
 HEALTH_STATUS_FILE="${HEALTH_STATUS_FILE:-${CONFIG_DIR}/health/health_status.conf}"
@@ -104,6 +107,73 @@ is_valid_port() {
     [[ "$port" =~ ^[0-9]+$ ]] || return 1
     [ "$port" -ge 1 ] && [ "$port" -le 65535 ]
 }
+
+# === 交互菜单读入：stdin EOF 安全（无人值守场合的硬要求）===
+# ★ 交互菜单若直接用 `read`，在 stdin 是 EOF 时（管道 / 后台 / cron / systemd /
+#   无人值守执行 / 终端关闭）`read` 会立刻返回非 0 → 变量为空 → case 不匹配 →
+#   回到 while 顶部 → 无限重绘 + 忙循环 + 无界输出。
+#   实机后果：/tmp 是 tmpfs，无界输出灌满它 → 内存+swap 耗尽 → sshd 握不上手。
+#   修法：菜单读入统一走下面几个 helper，读到 EOF 绝不回到菜单循环顶部。
+#
+# ★ 三种读入语义（按「EOF 之后该做什么」区分，别混用）：
+#   ui_read_into    —— 菜单读入。EOF → 立刻干净退出（退出码 0）。
+#   ui_pause        —— 「按回车键继续」类。EOF → 立刻干净退出（退出码 0）。
+#   ui_read_default —— 一次性询问。EOF → **不退出**，取默认值并返回 1
+#                      （给安装流程等可能被无人值守触发的路径用：那里 EOF 是常态，
+#                        当成错误把流程打断会变成「静默空跑」）。
+#
+# ★ 本块在 lib/core.sh 与 3 个独立脚本（xwFailover.sh / port-traffic-dog.sh /
+#   speedtest.sh）里各有一份。独立脚本是**独立安装单元**、拿不到 lib/，
+#   所以「一份实现」只能是「四份逐字一致的拷贝」——
+#   台架把「份数 == 4 且四份逐字一致」钉成不变式，任何漂移都判红。
+#
+# 用法：ui_read_into "提示语" 变量名   —— 把读到的内容放进指定变量
+ui_read_into() {
+    local __prompt="$1" __name="$2" __val
+    if ! read -r -p "$__prompt" __val; then
+        # EOF / 读失败：干净退出，不回菜单循环
+        exit 0
+    fi
+    printf -v "$__name" '%s' "$__val"
+}
+
+# 用法：ui_pause "提示语"   —— 「按回车键继续 / 返回」类读入
+ui_pause() {
+    read -p "$1" || exit 0
+}
+
+# 用法：ui_read_default "提示语" 变量名 [默认值]
+#   读到 EOF 时把变量置成默认值（缺省空串）并返回 1，由调用方决定分支。
+ui_read_default() {
+    local __prompt="$1" __name="$2" __default="${3:-}" __val=""
+    if ! read -r -p "$__prompt" __val; then
+        printf -v "$__name" '%s' "$__default"
+        return 1
+    fi
+    printf -v "$__name" '%s' "$__val"
+    return 0
+}
+
+# 用法：ui_require_tty   —— 菜单入口护栏：stdin 不是终端就不进菜单
+ui_require_tty() {
+    if [ ! -t 0 ]; then
+        echo -e "${YELLOW}检测到标准输入不是终端（管道 / 后台 / 无人值守执行），已退出交互菜单。${NC}"
+        echo "Interactive menu requires a terminal on stdin; exiting."
+        exit 0
+    fi
+}
+
+# 用法：ui_clear   —— 清屏。TERM 没设时 `clear` 会往 stderr 吐
+#   "TERM environment variable not set." 并返回非 0（无人值守时输出更难看），
+#   所以自己兜底：TERM 正常用 clear，缺失或 dumb 用 ANSI 序列。
+ui_clear() {
+    if [ -n "${TERM:-}" ] && [ "${TERM}" != "dumb" ]; then
+        clear 2>/dev/null || printf '\033[H\033[2J'
+    else
+        printf '\033[H\033[2J'
+    fi
+}
+
 
 # 打印用法说明（--help / -h / help）
 show_usage() {
@@ -139,6 +209,64 @@ generate_network_config() {
     echo "$base_network"
 }
 
+# 校验 realm 配置文件的形态（A-17 护栏）
+#
+# ★ 为什么必须有这道护栏（Chief 真机 103 实测）：
+#   config.json 里 "remote" 写成**数组**、或 "balance" **不带权重**
+#   ⇒ realm 直接 panic（realm_lb 的 balancer.rs）
+#   ⇒ 不是只断那一个 endpoint，是**所有 endpoint 全断**（全站断流）。
+# ★ 判据（A-17 判据 1）：
+#   1) 每个 endpoint 的 remote 必须是 **string**（不是数组）
+#   2) extra_remotes 必须是 **array**（元素都是 string）
+#   3) balance 必须是 string，且形如 "策略: 权重1, 权重2"（**必须带 ": 权重"**）
+#   4) balance 的权重个数 == 目标数（remote 1 个 + extra_remotes 元素数）
+# ★ fail-closed：形态不合法 ⇒ 调用方**不写**（保留原配置）并报错。
+#   宁可配置不更新，也不能写出让 realm 崩掉的配置。
+# ★ 失败原因打到 stdout（调用方转成醒目报错）；成功时 stdout 为空。
+realm_config_shape_validate() {
+    local config_file="$1"
+
+    [ -f "$config_file" ] || { echo "配置文件不存在: $config_file"; return 0; }
+    if ! command -v jq >/dev/null 2>&1; then
+        # ★ jq 不可用 ⇒ **不拦**（这台机器本来就跑不了 realm）。
+        #   真正的拦截在构造期（lib/realm.sh 的形态自检，纯 bash，处处能跑）。
+        echo "jq 不可用，跳过配置形态校验"
+        return 0
+    fi
+
+    local problems
+    problems=$(jq -r 'if (.endpoints | type) != "array" then ["endpoints 必须是数组"]
+else
+  [ .endpoints[] |
+      if (.remote | type) != "string" then "remote 必须是 string"
+      elif (.remote | length) == 0 then "remote 不能为空"
+      elif ((.extra_remotes // []) | type) != "array" then "extra_remotes 必须是数组"
+      elif ((((.extra_remotes // []) | map(type) | unique) - ["string"]) | length) > 0) then "extra_remotes 的元素必须是 string"
+      elif (has("balance") and (.balance != null)) then
+        (if (.balance | type) != "string" then "balance 必须是 string"
+         elif ((.balance | test("^[A-Za-z][A-Za-z0-9_-]*: *[0-9]+(, *[0-9]+)*$")) | not) then "balance 必须形如 策略: 权重1, 权重2"
+         elif ((.balance | split(":")[1] | split(",") | map(gsub("^ +| +$"; "")) | length) != (1 + ((.extra_remotes // []) | length))) then "balance 的权重个数与目标数不一致"
+         else null end)
+      else null end
+  ]
+end
+| map(select(. != null))
+| join("；")' "$config_file" 2>/dev/null)
+    if [ $? -ne 0 ]; then
+        # ★ jq 自己没跑起来（台架的 jq 桩能力不足 / 过滤器不支持 / 文件坏了）
+        #   ⇒ **不拦**，只提示。
+        #   拦在这里 = 「校验器跑不了」变成「配置写不进去」—— 那是更糟的故障。
+        echo "jq 未能完成形态校验（跳过）"
+        return 0
+    fi
+    problems=$(printf '%s' "$problems" | tr -d '\r')
+    if [ -z "$problems" ]; then
+        return 0
+    fi
+    echo "$problems"
+    return 1
+}
+
 generate_complete_config() {
     local endpoints="$1"
     local config_path="${2:-$CONFIG_PATH}"
@@ -148,13 +276,33 @@ generate_complete_config() {
         network_config='{"no_tcp": false, "use_udp": true}'
     fi
 
-    tr -d '\r' > "$config_path" <<EOF
+    # ★ 先写临时文件 → 校验形态 → 通过才原子替换（A-17 护栏）
+    #   形态不合法 ⇒ 删掉临时文件、**保留原配置**、返回非 0。
+    #   原来直接 > 覆盖写：坏配置会立刻落盘 ⇒ realm 重启后 panic ⇒ 全站断流。
+    local tmp_config="${config_path}.tmp.$$"
+    tr -d '\r' > "$tmp_config" <<EOF
 {
     "network": $network_config,
     "endpoints": [$endpoints
     ]
 }
 EOF
+
+    local problem
+    problem=$(realm_config_shape_validate "$tmp_config")
+    if [ $? -ne 0 ]; then
+        rm -f "$tmp_config" 2>/dev/null
+        echo -e "${RED}✗ 配置形态校验失败：本次不写入（保留原配置）${NC}" >&2
+        [ -n "$problem" ] && echo -e "${RED}  原因：${problem}${NC}" >&2
+        return 1
+    fi
+
+    if ! mv -f "$tmp_config" "$config_path" 2>/dev/null; then
+        rm -f "$tmp_config" 2>/dev/null
+        echo -e "${RED}✗ 配置文件写入失败${NC}" >&2
+        return 1
+    fi
+    return 0
 }
 
 check_root() {
@@ -204,6 +352,41 @@ detect_system() {
         echo -e "${RED}错误: 未找到支持的 init 系统${NC}"
         exit 1
     fi
+}
+
+# 按当前 CPU 架构与 libc 推导 realm 官方 release 的安装包名（资产名）
+# 架构「型号」迭代时只改这一处：安装与更新共用同一份映射，不会对不上
+#   x86_64  → realm-x86_64-unknown-linux-{gnu|musl}.tar.gz
+#   aarch64 → realm-aarch64-unknown-linux-{gnu|musl}.tar.gz
+#   armv7   → realm-armv7-unknown-linux-{gnueabihf|musleabihf}.tar.gz
+# 取不到映射时返回空（调用方负责报错）
+detect_realm_asset_name() {
+    local arch libc_suffix="gnu"
+    arch=$(uname -m 2>/dev/null)
+
+    # Alpine 用 musl，其余用 gnu
+    if [ -f /etc/alpine-release ]; then
+        libc_suffix="musl"
+    fi
+
+    case "$arch" in
+        x86_64|amd64)
+            echo "realm-x86_64-unknown-linux-${libc_suffix}.tar.gz"
+            ;;
+        aarch64|arm64)
+            echo "realm-aarch64-unknown-linux-${libc_suffix}.tar.gz"
+            ;;
+        armv7l|armv6l|arm)
+            if [ "$libc_suffix" = "musl" ]; then
+                echo "realm-armv7-unknown-linux-musleabihf.tar.gz"
+            else
+                echo "realm-armv7-unknown-linux-gnueabihf.tar.gz"
+            fi
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
 }
 
 # 统一包安装分发
@@ -362,7 +545,7 @@ check_port_usage() {
     echo -e "${BLUE}占用进程信息:${NC}"
     echo "$output" | sed 's/^/  /'
 
-    read -p "是否继续配置？(y/n): " ans
+    ui_read_default "是否继续配置？(y/n): " ans
     [[ "$ans" =~ ^[Yy]$ ]] || { echo "配置已取消"; exit 1; }
     return 0
 }

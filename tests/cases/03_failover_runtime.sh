@@ -7,78 +7,29 @@
 #   - 没有 nc 的环境下 check_connectivity 应走 bash /dev/tcp 回退，而不是把所有目标判为失败
 #   - 所有功能脚本下载地址都指向 byby5555/realm-xwPF-offline-active-standby
 
-_run_in_sandbox() {
-    local code="$1"
-    shift
-    bash -c "$code" _ "$SBX_RUN" "$@" 2>&1
-}
+# 公共工具在 00_common.sh（_run_in_sandbox / _make_failover_rule / _prepare_failover_runtime / _start_listener ...）
 
-# 造一条启用故障转移的中转规则（沙箱内）
-_make_failover_rule() {
-    local file="$1"
-    mkdir -p "$(dirname "$file")"
-    cat > "$file" <<'EOF'
-RULE_ID=1
-RULE_ROLE=1
-RULE_NAME=rule-test
-SECURITY_LEVEL=standard
-LISTEN_PORT=8080
-REMOTE_HOST=10.0.0.1,10.0.0.2,10.0.0.3
-REMOTE_PORT=8080
-ENABLED=true
-BALANCE_MODE="active-standby"
-FAILOVER_ENABLED="true"
-WEIGHTS="1,0,0"
-HEALTH_CHECK_INTERVAL="4"
-FAILURE_THRESHOLD="2"
-SUCCESS_THRESHOLD="2"
-CONNECTION_TIMEOUT="3"
-RECOVERY_COOLDOWN="120"
-EOF
-}
-
-# 把 xwFailover.sh 和 lib/health.sh 摆到 xwFailover.sh 的加载器会找的位置
-# （xwFailover.sh 依次找 /usr/local/bin/lib/health.sh、/etc/realm/lib/health.sh、$(dirname $0)/lib/health.sh）
-_prepare_failover_runtime() {
-    mkdir -p "$SBX_ROOT/realm/lib" "$SBX_ROOT/usr.local.bin/lib"
-    cp "$SBX_RUN/xwFailover.sh" "$SBX_ROOT/realm/xwFailover.sh"
-    if [ -f "$SBX_RUN/lib/health.sh" ]; then
-        cp "$SBX_RUN/lib/health.sh" "$SBX_ROOT/realm/lib/health.sh"
-        cp "$SBX_RUN/lib/health.sh" "$SBX_ROOT/usr.local.bin/lib/health.sh"
-    fi
-}
-
-# 把 LF 文件转成 CRLF（模拟 Windows 检出）。用 printf '\r\n' 逐行写，避开 sed 的 \r 兼容问题。
-_to_crlf() {
-    local src="$1" dst="$2"
-    while IFS= read -r line || [ -n "$line" ]; do
-        printf '%s\r\n' "$line"
-    done < "$src" > "$dst"
-}
-
-# 起一个本地监听端口（给 /dev/tcp 探测当阳性对照）
-_start_listener() {
-    local port="$1"
-    # 本机 python3 是 WindowsApps 商店占位符，不可用；优先用真实 python
-    local py="" c
-    for c in python python3; do
-        if command -v "$c" >/dev/null 2>&1 && "$c" --version >/dev/null 2>&1; then py="$c"; break; fi
-    done
-    if [ -z "$py" ]; then
-        h_log "找不到可用的 python，无法起本地监听端口"
-        return 1
-    fi
-    "$py" -c "
-import socket, time
-s = socket.socket()
-s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind(('127.0.0.1', $port))
-s.listen(8)
-time.sleep(25)
-" &
-    LISTENER_PID=$!
-    sleep 1.5
-    return 0
+# 从冻结态入口脚本里抽出产品**自己声明**的必装清单
+#   用法：_bootstrap_declared_files <xwPF.sh 路径>
+#   输出：相对安装目录的路径，一行一个（lib/xxx、cmd/xxx）
+#
+# ★ 为什么从产品源码里抽，而不是在用例里写死一份清单：
+#   用户裁定「主备池整块删除」→ 产品正在删掉独立守护进程那套文件
+#   （cmd/xwpf-failover.py / cmd/xwpf-failover.service）。
+#   写死的清单会把「产品已删该文件」误判成「安装缺文件」→ **用例假红**；
+#   反过来写死成「删掉后就不查」又会漏掉真正的安装缺失。
+#   抽产品自己的声明 → 产品加文件、删文件，这条用例都不用改。
+#
+#   抽取口径（对着产品源码核对过）：
+#     · LIB_FILES=(...)            → lib/ 下的模块
+#     · 下载 cmd/ 的那个 for 循环   → cmd/ 下的文件（按 .py/.service 收窄，
+#                                     避免把别的循环变量也算进来）
+_bootstrap_declared_files() {
+    local src="$1"
+    local libs cmds
+    libs=$(sed -n 's/^LIB_FILES=(\(.*\))$/\1/p' "$src" | tr -d '"' | tr ' ' '\n' | grep -v '^$' | sed 's|^|lib/|')
+    cmds=$(sed -n 's/^[[:space:]]*for f in \(.*\); do$/\1/p' "$src" | tr ' ' '\n' | grep -E '\.(py|service)$' | sed 's|^|cmd/|')
+    printf '%s\n%s\n' "$libs" "$cmds" | grep -v '^$'
 }
 
 case_T16_health_timer_start() {
@@ -302,10 +253,34 @@ case_T20_bootstrap_offline() {
     h_log "实际发起的下载 URL 数: $total"
     h_check_eq "0" "$bad" "指向非本 fork 的下载地址条数"
 
-    # LIB_FILES 是产品自己声明的必装模块清单，逐个核对是否都下载成功
-    local f
-    for f in xwPF.sh lib/core.sh lib/health.sh lib/rules.sh lib/server.sh lib/realm.sh lib/failover.sh lib/ui.sh cmd/xwpf-failover.py cmd/xwpf-failover.service; do
-        h_check_file "$SBX_ROOT/usr.local.bin/$f" "落盘 $f"
+    # 必装清单：**从产品自己声明的清单取**（不写死）
+    #   背景：用户裁定「主备池整块删除」→ 产品正在删掉独立守护进程
+    #   （cmd/xwpf-failover.py / .service 那套）。写死的清单会把
+    #   「产品已删该文件」误判成「安装缺文件」→ 用例假红；
+    #   反过来写死成「删掉后就不查」又会漏掉真正的安装缺失。
+    #   判据：**产品声明了 N 个必装文件 → 安装后这 N 个都必须落盘**（声明与落盘一一对应）。
+    local declared_list n_declared rel
+    declared_list=$(_bootstrap_declared_files "$SBX_SRC/xwPF.sh")
+    n_declared=$(printf '%s\n' "$declared_list" | grep -c . | tr -d ' ')
+    h_log "产品自己声明的必装清单（$n_declared 项）: $(printf '%s' "$declared_list" | tr '\n' ' ')"
+    # 防空过：清单抽不出来 = 判定没成立（否则「0 个文件都落盘」也是绿）
+    h_check_ge "1" "$n_declared" "能从产品源码抽出必装清单（防空过护栏）"
+    while IFS= read -r rel; do
+        [ -z "$rel" ] && continue
+        h_check_file "$SBX_ROOT/usr.local.bin/$rel" "落盘 $rel"
+    done <<< "$declared_list"
+    h_check_file "$SBX_ROOT/usr.local.bin/xwPF.sh" "落盘 xwPF.sh"
+
+    # ★ 已删除的东西**不得**再被下载（用户裁定：进程级主备池整块删除，提交 2beb7bd）
+    #   这三个文件在「写死清单」时代是必装项；现在必须**不再出现**。
+    #   （本断言要求冻结点 >= 2beb7bd；在更早的冻结点上跑 T20 会红 —— 那是事实变了，不是台架坏了。）
+    local gone
+    for gone in lib/failover.sh cmd/xwpf-failover.py cmd/xwpf-failover.service; do
+        if [ -e "$SBX_ROOT/usr.local.bin/$gone" ]; then
+            h_fail "已删除的 $gone 仍被下载落盘（主备池整块已删除，安装产物里不该再有它）"
+        else
+            h_pass "已删除的 $gone 不再被下载"
+        fi
     done
 
     # 内容一致性：下载下来的 xwPF.sh 应与仓库 LF 副本一致
