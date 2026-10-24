@@ -2,7 +2,8 @@
 
 本文说明**健康检查参数**、**systemd unit**、**健康状态文件**，以及**切换 / 回切逻辑**。
 
-> 文中每条规则都标注了源码位置（`文件:行号`），核对基准是本仓库 `main` 分支。
+> 文中每条规则都指向**具体函数**（写法：`文件` 的 `函数名`），不写行号 —— 行号会随代码改动整体漂移。
+> 需要行号时现查：`grep -n '<函数名>' <文件>`。
 
 ---
 
@@ -129,6 +130,45 @@ fi
 每条规则的 `REMOTE_HOST` 按逗号展开成多个目标，每个目标用该规则的 `REMOTE_PORT`
 （`lib/health.sh` 的 `health_check_script_body`）。
 
+### 3.3 时延测量（毫秒）
+
+每次探测都会记录**握手耗时**，写进健康状态文件的第 8、9 个字段。
+
+实现（`lib/health.sh` 的 `probe_with_latency`）：
+
+- 打点用 `now_us`：优先 bash 5 的 `EPOCHREALTIME`（不 fork）；回退 `date +%s%N`
+  （GNU coreutils；**busybox date 不支持 `%N`**，此时时延列显示 `-`）
+- 耗时 = 探测结束 − 探测开始，单位毫秒（向下取整）
+- 探测**失败**时也会记录耗时（通常是超时上限值），但状态仍记为 `failed`
+
+时延历史保留**最近 5 次样本**（逗号分隔），用于算平均值 —— 单次握手抖动很大，
+只看一个数容易误判。平均值的算法是这 5 个样本的算术平均
+（`lib/health.sh` 的 `latency_avg_ms`）。
+
+> 时延是 **TCP 握手耗时**，包含建连开销，不等于纯网络 RTT；
+> 跨境链路上通常比 ping 大一个量级（TCP 三次握手 + 内核调度）。
+
+### 3.4 在负载均衡菜单里看时延
+
+`负载均衡管理`（按端口组管理）里，每个目标行会多显示一段时延：
+
+```
+1. 203.0.113.10:8080 [权重: 10] (100.0%) [健康] [时延: 12ms (均 12ms)]
+2. 203.0.113.11:8080 [权重: 0]  (0.0%)   [健康] [时延: 88ms (均 85ms)]
+```
+
+- 数据来自**后台健康检查**写进状态文件的结果，所以会随 timer 持续刷新
+  （间隔见 §2.1，默认 4 秒）
+- `均` 是最近 5 次样本的平均值（见 §3.3）
+- 目标还没被探测过时显示 `-`
+- 故障目标显示时延没有意义，直接看 `[故障]` 标记
+
+菜单里还有一个 **`4. 立即测试所有目标时延`**：现场把所有端口组的目标探一轮，
+逐行打印可达性与耗时。这是一次**现场探测**，只显示结果、**不写状态文件**
+（避免和后台健康检查抢写同一个文件），页面上的时延仍以后台为准。
+
+实现：`lib/rules.sh` 的 `load_balance_management_menu` 与 `probe_all_targets_latency`。
+
 ---
 
 ## 4. systemd unit
@@ -240,7 +280,7 @@ fi
 **行格式**（`lib/health.sh` 的 `health_check_script_body`、`lib/health.sh` 的 `health_check_script_body`）：
 
 ```
-RULE_ID|TARGET|STATUS|FAIL_COUNT|SUCCESS_COUNT|LAST_CHECK|FAILURE_START_TIME
+RULE_ID|TARGET|STATUS|FAIL_COUNT|SUCCESS_COUNT|LAST_CHECK|FAILURE_START_TIME|LATENCY_MS|LATENCY_HISTORY
 ```
 
 | 字段 | 说明 |
@@ -252,13 +292,19 @@ RULE_ID|TARGET|STATUS|FAIL_COUNT|SUCCESS_COUNT|LAST_CHECK|FAILURE_START_TIME
 | `SUCCESS_COUNT` | 连续成功次数 |
 | `LAST_CHECK` | 上次检查的 Unix 时间戳 |
 | `FAILURE_START_TIME` | 本次故障开始时间戳（未故障为 `0`） |
+| `LATENCY_MS` | 最近一次探测的握手耗时（毫秒）；取不到时间戳或尚未探测时为空 |
+| `LATENCY_HISTORY` | 最近 5 次时延样本，逗号分隔（如 `10,12,14`），用于算平均值 |
 
 文件头两行是注释（`lib/health.sh` 的 `health_check_script_body`）：
 
 ```
 # Realm健康状态文件
-# 格式: RULE_ID|TARGET|STATUS|FAIL_COUNT|SUCCESS_COUNT|LAST_CHECK|FAILURE_START_TIME
+# 格式: RULE_ID|TARGET|STATUS|FAIL_COUNT|SUCCESS_COUNT|LAST_CHECK|FAILURE_START_TIME|LATENCY_MS|LATENCY_HISTORY
 ```
+
+> 后两个字段是**追加**的，老版本只有 7 个字段。
+> 读取方按位置取字段，多出来的字段自动忽略；老文件里时延字段读出来是空 → 显示 `-`。
+> 反过来，旧版本读新文件时也不会出错（只读前 7 个字段）。
 
 ### 5.2 原子更新
 

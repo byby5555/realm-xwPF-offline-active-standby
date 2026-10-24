@@ -1888,18 +1888,23 @@ load_balance_management_menu() {
                         percentage="100.0"
                     fi
 
-                    # 构建故障转移状态信息
+                    # 构建故障转移状态信息（健康状态 + 时延）
                     local failover_info=""
+                    local latency_info=""
                     if [ "$balance_mode" != "off" ] && [ "${port_failover_status[$port_key]:-}" = "true" ]; then
                         local health_status_file="${HEALTH_STATUS_FILE}"
                         local node_status="healthy"
+                        local host_only=$(echo "$target" | cut -d':' -f1)
 
                         if [ -f "$health_status_file" ]; then
-                            local host_only=$(echo "$target" | cut -d':' -f1)
-                            local health_key="*|${host_only}"
-                            local found_status=$(grep "^.*|${host_only}|" "$health_status_file" 2>/dev/null | cut -d'|' -f3 | head -1)
-                            if [ "$found_status" = "failed" ]; then
-                                node_status="failed"
+                            local health_record=$(get_health_status_record "$host_only")
+                            if [ -n "$health_record" ]; then
+                                IFS='|' read -r _ _ _ _ _ _ _ lat_ms lat_hist <<< "$health_record"
+                                local found_status=$(echo "$health_record" | cut -d'|' -f3)
+                                if [ "$found_status" = "failed" ]; then
+                                    node_status="failed"
+                                fi
+                                latency_info=" ${BLUE}[时延: $(format_latency_display "$lat_ms" "$lat_hist")]${NC}"
                             fi
                         fi
 
@@ -1911,9 +1916,9 @@ load_balance_management_menu() {
 
                     # 显示服务器信息（只在负载均衡模式下显示权重）
                     if [ "$balance_mode" != "off" ]; then
-                        echo -e "    ${BLUE}$((i+1)).${NC} $target ${GREEN}[权重: $current_weight]${NC} ${BLUE}($percentage%)${NC}$failover_info"
+                        echo -e "    ${BLUE}$((i+1)).${NC} $target ${GREEN}[权重: $current_weight]${NC} ${BLUE}($percentage%)${NC}$failover_info$latency_info"
                     else
-                        echo -e "    ${BLUE}$((i+1)).${NC} $target$failover_info"
+                        echo -e "    ${BLUE}$((i+1)).${NC} $target$failover_info$latency_info"
                     fi
                 done
                 echo ""
@@ -1929,14 +1934,17 @@ load_balance_management_menu() {
         fi
 
         echo ""
+        echo -e "${BLUE}提示: [时延] 由后台健康检查持续更新（TCP 握手耗时，每 $(get_effective_health_check_interval)s 一轮）${NC}"
+        echo ""
         echo "请选择操作:"
         echo -e "${GREEN}1.${NC} 切换负载均衡模式"
         echo -e "${BLUE}2.${NC} 权重配置管理"
         echo -e "${YELLOW}3.${NC} 开启/关闭故障转移"
+        echo -e "${BLUE}4.${NC} 立即测试所有目标时延"
         echo -e "${RED}0.${NC} 返回上级菜单"
         echo ""
 
-        read -p "请输入选择 [0-3]: " choice
+        read -p "请输入选择 [0-4]: " choice
         echo ""
 
         case $choice in
@@ -1952,16 +1960,71 @@ load_balance_management_menu() {
                 # 开启/关闭故障转移
                 failover_management_menu
                 ;;
+            4)
+                # 立即测试所有目标的连通性与时延
+                probe_all_targets_latency
+                read -p "按回车键返回..." 
+                ;;
             0)
                 # 返回上级菜单
                 break
                 ;;
             *)
-                echo -e "${RED}无效选择，请输入 0-3${NC}"
+                echo -e "${RED}无效选择，请输入 0-4${NC}"
                 read -p "按回车键继续..."
                 ;;
         esac
     done
+}
+
+# 立即测试所有端口组目标的连通性与时延
+# 现场探测一轮，只显示结果、不写健康状态文件（避免和后台健康检查抢写同一文件）
+probe_all_targets_latency() {
+    echo -e "${BLUE}正在探测所有目标的连通性与时延（TCP 握手耗时）...${NC}"
+    echo ""
+
+    local total=0 ok=0 failed=0
+    local rule_file target probe_target probe_port
+    local -a tlist=()
+
+    for rule_file in "${RULES_DIR}"/rule-*.conf; do
+        [ -f "$rule_file" ] || continue
+        read_rule_file "$rule_file" || continue
+        [ "$RULE_ROLE" = "1" ] || continue
+        [ "$ENABLED" = "true" ] || continue
+
+        IFS=',' read -ra tlist <<< "$REMOTE_HOST"
+        for target in "${tlist[@]}"; do
+            target=$(echo "$target" | xargs)  # 去除空格
+            [ -z "$target" ] && continue
+
+            probe_target="$target"
+            probe_port="$REMOTE_PORT"
+            case "$target" in
+                *:*)
+                    probe_target="${target%:*}"
+                    probe_port="${target##*:}"
+                    ;;
+            esac
+
+            total=$((total + 1))
+            if probe_with_latency "$probe_target" "$probe_port" "${CONNECTION_TIMEOUT:-3}"; then
+                ok=$((ok + 1))
+                printf "  %s  %-30s %s\n" "${GREEN}可达${NC}" "${probe_target}:${probe_port}"                     "$(format_latency_display "$PROBE_LATENCY_MS" "")"
+            else
+                failed=$((failed + 1))
+                printf "  %s  %-30s %s\n" "${RED}不可达${NC}" "${probe_target}:${probe_port}" "超时/连接失败"
+            fi
+        done
+    done
+
+    echo ""
+    if [ "$total" -eq 0 ]; then
+        echo -e "${YELLOW}没有可测试的中转目标${NC}"
+        return
+    fi
+    echo -e "  合计 ${total} 个目标：${GREEN}可达 ${ok}${NC} / ${RED}不可达 ${failed}${NC}"
+    echo -e "${BLUE}（本次为现场探测，不写健康状态文件；页面上的时延仍以后台健康检查为准）${NC}"
 }
 
 # 切换负载均衡模式（按端口分组管理）
