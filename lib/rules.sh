@@ -2932,7 +2932,7 @@ _ensure_rule_field_default() {
 
 # 自动进入主备模式并开启主备路由（故障转移）
 # 供「权重配置管理」在检测到权重含 0 时调用，
-# 这样用户不需要再走 xwpf-failover 的「建立主备池」流程
+# 这样用户在「权重配置管理」里填一次权重就能进主备，不需要额外的建池流程
 auto_enable_active_standby() {
     local port="$1"
     local updated_count=0
