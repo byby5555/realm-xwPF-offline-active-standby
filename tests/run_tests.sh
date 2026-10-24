@@ -64,7 +64,16 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #         · tests/test_update.sh、tests/test_latency.sh 改薄封装（消除第二入口）
 #         · jq 桩扩能力：数组下标路径、-e 退出码语义、JSON 对象字面量；
 #           并把 `..` 这类「会被静默误解」的语法显式判为不支持
-HARNESS_VERSION="v2.8.1 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive + negctl-selfcheck + t45-portable-equiv + t45-win-mv-truth)"
+# v2.9.0：P1 —— T32 条件 5 的判定不再依赖宿主 locale
+#         · 判据正则：中文标点字符类 [^，。；、] → `.`；窗口按**字节**放大 {0,40}→{0,120}、{0,6}→{0,30}
+#           （原因：`.` 在 UTF-8 下是 1 字符、C 下是 1 字节，只换正则不钉 locale 会让窗口宽度随环境差 3 倍）
+#         · 扫描 grep 与豁免 grep 钉 `LC_ALL=C` → 字节语义，判定与环境解耦
+#         · 新增负向对照 7（三层）：(a) 正则层两种 locale 都必须抓到真违规行
+#           (b) **扫描层**同一探针在两种 ambient locale 下判定必须相同（去掉钉子就判红）
+#           (c) 扫描层真违规行在两种 ambient locale 下都必须抓到
+#         · 负向对照 7 必须做在扫描层：正则层是**故意**两种 locale 各跑一遍的，
+#           拿它比判定会判红自己
+HARNESS_VERSION="v2.9.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive + negctl-selfcheck + t45-portable-equiv + t45-win-mv-truth + t32-locale-pin)"
 
 # shellcheck source=lib/harness.sh
 . "$SCRIPT_DIR/lib/harness.sh"

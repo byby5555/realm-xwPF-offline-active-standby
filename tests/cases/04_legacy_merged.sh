@@ -581,7 +581,7 @@ _t32_judge_probe() {
 #       形态 A 下生成物确实含一份副本，这句话是真的；只有「要手工同步」才是假的。
 #       （把它也算违规 = 又把断言钉回「内嵌」这一种形态，第 7 轮要避免的正是这个。）
 #     · 否定句（不需要 / 不再 / 无需 …）豁免整行 —— 「不需要两处同步」是对的写法。
-_T32_STALE_RE='改动[^，。；、]{0,40}两处[^，。；、]{0,6}同步|两处必须同步|需两处同步|必须两处同步|改动[^，。；、]{0,40}两处[^，。；、]{0,6}手工同步'
+_T32_STALE_RE='改动.{0,120}两处.{0,30}同步|两处必须同步|需两处同步|必须两处同步|改动.{0,120}两处.{0,30}手工同步'
 _T32_NEG_RE='不需要|不存在|无需|无须|不再|不必|不用|不涉及|并非|没有'
 # 扫描范围下限护栏：实测候选文件 28 个（6a1e8a1），取约一半。
 # 作用：挡住「扫描器一个文件都没扫 → 违规数必然 0 → 假绿」。
@@ -616,13 +616,13 @@ _t32_scan_stale() {
             [ -z "$l" ] && continue
             text="${l#*:}"
             # 同一行含否定词 → 豁免（这是否定句，不是肯定误导句式）
-            if printf '%s' "$text" | grep -qE "$_T32_NEG_RE"; then
+            if printf '%s' "$text" | LC_ALL=C grep -qE "$_T32_NEG_RE"; then
                 h_log "  豁免（含否定词）: $rel:${l%%:*}  $(printf '%s' "$text" | cut -c1-90)"
                 continue
             fi
             T32_STALE_HITS=$((T32_STALE_HITS + 1))
             printf '%s\n' "$rel:$l" >> "$SBX_ROOT/t32_stale_hits.txt"
-        done < <(grep -nE "$_T32_STALE_RE" "$root/$rel" 2>/dev/null || true)
+        done < <(LC_ALL=C grep -nE "$_T32_STALE_RE" "$root/$rel" 2>/dev/null || true)
     done < "$list"
 }
 
@@ -857,6 +857,57 @@ case_T32_single_probe_implementation() {
     _t32_scan_stale "$probe" "$plist"
     h_log "负向对照 6：合成探针树扫描了 $T32_SCAN_N 个文件，命中 $T32_STALE_HITS 行"
     h_check_eq "0" "$T32_STALE_HITS" "负向对照 6：否定句（含带肯定句式的否定句）必须保持绿"
+
+    # ── 负向对照 7：条件 5 的判定**不得随宿主 locale 变** ──
+    # 背景：判据里若用中文标点字符类（[^，。；、]），在 C locale 下 grep 退化成**字节类**
+    #       → 与标点共享字节的汉字被静默排除（实测「需」=E9 9C 80 与「。」=E3 80 82 共享 0x80）
+    #       → 真违规行在 POSIX locale 的机器上**漏判** → 门禁在那种环境里静默变松。
+    # 修法三件套：① 字符类换成 `.` ② 窗口按字节放大（40 字符 = 120 字节）③ 这一处 grep 钉 LC_ALL=C。
+    #   ②③必须配套：`.` 在 UTF-8 下是 1 字符、C 下是 1 字节 —— 只换正则不钉 locale，
+    #   窗口宽度会随环境差 3 倍 → 判定跟着环境变（另一种形态的同一个病）。
+    #
+    # (a) 同一条真违规内容：两种 locale 下**都必须**被正则抓到
+    #     （字符类没换干净的话，LC_ALL=C 这一路会漏 → 判红）
+    # (b) 同一条「间隔 50 个汉字」的内容：两种 locale 下必须得到**相同**判定
+    #     （间隔 50 汉字 = 150 字节 > 120 字节窗口 → 钉了 locale 就是 0；
+    #      一旦去掉钉子，C.UTF-8 下窗口变成 120 字符 → 判 1 → 判定随环境变 → 判红）
+    # (c) 扫描层：同一棵合成探针树，ambient locale 分别设成 C / C.UTF-8，命中数必须相同且都抓到违规行
+    local _t32_violation='改动探测实现时需要两处同步。'
+    local _t32_gap="改动$(printf '啊%.0s' $(seq 1 50))两处同步"
+    local _raw_utf8 _raw_c
+    _raw_utf8=$(printf '%s\n' "$_t32_violation" | LC_ALL=C.UTF-8 grep -cE "$_T32_STALE_RE" 2>/dev/null || true)
+    _raw_c=$(printf '%s\n' "$_t32_violation" | LC_ALL=C grep -cE "$_T32_STALE_RE" 2>/dev/null || true)
+    [ -z "$_raw_utf8" ] && _raw_utf8=0
+    [ -z "$_raw_c" ] && _raw_c=0
+    h_log "负向对照 7：违规行在 C.UTF-8 命中 $_raw_utf8 次 / 在 C 命中 $_raw_c 次"
+    h_check_eq "1" "$_raw_utf8" "负向对照 7(a)：真违规行在 UTF-8 locale 下必须被正则抓到"
+    h_check_eq "1" "$_raw_c" "负向对照 7(a)：真违规行在 POSIX locale 下也必须被抓到（不许漏判）"
+
+    # (b) 扫描层：同一份探针在两种 ambient locale 下必须得到**相同**判定。
+    #     探针刻意选「间隔 50 个汉字」：字节语义下 50 汉字 = 150 字节 > 120 字节窗口 → 不匹配；
+    #     字符语义下 50 字符 ≤ 120 字符窗口 → 匹配。
+    #     → 扫描里的 grep 一旦去掉 LC_ALL=C 钉子，两种 ambient locale 就会给出不同判定 → 判红。
+    rm -rf "$probe"
+    mkdir -p "$probe/docs"
+    printf '# 干净的探针文件\n' > "$probe/docs/t32-probe.md"
+    printf '# T32-NEG-LOCALE-GAP: %s\n' "$_t32_gap" >> "$probe/docs/t32-probe.md"
+    local _gap_scan_utf8 _gap_scan_c
+    _gap_scan_utf8=$( export LC_ALL=C.UTF-8; _t32_scan_stale "$probe" "$plist"; printf '%s\n' "$T32_STALE_HITS" | tail -1 )
+    _gap_scan_c=$( export LC_ALL=C; _t32_scan_stale "$probe" "$plist"; printf '%s\n' "$T32_STALE_HITS" | tail -1 )
+    h_log "负向对照 7(b)：间隔 50 汉字的探针，扫描层命中数 C.UTF-8=$_gap_scan_utf8 / C=$_gap_scan_c"
+    h_check_eq "$_gap_scan_c" "$_gap_scan_utf8" "负向对照 7(b)：扫描判定不得随宿主 locale 变（去掉 grep 的 locale 钉子就会红）"
+
+    # (c) 扫描层：真违规行在两种 ambient locale 下都必须被抓到（抓「扫描整体失效」）
+    rm -rf "$probe"
+    mkdir -p "$probe/docs"
+    printf '# 干净的探针文件\n' > "$probe/docs/t32-probe.md"
+    printf '# T32-NEG-LOCALE: %s\n' "$_t32_violation" >> "$probe/docs/t32-probe.md"
+    local _scan_utf8 _scan_c
+    _scan_utf8=$( export LC_ALL=C.UTF-8; _t32_scan_stale "$probe" "$plist"; printf '%s\n' "$T32_STALE_HITS" | tail -1 )
+    _scan_c=$( export LC_ALL=C; _t32_scan_stale "$probe" "$plist"; printf '%s\n' "$T32_STALE_HITS" | tail -1 )
+    h_log "负向对照 7(c)：真违规行的扫描层命中数 C.UTF-8=$_scan_utf8 / C=$_scan_c"
+    h_check_eq "1" "$_scan_utf8" "负向对照 7(c)：ambient locale = C.UTF-8 时必须抓到违规行"
+    h_check_eq "1" "$_scan_c" "负向对照 7(c)：ambient locale = C 时也必须抓到违规行（不许漏判）"
 }
 
 # T33 · 第 2 轮新增
