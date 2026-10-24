@@ -73,6 +73,19 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #           (c) 扫描层真违规行在两种 ambient locale 下都必须抓到
 #         · 负向对照 7 必须做在扫描层：正则层是**故意**两种 locale 各跑一遍的，
 #           拿它比判定会判红自己
+# v2.12.0：第 11 轮 —— T54 判定器补洞 + 判定器自检 + T53 阈值改相对判据
+#         · T54 判定器三处洞（组合盲区 / || 豁免面过宽 / 循环定位靠缩进+魔数）：
+#           静态③「含输入读入」独立于静态②的豁免面（含 read -n / read -rt）；
+#           静态②的 || 豁免改精确匹配（只放行 || VAR="" / || exit N，|| true 必须报）；
+#           静态③循环定位改 do/done 词计数配对（配对失败 fail-closed 报出），
+#           sleep 位置改「循环体内任意位置」（去掉「前 6 行」魔数）
+#         · 新增「判定器自检」：6 个合成探针，各自独立目录，如实标注「合成探针，
+#           不是历史实现」—— 判定器自身也要被负向对照覆盖，否则没人知道它判不判
+#         · T54 追加不变式：ui_read_default 的调用点不得传非空默认值
+#         · T53 负向对照的字节阈值改**相对判据**（bytes_old >= 20 x bytes_new，
+#           绝对兜底 1024）：原绝对阈值落在实测散布中间 → 约 40% 概率假红
+#           （审稿 §7.4 独立复现：同机同码连跑 5 次 = 108759 / 48246 / 34214 /
+#           32460 / 82449 字节）。与速率无关的强证据 rc_old == 124 保持不动
 # v2.11.0：第 10 轮 —— T54 交互读入 EOF 收口的不变式
 #         · 静态四层（判据跑在冻结态 $SBX_SRC 上，不读工作区）：
 #           ① UI helper 的**份数**（恰为 4：lib/core.sh + 3 个独立脚本）与**逐字一致性**
@@ -101,7 +114,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #         · 负向对照：helper 层用注入式退化（helper 是新引入的，修复前没有等价形态，
 #           如实标注）；入口层用**真实修复前实现**（d0366b3 的 lib/）复现忙循环，
 #           断言的是「坏情况确实发生」（124 + 输出膨胀），不是「坏情况没发生」
-HARNESS_VERSION="v2.11.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive + negctl-selfcheck + t45-portable-equiv + t45-win-mv-truth + t32-locale-pin + t53-menu-eof + t54-ui-eof-closure-invariants)"
+HARNESS_VERSION="v2.12.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive + negctl-selfcheck + t45-portable-equiv + t45-win-mv-truth + t32-locale-pin + t53-menu-eof + t54-ui-eof-closure-invariants + t54-judge-selfcheck + t53-rel-threshold)"
 
 # shellcheck source=lib/harness.sh
 . "$SCRIPT_DIR/lib/harness.sh"
