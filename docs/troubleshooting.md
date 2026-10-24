@@ -173,7 +173,7 @@ systemctl restart realm-health-check.timer
 | 目标端口确实不通 | 手动 `nc -z -w3 <目标IP> <目标端口>` |
 | 探测的是 TCP 而不是应用层 | 端口通但服务已死（SYN 有人应答但业务无响应）→ 探测无法发现，需人工介入 |
 | 目标只监听 127.0.0.1 | 健康检查从本机探测，`REMOTE_HOST` 必须是可达地址 |
-| 超时太短 | `CONNECTION_TIMEOUT` 默认 3 秒，跨国链路建议调大（范围 1-10） |
+| 超时太短 | `CONNECTION_TIMEOUT` 默认 10 秒（范围 1-10，默认已是上限）；跨境链路仍偏紧属探测方式问题，调大超时已无空间 |
 | 失败阈值太小 | `FAILURE_THRESHOLD` 默认 2，网络抖动会误判。调大到 3-5 |
 
 ---

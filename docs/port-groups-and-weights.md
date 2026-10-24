@@ -164,7 +164,7 @@ REMOTE_PORT="8080"
      | `HEALTH_CHECK_INTERVAL` | `4` | `lib/rules.sh` 的 `auto_enable_active_standby` |
      | `FAILURE_THRESHOLD` | `2` | `lib/rules.sh` 的 `auto_enable_active_standby` |
      | `SUCCESS_THRESHOLD` | `2` | `lib/rules.sh` 的 `auto_enable_active_standby` |
-     | `CONNECTION_TIMEOUT` | `3` | `lib/rules.sh` 的 `auto_enable_active_standby` |
+     | `CONNECTION_TIMEOUT` | `10` | `lib/rules.sh` 的 `auto_enable_active_standby` |
      | `RECOVERY_COOLDOWN` | `120` | `lib/rules.sh` 的 `auto_enable_active_standby` |
 
 2. 调用 `ensure_health_check_service` 启动健康检查服务（`lib/rules.sh` 的 `apply_port_group_weight_config`）。

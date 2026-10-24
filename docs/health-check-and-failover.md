@@ -58,7 +58,7 @@
 | `HEALTH_CHECK_INTERVAL` | 探测间隔（秒） | `4` | `1`-`60` | 默认 `lib/rules.sh` 的 `auto_enable_active_standby`、`lib/health.sh` 的 `get_port_failover_params`；范围 `xwFailover.sh` 的 `validate_int_range` |
 | `FAILURE_THRESHOLD` | 连续失败多少次判定为故障 | `2` | `1`-`10` | 默认 `lib/rules.sh` 的 `auto_enable_active_standby`、`lib/health.sh` 的 `get_port_failover_params`；范围 `xwFailover.sh` 的 `validate_int_range` |
 | `SUCCESS_THRESHOLD` | 连续成功多少次判定为恢复 | `2` | `1`-`10` | 默认 `lib/rules.sh` 的 `auto_enable_active_standby`、`lib/health.sh` 的 `get_port_failover_params`；范围 `xwFailover.sh` 的 `validate_int_range` |
-| `CONNECTION_TIMEOUT` | 单次 TCP 连接超时（秒） | `3` | `1`-`10` | 默认 `lib/rules.sh` 的 `auto_enable_active_standby`、`lib/health.sh` 的 `get_port_failover_params`；范围 `xwFailover.sh` 的 `validate_int_range` |
+| `CONNECTION_TIMEOUT` | 单次 TCP 连接超时（秒） | `10` | `1`-`10` | 默认 `lib/rules.sh` 的 `auto_enable_active_standby`、`lib/health.sh` 的 `get_port_failover_params`；范围 `xwFailover.sh` 的 `validate_int_range` |
 | `RECOVERY_COOLDOWN` | 恢复冷却期（秒） | `120` | `10`-`3600` | 默认 `lib/rules.sh` 的 `auto_enable_active_standby`、`lib/health.sh` 的 `get_port_failover_params`；范围 `xwFailover.sh` 的 `validate_int_range` |
 
 取值非法时：
@@ -81,7 +81,7 @@ pf
 检查间隔秒数 [当前 4]:
 失败阈值(连续失败次数) [当前 2]:
 成功阈值(连续成功次数) [当前 2]:
-连接超时秒数 [当前 3]:
+连接超时秒数 [当前 10]:
 恢复冷却秒数 [当前 120]:
 ```
 

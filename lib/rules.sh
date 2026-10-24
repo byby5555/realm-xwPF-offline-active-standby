@@ -2025,7 +2025,7 @@ probe_all_targets_latency() {
             esac
 
             total=$((total + 1))
-            if probe_with_latency "$probe_target" "$probe_port" "${CONNECTION_TIMEOUT:-3}"; then
+            if probe_with_latency "$probe_target" "$probe_port" "${CONNECTION_TIMEOUT:-10}"; then
                 ok=$((ok + 1))
                 printf "  %s  %-30s %s\n" "${GREEN}可达${NC}" "${probe_target}:${probe_port}"                     "$(format_latency_display "$PROBE_LATENCY_MS" "")"
             else
