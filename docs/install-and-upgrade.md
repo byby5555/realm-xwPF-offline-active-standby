@@ -13,9 +13,9 @@
 
 | 项目 | 支持范围 | 源码位置 |
 |------|----------|----------|
-| 发行版 | Debian / Ubuntu、Alpine、CentOS / RHEL / Rocky / AlmaLinux / Fedora | `lib/core.sh:163-174` |
-| 包管理器 | `apt-get` / `apk` / `dnf` / `yum`（自动探测） | `lib/core.sh:177-184` |
-| init 系统 | `systemd`（`systemctl`）或 `openrc`（`rc-service`） | `lib/core.sh:187-192` |
+| 发行版 | Debian / Ubuntu、Alpine、CentOS / RHEL / Rocky / AlmaLinux / Fedora | `lib/core.sh` 的 `_pkg_install` |
+| 包管理器 | `apt-get` / `apk` / `dnf` / `yum`（自动探测） | `lib/core.sh` 的 `manage_dependencies` |
+| init 系统 | `systemd`（`systemctl`）或 `openrc`（`rc-service`） | `lib/core.sh` 的 `manage_dependencies` |
 
 不支持的发行版会直接退出并提示，不会带着半截配置继续跑。
 
@@ -27,7 +27,7 @@
 curl  wget  tar  grep  cut  bc  jq  openssl  python3
 ```
 
-安装脚本会自动补齐缺失的工具（`manage_dependencies`，`lib/core.sh:215-243`），
+安装脚本会自动补齐缺失的工具（`manage_dependencies`，`lib/core.sh` 的 `get_public_ip`），
 按检测到的包管理器分别走 `apt-get install -y` / `apk add --no-cache` / `yum|dnf install -y`。
 
 ### 1.3 `nc` 不在自动安装清单里 —— 可选，但建议装
@@ -60,8 +60,8 @@ command -v nc && nc -h 2>&1 | head -1
 | 项目 | 值 | 源码位置 |
 |------|-----|----------|
 | 安装路径 | `/usr/local/bin/realm` | `lib/core.sh:74` |
-| 支持架构 | `x86_64` / `aarch64` / `armv7` | `lib/realm.sh:260-275` |
-| libc 区分 | Alpine 用 `musl`，其余 `gnu` | `lib/realm.sh:255-258` |
+| 支持架构 | `x86_64` / `aarch64` / `armv7` | `lib/realm.sh` 的 `install_realm` |
+| libc 区分 | Alpine 用 `musl`，其余 `gnu` | `lib/realm.sh` 的 `install_realm` |
 | 兜底版本 | `v2.9.3`（`REALM_VERSION`，取版本失败时使用） | `lib/core.sh:4` |
 
 realm 主程序来自 **官方仓库** `zhboner/realm` 的 release，不在本 fork 内 —— 这是上游二进制，与本项目的
@@ -71,7 +71,7 @@ realm 主程序来自 **官方仓库** `zhboner/realm` 的 release，不在本 f
 https://github.com/zhboner/realm/releases/download/<版本>/realm-<架构>.tar.gz
 ```
 
-下载源按顺序尝试 4 个（`lib/realm.sh:277-286`）：官方 → `gh-proxy.com` → `ghproxy.net` → `mirror.ghproxy.com`。
+下载源按顺序尝试 4 个（`lib/realm.sh` 的 `install_realm`）：官方 → `gh-proxy.com` → `ghproxy.net` → `mirror.ghproxy.com`。
 
 ---
 
@@ -102,23 +102,23 @@ curl -fsSL https://v6.gh-proxy.org/https://raw.githubusercontent.com/byby5555/re
 | 1 | 校验 root 权限 | `xwPF.sh:123` |
 | 2 | `_bootstrap`：拉取脚本文件 | `xwPF.sh:53-100` |
 | 3 | `_load_libs`：source 全部模块 | `xwPF.sh:103-118` |
-| 4 | `smart_install`（带 `_SKIP_SCRIPT_UPDATE=1`，**不再询问**是否更新脚本） | `xwPF.sh:126`、`lib/realm.sh:1003-1028` |
-| 5 | `failover_install_check`：安装/升级 `xwpf-failover` 守护进程 | `xwPF.sh:128`、`lib/failover.sh:696-723` |
-| 6 | `failover_service_enable`：`systemctl enable --now xwpf-failover` | `xwPF.sh:129`、`lib/failover.sh:782-784` |
+| 4 | `smart_install`（带 `_SKIP_SCRIPT_UPDATE=1`，**不再询问**是否更新脚本） | `xwPF.sh:126`、`lib/realm.sh` 的 `smart_install` |
+| 5 | `failover_install_check`：安装/升级 `xwpf-failover` 守护进程 | `xwPF.sh:128`、`lib/failover.sh` 的 `failover_install_check` |
+| 6 | `failover_service_enable`：`systemctl enable --now xwpf-failover` | `xwPF.sh:129`、`lib/failover.sh` 的 `failover_service_enable` |
 
-`_bootstrap` 下载的文件清单（`xwPF.sh:59-92`）：
+`_bootstrap` 下载的文件清单（`xwPF.sh` 的 `_bootstrap`）：
 
 - `xwPF.sh` → `/usr/local/bin/xwPF.sh`
 - `lib/{core,rules,server,realm,failover,ui}.sh` → `/usr/local/bin/lib/`（加载顺序见 `xwPF.sh:16`）
 - `cmd/{xwpf-failover.py,xwpf-failover.service}` → `/usr/local/bin/cmd/`
-- 创建软链 `/usr/local/bin/pf` → `/usr/local/bin/xwPF.sh`（`xwPF.sh:95`）
+- 创建软链 `/usr/local/bin/pf` → `/usr/local/bin/xwPF.sh`（`xwPF.sh` 的 `_bootstrap`）
 
 下载是**原子化**的（`xwPF.sh:30-50`）：先下到 `.tmp.$$`，校验非空，再 `mv -f` 覆盖目标。
 **故意不使用 `curl -C -` / `wget -c`** —— 断点续传只校验 HTTP Range 起点，不校验本地内容，
 远端变长时会把新版本追加到旧内容后面，产出「大小正常但内容损坏」的文件。
 
-`cmd/` 下载失败**不阻断安装**（`xwPF.sh:89-91`），安装守护进程时 `failover_install_files`
-会再从 GitHub raw 兜底（`lib/failover.sh:748-763`）。
+`cmd/` 下载失败**不阻断安装**（`xwPF.sh` 的 `_bootstrap`），安装守护进程时 `failover_install_files`
+会再从 GitHub raw 兜底（`lib/failover.sh` 的 `failover_install_files`）。
 
 ### 2.2 安装后落盘清单
 
@@ -126,14 +126,14 @@ curl -fsSL https://v6.gh-proxy.org/https://raw.githubusercontent.com/byby5555/re
 |------|------|----------|
 | `/usr/local/bin/xwPF.sh` | 主入口 | `xwPF.sh:7` |
 | `/usr/local/bin/lib/*.sh` | 6 个模块 | `xwPF.sh:8` |
-| `/usr/local/bin/cmd/` | 守护进程源文件副本 | `xwPF.sh:84` |
+| `/usr/local/bin/cmd/` | 守护进程源文件副本 | `xwPF.sh` 的 `_bootstrap` |
 | `/usr/local/bin/pf` | 快捷命令（软链） | `xwPF.sh:9` |
 | `/usr/local/bin/realm` | realm 主程序 | `lib/core.sh:74` |
 | `/etc/realm/config.json` | realm 工作配置 | `lib/core.sh:76` |
 | `/etc/realm/rules/` | 转发规则目录 | `lib/core.sh:78` |
-| `/etc/systemd/system/realm.service` | realm systemd unit | `lib/core.sh:77`、`lib/realm.sh:963-976` |
-| `/usr/local/bin/xwpf-failover` | 主备守护进程（0755） | `lib/failover.sh:10`、`lib/failover.sh:766` |
-| `/etc/systemd/system/xwpf-failover.service` | 守护进程 unit（0644） | `lib/failover.sh:12`、`lib/failover.sh:770` |
+| `/etc/systemd/system/realm.service` | realm systemd unit | `lib/core.sh:77`、`lib/realm.sh` 的 `depend` |
+| `/usr/local/bin/xwpf-failover` | 主备守护进程（0755） | `lib/failover.sh:10`、`lib/failover.sh` 的 `failover_install_files` |
+| `/etc/systemd/system/xwpf-failover.service` | 守护进程 unit（0644） | `lib/failover.sh:12`、`lib/failover.sh` 的 `failover_install_files` |
 | `/usr/local/bin/.xwpf-failover-version` | 已装版本指纹（用于判断要不要重装） | `lib/failover.sh:16` |
 | `/etc/xwpf/` | 守护进程配置目录 | `lib/failover.sh:13` |
 
@@ -141,13 +141,13 @@ curl -fsSL https://v6.gh-proxy.org/https://raw.githubusercontent.com/byby5555/re
 
 | 路径 | 何时下载 | 源码位置 |
 |------|----------|----------|
-| `/etc/realm/xwFailover.sh` | 进入「故障转移管理」菜单 | `lib/ui.sh:701` |
+| `/etc/realm/xwFailover.sh` | 进入「故障转移管理」菜单 | `lib/ui.sh` 的 `download_failover_script` |
 | `/etc/realm/health/health_check.sh` | 开启故障转移时生成 | `lib/health.sh` 的 `start_health_check_service`、`lib/health.sh` 的 `start_health_check_service` |
 | `/etc/systemd/system/realm-health-check.service` / `.timer` | 开启故障转移时生成 | `lib/health.sh` 的 `start_health_check_service` |
 | `/etc/realm/health/health_status.conf` | 健康检查首次运行时创建 | `lib/health.sh` 的 `health_check_script_body` |
-| `/etc/realm/speedtest.sh` | 进入「中转网络链路测试」 | `lib/ui.sh:719` |
-| `/usr/local/bin/port-traffic-dog.sh` | 进入「端口流量狗」 | `lib/ui.sh:939` |
-| `/etc/realm/xw_realm_OCR.sh` | 进入配置识别导入 | `lib/ui.sh:5` |
+| `/etc/realm/speedtest.sh` | 进入「中转网络链路测试」 | `lib/ui.sh` 的 `download_speedtest_script` |
+| `/usr/local/bin/port-traffic-dog.sh` | 进入「端口流量狗」 | `lib/ui.sh` 的 `port_traffic_dog_menu` |
+| `/etc/realm/xw_realm_OCR.sh` | 进入配置识别导入 | `lib/ui.sh` 的 `download_realm_ocr_script` |
 
 ### 2.3 安装后验证
 
@@ -200,7 +200,7 @@ pf
 ~/realm-xxx.tar.gz         ← realm 压缩包放任意位置
 ```
 
-> `cmd/` 这两个文件**离线时必须手动放**。`lib/failover.sh:710-714`：拿不到 `cmd/xwpf-failover.py`
+> `cmd/` 这两个文件**离线时必须手动放**。`lib/failover.sh` 的 `failover_install_check`：拿不到 `cmd/xwpf-failover.py`
 > 源文件时会提示「未找到 cmd/xwpf-failover.py 源文件, 跳过版本比对」并保持现状不重装。
 
 ### 3.3 执行离线安装
@@ -228,11 +228,11 @@ pf
 # → 提示「是否更新脚本？(y/N):」→ y
 ```
 
-`smart_install`（`lib/realm.sh:1003-1028`）里：
+`smart_install`（`lib/realm.sh` 的 `smart_install`）里：
 
 - `_SKIP_SCRIPT_UPDATE` 未设置时，询问是否更新脚本，答 y 走 `_bootstrap()` 重新拉全部脚本文件
 - 之后调用 `install_realm()`，realm 主程序**单独**做版本比对：
-  `get_latest_realm_version`（`lib/realm.sh:107-121`）→ `compare_and_ask_update`（`lib/realm.sh:143-175`）
+  `get_latest_realm_version`（`lib/realm.sh` 的 `get_latest_realm_version`）→ `compare_and_ask_update`（`lib/realm.sh` 的 `compare_and_ask_update`）
 
 也可以直接重跑 `install` 子命令（此时**不**再询问是否更新脚本，直接覆盖）：
 
@@ -242,7 +242,7 @@ curl -fsSL https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-active-
 
 ### 4.2 升级守护进程
 
-`xwPF.sh install` 的最后一步就是 `failover_install_check`（`lib/failover.sh:696-723`）：
+`xwPF.sh install` 的最后一步就是 `failover_install_check`（`lib/failover.sh` 的 `failover_install_check`）：
 
 - 已安装且版本指纹一致 → 跳过
 - 版本指纹不一致（fork 更新了 `cmd/xwpf-failover.py`）→ 重新下载并 `install -m 0755` / `install -m 0644`
@@ -262,14 +262,14 @@ pf --restart-service   # 重新生成 /etc/realm/config.json 并重启 realm
 
 ## 5. 卸载
 
-分两阶段，菜单内 `8. 卸载服务`（`lib/ui.sh:1038-1041`）：
+分两阶段，菜单内 `8. 卸载服务`（`lib/ui.sh` 的 `show_menu`）：
 
 ```bash
 pf
 # → 8. 卸载服务
 ```
 
-### 阶段一：Realm 服务与配置（`lib/ui.sh:368-399`）
+### 阶段一：Realm 服务与配置（`lib/ui.sh` 的 `uninstall_realm_stage_one`）
 
 1. 停止并禁用 realm 服务
 2. 若 `/etc/realm/xwFailover.sh` 存在 → 执行 `xwFailover.sh stop`，停掉健康检查 timer 与 service，
@@ -283,7 +283,7 @@ pf
    `/etc/xwpf/failover.json`
 8. 删除 `/etc/sysctl.d/90-enable-MPTCP.conf` 并执行 `ip mptcp endpoint flush`
 
-### 阶段二：脚本文件（`lib/ui.sh:402-416`）
+### 阶段二：脚本文件（`lib/ui.sh` 的 `uninstall_script_files`）
 
 - `/usr/local/bin/xwPF.sh`
 - `/usr/local/bin/lib/`（整目录）
@@ -311,7 +311,7 @@ systemctl daemon-reload
 
 ## 6. 首次初始化
 
-安装完成后 realm 以**空配置**启动（`start_empty_service`，`lib/realm.sh:985-996`），
+安装完成后 realm 以**空配置**启动（`start_empty_service`，`lib/realm.sh` 的 `start_empty_service`），
 写入 `{"endpoints": []}` 并生成 systemd unit —— 这是为了让脚本能识别「已安装」状态。
 
 真正的初始化是建第一条转发规则：
@@ -330,14 +330,14 @@ pf
 | `2` | 服务端服务器（双端 realm 架构） | `LISTEN_PORT` / `FORWARD_TARGET` |
 
 规则落盘在 `/etc/realm/rules/rule-N.conf`，一条规则一个文件。
-文件解析走 `read_rule_file`（`lib/rules.sh:206-238`），**只接受白名单里的 KEY**
+文件解析走 `read_rule_file`（`lib/rules.sh` 的 `read_rule_file`），**只接受白名单里的 KEY**
 （`lib/rules.sh:204`），并且**不使用 `source` / `eval`** —— 手工往规则文件里塞
 `$(cmd)` 或反引号不会被执行。
 
-规则创建后规则目录会被打上初始化标记 `/etc/realm/rules/.initialized`（`lib/rules.sh:3-9`）。
+规则创建后规则目录会被打上初始化标记 `/etc/realm/rules/.initialized`（`lib/rules.sh` 的 `init_rules_dir`）。
 
-规则 ID 会按「监听端口 → 角色 → 原 ID」排序重排（`reorder_rule_ids`，`lib/rules.sh:94-186`），
-重排时会同步更新健康状态文件里的 RULE_ID（`sync_health_status_ids`，`lib/rules.sh:51-91`），
+规则 ID 会按「监听端口 → 角色 → 原 ID」排序重排（`reorder_rule_ids`，`lib/rules.sh` 的 `reorder_rule_ids`），
+重排时会同步更新健康状态文件里的 RULE_ID（`sync_health_status_ids`，`lib/rules.sh` 的 `sync_health_status_ids`），
 并在动原文件前先打一份 tar 备份到 `/tmp/realm-rules-backup-XXXXXX.tar.gz`。
 
 ---
@@ -346,9 +346,9 @@ pf
 
 | 命令 | 作用 | 源码位置 |
 |------|------|----------|
-| `pf` | 交互式主菜单 | `lib/ui.sh:981-1053` |
-| `pf --generate-config-only` | 只生成 `/etc/realm/config.json`，不重启、不显示菜单 | `lib/ui.sh:1080-1083` |
-| `pf --restart-service` | 重排序规则 → 重新生成配置 → 重启 realm | `lib/ui.sh:1084-1088`、`lib/realm.sh:1042-1062` |
+| `pf` | 交互式主菜单 | `lib/ui.sh` 的 `show_menu` |
+| `pf --generate-config-only` | 只生成 `/etc/realm/config.json`，不重启、不显示菜单 | `lib/ui.sh` 的 `main` |
+| `pf --restart-service` | 重排序规则 → 重新生成配置 → 重启 realm | `lib/ui.sh` 的 `main`、`lib/realm.sh` 的 `service_restart` |
 | `xwPF.sh install` | 一键安装（需 root） | `xwPF.sh:122-129` |
 | `xwFailover.sh toggle\|config\|status\|start\|stop\|restart-realm\|help` | 故障转移管理，见 [健康检查与故障转移](health-check-and-failover.md) | `xwFailover.sh` 的 `main` |
 

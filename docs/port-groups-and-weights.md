@@ -12,10 +12,10 @@
 
 | 要素 | 定义 | 源码位置 |
 |------|------|----------|
-| 分组键 | `LISTEN_PORT` | `lib/rules.sh:1800`、`xwFailover.sh` 的 `toggle_failover_mode` |
-| 参与分组 | `RULE_ROLE=1`（中转服务器），`RULE_ROLE=2`（服务端）不参与 | `lib/rules.sh:1800`、`xwFailover.sh` 的 `toggle_failover_mode` |
+| 分组键 | `LISTEN_PORT` | `lib/rules.sh` 的 `load_balance_management_menu`、`xwFailover.sh` 的 `toggle_failover_mode` |
+| 参与分组 | `RULE_ROLE=1`（中转服务器），`RULE_ROLE=2`（服务端）不参与 | `lib/rules.sh` 的 `load_balance_management_menu`、`xwFailover.sh` 的 `toggle_failover_mode` |
 | 目标表示 | `REMOTE_HOST:REMOTE_PORT` | `xwFailover.sh` 的 `toggle_failover_mode`、`xwFailover.sh` 的 `toggle_failover_mode` |
-| 可见条件 | 该端口目标数 **> 1** 才算「端口组」并出现在菜单里 | `lib/rules.sh:1845`、`xwFailover.sh` 的 `toggle_failover_mode` |
+| 可见条件 | 该端口目标数 **> 1** 才算「端口组」并出现在菜单里 | `lib/rules.sh` 的 `load_balance_management_menu`、`xwFailover.sh` 的 `toggle_failover_mode` |
 
 ### 1.1 两种加目标的方式
 
@@ -29,9 +29,9 @@ REMOTE_PORT="8080"
 **方式 B：拆成多条规则，同一个 `LISTEN_PORT`，不同 `REMOTE_HOST`**
 
 两种方式产生的端口组完全等价。菜单里展开 `REMOTE_HOST` 的逗号列表
-（`lib/rules.sh:1812-1833`、`xwFailover.sh` 的 `toggle_failover_mode`），并按 `host:port` 去重。
+（`lib/rules.sh` 的 `load_balance_management_menu`、`xwFailover.sh` 的 `toggle_failover_mode`），并按 `host:port` 去重。
 
-> ⚠️ **同一端口不允许混角色。** `lib/realm.sh:393-396`：同一 `LISTEN_PORT` 上出现不同
+> ⚠️ **同一端口不允许混角色。** `lib/realm.sh` 的 `generate_endpoints_from_rules`：同一 `LISTEN_PORT` 上出现不同
 > `RULE_ROLE` 的规则时，后来的规则会被**跳过**并打印警告。中转与服务端必须用不同的监听端口。
 
 ---
@@ -39,36 +39,36 @@ REMOTE_PORT="8080"
 ## 2. 负载均衡模式（`BALANCE_MODE`）
 
 菜单路径：`pf` → `2. 转发配置管理` → `6. 负载均衡管理` → `1. 切换负载均衡模式`
-（`lib/ui.sh:214`、`lib/rules.sh:1933-1936`）
+（`lib/ui.sh` 的 `rules_management_menu`、`lib/rules.sh` 的 `load_balance_management_menu`）
 
 | 选项 | 取值 | 语义 | 菜单标签 | 源码位置 |
 |------|------|------|----------|----------|
-| 1 | `off` | 关闭负载均衡，只用第一个目标 | `[off]` | `lib/rules.sh:2104`、`lib/rules.sh:255-257` |
-| 2 | `roundrobin` | 轮询，按权重分配 | `[轮询]` | `lib/rules.sh:2105`、`lib/rules.sh:246-248` |
-| 3 | `iphash` | IP 哈希，同一源 IP 固定落到同一目标 | `[IP哈希]` | `lib/rules.sh:2106`、`lib/rules.sh:249-251` |
-| 4 | `active-standby` | 严格主备：1 主 N 备按顺序接替，主恢复后切回主 | `[主备]` | `lib/rules.sh:2107`、`lib/rules.sh:252-254` |
+| 1 | `off` | 关闭负载均衡，只用第一个目标 | `[off]` | `lib/rules.sh` 的 `switch_balance_mode`、`lib/rules.sh` 的 `get_balance_info_display` |
+| 2 | `roundrobin` | 轮询，按权重分配 | `[轮询]` | `lib/rules.sh` 的 `switch_balance_mode`、`lib/rules.sh` 的 `get_balance_info_display` |
+| 3 | `iphash` | IP 哈希，同一源 IP 固定落到同一目标 | `[IP哈希]` | `lib/rules.sh` 的 `switch_balance_mode`、`lib/rules.sh` 的 `get_balance_info_display` |
+| 4 | `active-standby` | 严格主备：1 主 N 备按顺序接替，主恢复后切回主 | `[主备]` | `lib/rules.sh` 的 `switch_balance_mode`、`lib/rules.sh` 的 `get_balance_info_display` |
 
-三种均衡模式最终都写进 realm 配置的 `balance` 字段（`lib/realm.sh:688-714`）：
+三种均衡模式最终都写进 realm 配置的 `balance` 字段（`lib/realm.sh` 的 `generate_endpoints_from_rules`）：
 
 ```json
 "balance": "roundrobin: 1, 0, 0"
 ```
 
 `active-standby` **本身不写进 realm**，它在生成配置时被映射成 `roundrobin`
-（`lib/realm.sh:706-711`）—— 因为权重已经被翻转成 0/1 列表，
+（`lib/realm.sh` 的 `generate_endpoints_from_rules`）—— 因为权重已经被翻转成 0/1 列表，
 `roundrobin` 就能实现「只有那一个健康节点收流量」。
 
 ### 2.1 切换模式会重置权重
 
-`switch_balance_mode`（`lib/rules.sh:1968-2210`）在写新模式时会**重置 `WEIGHTS`**：
+`switch_balance_mode`（`lib/rules.sh` 的 `switch_balance_mode`）在写新模式时会**重置 `WEIGHTS`**：
 
 | 从 → 到 | `WEIGHTS` 处理 | `TARGET_STATES` | 源码位置 |
 |---------|-----------------|-----------------|----------|
-| `active-standby` → `off` | 清空 | 清空 | `lib/rules.sh:2174-2178` |
-| `active-standby` → `roundrobin` / `iphash` | 重置为 `1,1,1,...`（按目标数） | 清空 | `lib/rules.sh:2179-2183` |
-| `active-standby` → 其它（未列出的） | 清空 | 不变 | `lib/rules.sh:2184` |
+| `active-standby` → `off` | 清空 | 清空 | `lib/rules.sh` 的 `switch_balance_mode` |
+| `active-standby` → `roundrobin` / `iphash` | 重置为 `1,1,1,...`（按目标数） | 清空 | `lib/rules.sh` 的 `switch_balance_mode` |
+| `active-standby` → 其它（未列出的） | 清空 | 不变 | `lib/rules.sh` 的 `switch_balance_mode` |
 
-> 原因写在 `lib/rules.sh:2158-2162`：主备运行时 `WEIGHTS` 会被主备逻辑翻成 0/1 列表，
+> 原因写在 `lib/rules.sh` 的 `switch_balance_mode`：主备运行时 `WEIGHTS` 会被主备逻辑翻成 0/1 列表，
 > 直接切到别的模式会留下「健康节点 weight=0」的脏状态。
 
 ---
@@ -76,12 +76,12 @@ REMOTE_PORT="8080"
 ## 3. 权重（`WEIGHTS`）
 
 菜单路径：`pf` → `2. 转发配置管理` → `6. 负载均衡管理` → `2. 权重配置管理`
-（`lib/rules.sh:1934`）
+（`lib/rules.sh` 的 `load_balance_management_menu`）
 
 ### 3.1 权重即分配概率
 
 权重是**相对比例**，不是绝对值。百分比按 `weight / 总权重` 计算
-（`lib/rules.sh:2516-2537`）：
+（`lib/rules.sh` 的 `preview_port_group_weight_config`）：
 
 | 权重 | 目标数 | 实际分配 |
 |------|--------|----------|
@@ -95,16 +95,16 @@ REMOTE_PORT="8080"
 "balance": "roundrobin: 3, 1"
 ```
 
-（`lib/realm.sh:693-704`：只有当 `WEIGHTS` 为空时才退化成 `1,1,1,...`。）
+（`lib/realm.sh` 的 `generate_endpoints_from_rules`：只有当 `WEIGHTS` 为空时才退化成 `1,1,1,...`。）
 
-### 3.2 校验规则（全部在 `lib/rules.sh:2401-2438`）
+### 3.2 校验规则（全部在 `lib/rules.sh` 的 `validate_weight_input`）
 
 | 约束 | 规则 | 报错文案 | 源码位置 |
 |------|------|----------|----------|
-| 格式 | 只允许数字和逗号，正则 `^[0-9]+(,[0-9]+)*$` | `权重格式错误，请使用数字和逗号，如: 2,1,3` | `lib/rules.sh:2406-2409` |
-| **数量** | 权重个数 **必须等于** 目标数 | `权重数量不匹配，需要 N 个权重值，实际输入 M 个` | `lib/rules.sh:2415-2418` |
-| 取值范围 | 每个权重 **0-10** | `权重值 X 超出范围，请使用 0-10 之间的数值` | `lib/rules.sh:2424-2427` |
-| 全 0 | **不允许**全为 0 | `权重不能全部为 0，至少保留一个大于 0 的权重` | `lib/rules.sh:2432-2435` |
+| 格式 | 只允许数字和逗号，正则 `^[0-9]+(,[0-9]+)*$` | `权重格式错误，请使用数字和逗号，如: 2,1,3` | `lib/rules.sh` 的 `validate_weight_input` |
+| **数量** | 权重个数 **必须等于** 目标数 | `权重数量不匹配，需要 N 个权重值，实际输入 M 个` | `lib/rules.sh` 的 `validate_weight_input` |
+| 取值范围 | 每个权重 **0-10** | `权重值 X 超出范围，请使用 0-10 之间的数值` | `lib/rules.sh` 的 `validate_weight_input` |
+| 全 0 | **不允许**全为 0 | `权重不能全部为 0，至少保留一个大于 0 的权重` | `lib/rules.sh` 的 `validate_weight_input` |
 
 > **数量必须等于目标数**这条最容易踩。比如端口组有 3 个目标，你只填 `1,0` → 直接被拒。
 > 目标数按端口组展开后的 `host:port` 个数算。
@@ -116,12 +116,12 @@ REMOTE_PORT="8080"
 - 端口组里**第一条**规则存**完整权重列表**（如 `WEIGHTS="1,0,0"`）
 - 其余规则**各存自己那一个值**（如 `WEIGHTS="0"`）
 
-（`lib/rules.sh:2591-2598`：`rule_index -eq 0` 存完整串，否则存 `weight_array[rule_index]`。）
+（`lib/rules.sh` 的 `apply_port_group_weight_config`：`rule_index -eq 0` 存完整串，否则存 `weight_array[rule_index]`。）
 
-读取端口组权重时，**带逗号的那份优先**（`lib/rules.sh:1808-1810`、`lib/rules.sh:2236-2239`、
-`lib/realm.sh:397-401`）。所以手工编辑时，请确保**第一条**规则的 `WEIGHTS` 是完整列表。
+读取端口组权重时，**带逗号的那份优先**（`lib/rules.sh` 的 `load_balance_management_menu`、`lib/rules.sh` 的 `weight_management_menu`、
+`lib/realm.sh` 的 `generate_endpoints_from_rules`）。所以手工编辑时，请确保**第一条**规则的 `WEIGHTS` 是完整列表。
 
-> 字段不存在时按 `1` 处理（`lib/rules.sh:2495-2506`、`lib/rules.sh:2371`），
+> 字段不存在时按 `1` 处理（`lib/rules.sh` 的 `preview_port_group_weight_config`、`lib/rules.sh` 的 `configure_port_group_weights`），
 > 也就是「没配权重 = 等权分配」。
 
 ---
@@ -130,7 +130,7 @@ REMOTE_PORT="8080"
 
 **权重 0 = 该目标不分配流量 = 备机。**
 
-`weights_contain_zero`（`lib/rules.sh:2442-2455`）检测到权重序列里含 0 时，
+`weights_contain_zero`（`lib/rules.sh` 的 `weights_contain_zero`）检测到权重序列里含 0 时，
 会发生以下事情：
 
 ### 4.1 预览阶段提示
@@ -142,34 +142,34 @@ REMOTE_PORT="8080"
   · 健康检查探测方式: TCP 连接探测 (目标端口)，不是 ping
 ```
 
-（`lib/rules.sh:2542-2549`）
+（`lib/rules.sh` 的 `preview_port_group_weight_config`）
 
 ### 4.2 应用阶段自动切主备
 
-`apply_port_group_weight_config`（`lib/rules.sh:2563-2677`）在写完权重后：
+`apply_port_group_weight_config`（`lib/rules.sh` 的 `apply_port_group_weight_config`）在写完权重后：
 
-1. 调用 `auto_enable_active_standby`（`lib/rules.sh:2695-2730`），对该端口下**所有**中转规则：
+1. 调用 `auto_enable_active_standby`（`lib/rules.sh` 的 `auto_enable_active_standby`），对该端口下**所有**中转规则：
    - `BALANCE_MODE="active-standby"`
    - `FAILOVER_ENABLED="true"`
-   - 补齐 5 个健康检查参数（**仅在缺失时写入**，不覆盖已有值，`lib/rules.sh:2680-2690`）：
+   - 补齐 5 个健康检查参数（**仅在缺失时写入**，不覆盖已有值，`lib/rules.sh` 的 `_ensure_rule_field_default`）：
 
      | 字段 | 默认值 | 源码位置 |
      |------|--------|----------|
-     | `HEALTH_CHECK_INTERVAL` | `4` | `lib/rules.sh:2718` |
-     | `FAILURE_THRESHOLD` | `2` | `lib/rules.sh:2719` |
-     | `SUCCESS_THRESHOLD` | `2` | `lib/rules.sh:2720` |
-     | `CONNECTION_TIMEOUT` | `3` | `lib/rules.sh:2721` |
-     | `RECOVERY_COOLDOWN` | `120` | `lib/rules.sh:2722` |
+     | `HEALTH_CHECK_INTERVAL` | `4` | `lib/rules.sh` 的 `auto_enable_active_standby` |
+     | `FAILURE_THRESHOLD` | `2` | `lib/rules.sh` 的 `auto_enable_active_standby` |
+     | `SUCCESS_THRESHOLD` | `2` | `lib/rules.sh` 的 `auto_enable_active_standby` |
+     | `CONNECTION_TIMEOUT` | `3` | `lib/rules.sh` 的 `auto_enable_active_standby` |
+     | `RECOVERY_COOLDOWN` | `120` | `lib/rules.sh` 的 `auto_enable_active_standby` |
 
-2. 调用 `ensure_health_check_service` 启动健康检查服务（`lib/rules.sh:2631-2635`）。
+2. 调用 `ensure_health_check_service` 启动健康检查服务（`lib/rules.sh` 的 `apply_port_group_weight_config`）。
    **没有健康检查服务就永远不会自动切换**，此时会提示：
    `! 健康检查服务未启动，主备不会自动切换，请检查网络或手动执行 pf 故障转移菜单`
-3. 重启 realm 服务使配置生效（`lib/rules.sh:2665-2671`）
+3. 重启 realm 服务使配置生效（`lib/rules.sh` 的 `apply_port_group_weight_config`）
 
 ### 4.3 权重全部 > 0 时反向切回
 
 如果当前是 `active-standby`，而新配置的权重**全部大于 0**，会自动切回 `roundrobin`
-并清空 `TARGET_STATES`（`lib/rules.sh:2639-2662`），但**保留 `WEIGHTS`**，
+并清空 `TARGET_STATES`（`lib/rules.sh` 的 `apply_port_group_weight_config`），但**保留 `WEIGHTS`**，
 且**故障转移保持开启**（故障目标仍会被剔除）：
 
 ```
@@ -217,7 +217,7 @@ pf
 # → 3. 开启/关闭故障转移 → 选端口组 → 2. 主备模式
 ```
 
-（`lib/rules.sh:2107`、`xwFailover.sh` 的 `toggle_failover_mode`）
+（`lib/rules.sh` 的 `switch_balance_mode`、`xwFailover.sh` 的 `toggle_failover_mode`）
 
 ### 5.2 主备的运行语义
 
@@ -225,14 +225,14 @@ pf
 
 - 所有目标**始终保留**在 realm 的 `remote` + `extra_remotes` 列表里，
   健康检查对所有目标**独立探测**（不依赖权重）
-  （`lib/realm.sh:477-479`、`lib/realm.sh:558-559`）
+  （`lib/realm.sh` 的 `generate_endpoints_from_rules`、`lib/realm.sh` 的 `generate_endpoints_from_rules`）
 - 生成配置时权重被翻转为 **0/1 列表**：只有当前主为 1，其余为 0
-  （`lib/realm.sh:525-537`）
+  （`lib/realm.sh` 的 `generate_endpoints_from_rules`）
 - 主故障 → 第一个健康的备接替（`0,1,0`）
 - 主 + 备 1 都挂 → 备 2 接替（`0,0,1`）
 - **主恢复 → 立刻切回主**（`1,0,0`），不等备机恢复
 - 全部挂 → 强制把优先级最高的目标置 1，避免完全断流
-  （`lib/realm.sh:539-556`）
+  （`lib/realm.sh` 的 `generate_endpoints_from_rules`）
 
 逐态推演见 [active-standby-logic.md](active-standby-logic.md)。
 

@@ -7,9 +7,13 @@
 ```bash
 bash tests/test_active_standby.sh   # 主备自动启用 + 优先级选主 + 故障切换
 bash tests/test_connectivity.sh     # TCP 探测（含无 netcat 时的 /dev/tcp 回退）
+bash tests/test_e2e.sh              # 主备 / 剔除两种故障转移模式的 11 个端到端场景
+bash tests/test_set_u.sh            # set -u 下的健壮性（关联数组未定义键）
+bash tests/run_tests.sh             # 离线台架（22 条用例，沙箱 + 外部依赖打桩）
 ```
 
-两个脚本都用 `mktemp -d` 建沙箱，结束后自动清理。
+前四个脚本都用 `mktemp -d` 建沙箱，结束后自动清理。
+`tests/run_tests.sh` 会把仓库产物复制进沙箱再跑，不写仓库、不碰真实 `/etc/realm`。
 
 ## `tests/test_active_standby.sh`
 
@@ -40,6 +44,48 @@ bash tests/test_connectivity.sh     # TCP 探测（含无 netcat 时的 /dev/tcp
 | 可达端口 | 返回 0 |
 | 关闭端口 | 返回 1 |
 | 不可达 IP | 返回 1，且耗时不超时失控 |
+
+## `tests/test_e2e.sh`
+
+主备（`active-standby`）与剔除（`roundrobin` 回归）两种故障转移模式的 11 个场景，
+断言的是 `generate_endpoints_from_rules` 真正生成的 realm `balance` 字段：
+
+| 场景 | 断言 |
+|------|------|
+| 1–6 主备 | 平时 `1,0,0`；主挂 `0,1,0`；主+备1挂 `0,0,1`；主恢复回 `1,0,0`；全挂兜底 `1,0,0`（不断流） |
+| 7–11 剔除 | 全健康 3 个目标；主挂剩 2 个；主+备1挂剩 1 个；全挂保留 1 个；`failover off` 不做过滤 |
+
+场景编号与 `docs/active-standby-logic.md` 的「自动化测试覆盖」一一对应。
+
+## `tests/test_set_u.sh`
+
+`set -u`（未定义变量即报错）下的健壮性测试。配置生成路径大量使用
+`declare -A` 关联数组，旧写法 `${arr[$key]}` 在 `set -u` 下访问未设置的键会
+**致命中断整个 shell** —— 结果是 `config.json` 被写成空、realm 起不来，
+而界面仍然显示「✓ 生成成功」。
+
+| 覆盖点 | 断言 |
+|--------|------|
+| 对照组 | 旧写法在 `set -u` 下确实退出非 0；新写法 `${arr[$key]:-}` 退出 0 |
+| 生成不中断 | `set -u` 下 `generate_endpoints_from_rules` 退出 0，且无 `unbound variable` |
+| 输出一致 | `set -u` 下生成的配置与普通模式逐字节相同，仍产出 `balance` 与全部目标 |
+| 其他函数 | `read_rule_file` / `reorder_rule_ids` 在 `set -u` 下成功 |
+
+## `tests/run_tests.sh` —— 离线台架
+
+22 条用例，核心是**沙箱 + 打桩**：把仓库产物按 LF 复制进沙箱、把系统绝对路径
+重定向到沙箱目录、把 `systemctl` / `nc` / `curl` / `wget` / `realm` 等外部依赖
+换成可预测的替身，然后断言真实实现的行为。
+
+| 文件 | 作用 |
+|------|------|
+| `tests/lib/sandbox.sh` | 沙箱构建：LF 副本、路径重定向、root 模拟、外部依赖打桩、基线快照 |
+| `tests/lib/harness.sh` | 用例框架：断言、证据落盘、汇总 |
+| `tests/cases/01_static_contract.sh` | 静态契约（文档声称的文件必须存在、下载地址必须指向本 fork 等） |
+| `tests/cases/02_weight_active_standby.sh` | 权重校验与「含 0 → 自动主备」 |
+| `tests/cases/03_failover_runtime.sh` | 故障转移运行时行为（健康检查服务、生成物行尾归一化等） |
+
+每条用例的 stdout / notes / fails / meta 都落在沙箱的 `cases/` 目录里，便于复查。
 
 ## `tests/shims/` —— 离线替身
 
