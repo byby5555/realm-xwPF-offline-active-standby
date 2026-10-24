@@ -78,6 +78,8 @@ create_single_nat_rule() {
     local rule_file="${RULES_DIR}/rule-${rule_id}.conf"
     local rule_name="中转"
 
+    # ★ 新增规则键时，必须同时加进 lib/health.sh 的 read_rule_file 白名单（_allowed），
+    #   否则该键不会被解析出来（set -u 下还是未定义变量）。
     tr -d '\r' > "$rule_file" <<EOF
 RULE_ID=$rule_id
 RULE_NAME="$rule_name"
@@ -126,6 +128,8 @@ create_single_exit_rule() {
     local rule_name="服务端"
     local forward_target="$FORWARD_TARGET:$forward_port"
 
+    # ★ 新增规则键时，必须同时加进 lib/health.sh 的 read_rule_file 白名单（_allowed），
+    #   否则该键不会被解析出来（set -u 下还是未定义变量）。
     tr -d '\r' > "$rule_file" <<EOF
 RULE_ID=$rule_id
 RULE_NAME="$rule_name"

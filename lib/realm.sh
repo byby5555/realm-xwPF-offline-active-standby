@@ -393,7 +393,10 @@ generate_endpoints_from_rules() {
                     targets_to_add="$FORWARD_TARGET"
                 else
                     # 中转服务器：优先使用TARGET_STATES，否则使用REMOTE_HOST
-                    if [ "$BALANCE_MODE" != "off" ] && [ -n "$TARGET_STATES" ]; then
+                    # 双保险：read_rule_file 已保证这两个键有值（缺失回落空串），
+                    # 这里再给默认值 —— 免得解析器将来被改坏时，
+                    # 「走 TARGET_STATES 还是 REMOTE_HOST」这个判定点在 set -u 下致命中断。
+                    if [ "${BALANCE_MODE:-}" != "off" ] && [ -n "${TARGET_STATES:-}" ]; then
                         # 负载均衡模式且有TARGET_STATES，使用TARGET_STATES
                         targets_to_add="$TARGET_STATES"
                     else

@@ -34,6 +34,11 @@ REALM_HEALTH_LIB="${REALM_HEALTH_LIB:-${BASH_SOURCE[0]}}"
 # 行为约定：
 #   - 白名单里的 KEY 每读一条规则都会被重新赋值 → 上一条规则的残留值不会串到下一条
 #   - 文件里没写的 KEY 回落成空串 → 下游直接读 $VAR 不会在 set -u 下致命中断
+#
+# ★ 新增规则键时必须同步做两件事，否则会静默失效：
+#   1) 把键名加进下面的 _allowed 白名单（不加 → 该键永远读不到，且 set -u 下是未定义变量）
+#   2) 把键名加进 lib/server.sh 的规则模板（不加 → 落盘的规则文件里没有这个键）
+#   键名清单以本白名单为准；台架 T34 会核对文档里的函数级引用指向的符号是否还存在。
 read_rule_file() {
     local rule_file="$1"
     local _line _k _v _key

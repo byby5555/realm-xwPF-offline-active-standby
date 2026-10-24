@@ -665,7 +665,8 @@ edit_nat_server_config() {
     local old_listen_port="$LISTEN_PORT"
     local is_balance_mode=false
 
-    if [ "$BALANCE_MODE" != "off" ] && [ -n "$TARGET_STATES" ]; then
+    # 双保险：同 lib/realm.sh 的同名判定点 —— 解析器已保证有值，这里再兜一层默认值
+    if [ "${BALANCE_MODE:-}" != "off" ] && [ -n "${TARGET_STATES:-}" ]; then
         is_balance_mode=true
     fi
 
