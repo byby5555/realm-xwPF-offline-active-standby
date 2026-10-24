@@ -99,52 +99,53 @@ sync_health_status_ids() {
         local _cand_id=""
         for rule_file in "${RULES_DIR}"/rule-*.conf; do
             if [ -f "$rule_file" ] && read_rule_file "$rule_file"; then
-                if [ "$RULE_ROLE" = "1" ]; then
-                    # ★ TARGET 口径是 host:port：按「REMOTE_HOST 里的某个 host + 本规则的 REMOTE_PORT」匹配。
-                    #   老口径拿 REMOTE_HOST 做子串匹配，多地址规则（REMOTE_HOST=a,b）匹配不上
-                    #   host:port 形式的记录 → 记录被整条丢掉。
-                    #   旧格式（TARGET 只有 host）先按 host 精确匹配，匹配不上再退回老口径，
-                    #   保证升级过程里老记录不会被丢。
-                    local _matched=false
-                    local _h
-                    local _rh=()
-                    IFS=',' read -ra _rh <<< "$REMOTE_HOST"
-                    for _h in "${_rh[@]}"; do
-                        _h=$(echo "$_h" | xargs)  # 去除空格
-                        [ -n "$_h" ] || continue
-                        if [[ "$target" == *:* ]]; then
-                            if [ "${_h}:${REMOTE_PORT}" = "$target" ]; then
-                                _matched=true
-                                break
-                            fi
-                        else
-                            if [ "$_h" = "$target" ]; then
-                                _matched=true
-                                break
-                            fi
-                        fi
-                    done
-                    if [ "$_matched" != true ] && [[ "$target" != *:* ]]; then
-                        # 旧口径兜底（**刻意保留，不是漏改**）：老记录的 host 可能只是 REMOTE_HOST 的子串，
-                        # 精确匹配认不出来时仍按老口径认领 —— 升级期间宁可沿用老认领方式，
-                        # 也不能把老记录整条丢掉（丢掉 = 状态归零 = 故障转移静默失效）。
-                        if [[ "$REMOTE_HOST" == *"$target"* ]]; then
+                # ★ 候选只认「**被健康检查监控**」的规则。
+                #   门槛与写端逐字对齐（见 lib/health.sh 的健康检查体）：
+                #     RULE_ROLE=1 && ENABLED=true && FAILOVER_ENABLED=true
+                #   写端只给这几类规则的行 ⇒ **没被监控的规则在状态文件里本来就没有行**，
+                #   它不该认领任何行。
+                #   不设这道门槛的后果（审稿实测复现）：规则重编号后，
+                #   一条**没开故障转移**的规则会按「目标地址相同」抢走被监控规则的行
+                #   ⇒ 被监控规则的失败状态丢失（状态归零 = 该切不切的静默失效）。
+                #   ⇒ 门槛同时把「角色 2（服务端服务器）」也排除掉：它不被健康检查监控，
+                #     状态文件里不会有它的行（原来那条 FORWARD_TARGET 匹配分支因此作废）。
+                if [ "$RULE_ROLE" != "1" ] || [ "$ENABLED" != "true" ] || [ "$FAILOVER_ENABLED" != "true" ]; then
+                    continue
+                fi
+                # ★ TARGET 口径是 host:port：按「REMOTE_HOST 里的某个 host + 本规则的 REMOTE_PORT」匹配。
+                #   老口径拿 REMOTE_HOST 做子串匹配，多地址规则（REMOTE_HOST=a,b）匹配不上
+                #   host:port 形式的记录 → 记录被整条丢掉。
+                #   旧格式（TARGET 只有 host）先按 host 精确匹配，匹配不上再退回老口径，
+                #   保证升级过程里老记录不会被丢。
+                local _matched=false
+                local _h
+                local _rh=()
+                IFS=',' read -ra _rh <<< "$REMOTE_HOST"
+                for _h in "${_rh[@]}"; do
+                    _h=$(echo "$_h" | xargs)  # 去除空格
+                    [ -n "$_h" ] || continue
+                    if [[ "$target" == *:* ]]; then
+                        if [ "${_h}:${REMOTE_PORT}" = "$target" ]; then
                             _matched=true
+                            break
+                        fi
+                    else
+                        if [ "$_h" = "$target" ]; then
+                            _matched=true
+                            break
                         fi
                     fi
-                    if [ "$_matched" = true ]; then
-                        _cand_ids="${_cand_ids} ${RULE_ID}"
+                done
+                if [ "$_matched" != true ] && [[ "$target" != *:* ]]; then
+                    # 旧口径兜底（**刻意保留，不是漏改**）：老记录的 host 可能只是 REMOTE_HOST 的子串，
+                    # 精确匹配认不出来时仍按老口径认领 —— 升级期间宁可沿用老认领方式，
+                    # 也不能把老记录整条丢掉（丢掉 = 状态归零 = 故障转移静默失效）。
+                    if [[ "$REMOTE_HOST" == *"$target"* ]]; then
+                        _matched=true
                     fi
-                else
-                    local _fwd_ok=false
-                    if [ "$FORWARD_TARGET" = "$target" ]; then
-                        _fwd_ok=true
-                    elif [[ "$target" != *:* ]] && [ "${FORWARD_TARGET%%:*}" = "$target" ]; then
-                        _fwd_ok=true
-                    fi
-                    if [ "$_fwd_ok" = true ]; then
-                        _cand_ids="${_cand_ids} ${RULE_ID}"
-                    fi
+                fi
+                if [ "$_matched" = true ]; then
+                    _cand_ids="${_cand_ids} ${RULE_ID}"
                 fi
             fi
         done
