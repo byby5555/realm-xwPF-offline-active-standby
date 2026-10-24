@@ -92,61 +92,9 @@ _bootstrap() {
     echo ""
 }
 
-# 清理老机器上的「主备池守护」残留
-#
-# ★ 背景：产品不再安装那个独立守护进程（进程级主备池 + xwpf-failover），
-#   但老机器上还留着它：service 还在跑（占着端口）、unit、drop-in、二进制都在。
-#   不清 = 留下一个没人管、但还在占端口的僵尸守护。
-#   升级路径（install）与卸载路径都要调它。
-#
-# ★ 每一步都容错：不存在就跳过；清理失败也不让安装/卸载失败（只提示）。
-#   用户的转发配置（/etc/xwpf/*.json）**不删** —— 那是用户自己的东西，
-#   删了没法回查 → 改名成 .disabled 留档。
-_cleanup_legacy_failover_daemon() {
-    local unit="/etc/systemd/system/xwpf-failover.service"
-    local unit_alt="/lib/systemd/system/xwpf-failover.service"
-    local dropin_dir="/etc/systemd/system/xwpf-failover.service.d"
-    local daemon_bin="/usr/local/bin/xwpf-failover"
-    local version_file="/usr/local/bin/.xwpf-failover-version"
-    local pool_conf="/etc/xwpf/failover.json"
-    local pool_state="/etc/xwpf/failover-state.json"
-    local cleaned=0
-
-    # 1) 停掉老守护服务（先 stop 再 disable：停了就不会再被拉起来）
-    systemctl stop xwpf-failover >/dev/null 2>&1 || true
-    systemctl disable xwpf-failover >/dev/null 2>&1 || true
-    # 兜底：不在 systemd 管辖下的残留进程
-    if pgrep -f "xwpf-failover" >/dev/null 2>&1; then
-        pkill -f "xwpf-failover" >/dev/null 2>&1 || true
-        sleep 1
-        pkill -9 -f "xwpf-failover" >/dev/null 2>&1 || true
-        cleaned=1
-    fi
-
-    # 2) 删掉老 unit 文件
-    [ -f "$unit" ] && { rm -f "$unit"; cleaned=1; }
-    [ -f "$unit_alt" ] && { rm -f "$unit_alt"; cleaned=1; }
-
-    # 3) 删掉老 drop-in 目录（崩溃循环防护那几行在里面）
-    [ -d "$dropin_dir" ] && { rm -rf "$dropin_dir"; cleaned=1; }
-
-    # 4) 删掉老 daemon 二进制
-    [ -f "$daemon_bin" ] && { rm -f "$daemon_bin"; cleaned=1; }
-    [ -f "$version_file" ] && { rm -f "$version_file"; cleaned=1; }
-
-    # 5) 用户的池配置 / 状态：不删，改名留档（删了用户没法回查）
-    [ -f "$pool_conf" ] && { mv -f "$pool_conf" "${pool_conf}.disabled" 2>/dev/null || true; cleaned=1; }
-    [ -f "$pool_state" ] && { mv -f "$pool_state" "${pool_state}.disabled" 2>/dev/null || true; cleaned=1; }
-
-    # 6) 让 systemd 忘掉被删掉的 unit
-    systemctl daemon-reload >/dev/null 2>&1 || true
-
-    if [ "$cleaned" = "1" ]; then
-        echo -e "  ${_GREEN}✓${_NC} 已清理主备池守护残留（老机器上的 xwpf-failover）"
-    fi
-
-    return 0
-}
+# ★ 老机器上「主备池守护残留」的清理实现**只有一份**，在 lib/ui.sh 的
+#   _cleanup_legacy_failover_daemon —— 菜单项 8「卸载服务」直接走 lib/ui.sh 的
+#   uninstall_realm，**不经过本文件**；清理写在这里，菜单卸载时够不着。
 
 # 加载模块
 _load_libs() {

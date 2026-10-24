@@ -1046,6 +1046,20 @@ smart_install() {
     if install_realm; then
         echo -e "${GREEN}=== 安装完成！ ===${NC}"
         echo -e "${YELLOW}输入快捷命令 ${GREEN}pf${YELLOW} 进入脚本交互界面${NC}"
+
+        # ★ 用真源重新生成健康探测端产物（唯一真源 = lib/health.sh）
+        #   菜单里「安装服务」走的是本函数，**不经过 xwPF.sh install** ——
+        #   不在这里重生成，机器上跑的就还是旧产物 = 探测端静默失效
+        #   （日志照样每 4 秒打「健康检查完成」，状态却停在几小时前）。
+        #   失败只提示，不中断安装。
+        if declare -F health_check_script_regenerate >/dev/null 2>&1; then
+            if health_check_script_regenerate; then
+                echo -e "${GREEN}✓ 健康检查脚本已按真源重新生成${NC}"
+            else
+                echo -e "${RED}✗ 重新生成健康检查脚本失败：/etc/realm/health/health_check.sh 仍是旧产物${NC}"
+                echo -e "${RED}  权重 10,0 主备的切换会静默失效（探测端不再更新状态）${NC}"
+            fi
+        fi
     else
         echo -e "${RED}错误: realm安装失败${NC}"
         echo -e "${YELLOW}输入快捷命令 ${GREEN}pf${YELLOW} 可进入脚本交互界面${NC}"
