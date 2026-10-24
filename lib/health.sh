@@ -578,9 +578,15 @@ if [ "$config_changed" = true ]; then
     echo "$(date '+%Y-%m-%d %H:%M:%S') [CONFIG] 检测到节点状态变化，正在更新配置..."
 
     # 直接调用主脚本的重启接口
+    # ★ 看退出码：重启失败（配置形态非法 ⇒ realm 崩溃 ⇒ 全站断流）时
+    #   必须把失败**说清楚**，不能照样打「配置更新完成」。
     pf --restart-service >/dev/null 2>&1
-
-    echo "$(date '+%Y-%m-%d %H:%M:%S') [CONFIG] 配置更新完成"
+    _restart_rc=$?
+    if [ "$_restart_rc" -ne 0 ]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') [CONFIG] 配置更新失败（重启返回码 $_restart_rc）—— 权重可能未生效"
+    else
+        echo "$(date '+%Y-%m-%d %H:%M:%S') [CONFIG] 配置更新完成"
+    fi
 fi
 
 echo "$(date '+%Y-%m-%d %H:%M:%S') [INFO] 健康检查完成"

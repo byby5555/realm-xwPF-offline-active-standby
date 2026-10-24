@@ -678,6 +678,31 @@ generate_endpoints_from_rules() {
         local main_host="${main_target%:*}"
         local main_port="${main_target##*:}"
 
+        # ★ A-17 护栏（构造期 · 纯 bash，不依赖 jq）：
+        #   目标地址与策略名是**从规则文件带出来的**（规则文件可以被人手改），
+        #   而它们会被直接拼进 config.json 的 JSON 字面量里：
+        #     · 目标里带引号 / 反斜杠 / 空格 / 花括号 ⇒ JSON 破掉
+        #     · 策略名带冒号 ⇒ balance 变成 "xxx: 1: 1"
+        #   两种形态都会让 realm 解析失败 ⇒ panic ⇒ **整个 realm 挂掉 ⇒ 全站断流**
+        #   ⇒ 形态不合法就**不生成**（保留原配置）。
+        local _shape_bad=""
+        local _ti
+        for _ti in "${targets[@]}"; do
+            if ! printf '%s' "$_ti" | grep -qE '^[^"\\{},[:space:]]+$'; then
+                _shape_bad="目标地址形态非法: ${_ti}"
+                break
+            fi
+        done
+        if [ -z "$_shape_bad" ] && [ -n "$balance_mode" ] \
+            && ! printf '%s' "$balance_mode" | grep -qE '^[A-Za-z][A-Za-z0-9_-]*$'; then
+            _shape_bad="负载均衡策略名形态非法: ${balance_mode}"
+        fi
+        if [ -n "$_shape_bad" ]; then
+            echo -e "${RED}✗ ${_shape_bad}（端口组 ${port_key}）${NC}" >&2
+            echo -e "${RED}  该值会被直接拼进 config.json ⇒ realm 解析失败会崩溃（整个 realm 挂掉 ⇒ 全站断流）${NC}" >&2
+            return 1
+        fi
+
         # 构建extra_remotes
         local extra_remotes=""
         if [ ${#targets[@]} -gt 1 ]; then
@@ -726,6 +751,19 @@ generate_endpoints_from_rules() {
                     fi
                     weight_config="${weight_config}1"
                 done
+            fi
+
+            # ★ A-17 护栏：balance 的权重个数必须 == 目标数
+            #   对不上 ⇒ realm 解析 balance 时 panic ⇒ 整个 realm 挂掉 ⇒ 全站断流
+            #   （两条路径都保证相等：主备路径按目标顺序重生成 0/1；
+            #     剔除模式按保留下来的目标下标切权重）
+            local _wcount _tcount
+            _tcount="${#targets[@]}"
+            _wcount=$(printf '%s' "$weight_config" | tr ',' '\n' | grep -c '[^[:space:]]' || true)
+            if [ "$_wcount" -ne "$_tcount" ]; then
+                echo -e "${RED}✗ 权重个数（${_wcount}）与目标数（${_tcount}）不一致（端口组 ${port_key}）${NC}" >&2
+                echo -e "${RED}  balance 形态非法 ⇒ realm 解析时 panic（整个 realm 挂掉 ⇒ 全站断流）${NC}" >&2
+                return 1
             fi
 
             # 主备模式（active-standby）映射为 roundrobin 输出给 realm
@@ -928,7 +966,10 @@ generate_realm_config() {
 
     if [ "$has_rules" = false ]; then
         echo -e "${BLUE}未找到启用的规则，生成空配置${NC}"
-        generate_complete_config ""
+        if ! generate_complete_config ""; then
+            echo -e "${RED}✗ 空配置未写入（已保留原配置）${NC}"
+            return 1
+        fi
         echo -e "${GREEN}✓ 空配置文件已生成${NC}"
         return 0
     fi
@@ -937,10 +978,22 @@ generate_realm_config() {
     echo -e "${BLUE}找到 $enabled_count 个启用的规则，生成多规则配置${NC}"
 
     # 获取所有启用规则的endpoints
-    local endpoints=$(generate_endpoints_from_rules)
+    # ★ 端点生成失败（形态自检没过）时**必须把失败传上去**：
+    #   local var=$(cmd) 会把退出码吃掉（local 自己返回 0）
+    #   ⇒ 那样就会在生成失败后照样打「✓ 配置文件已生成」。
+    local endpoints
+    if ! endpoints=$(generate_endpoints_from_rules); then
+        echo -e "${RED}✗ 端点生成失败（已保留原配置）${NC}"
+        return 1
+    fi
 
     # 使用统一模板生成多规则配置
-    generate_complete_config "$endpoints"
+    # ★ 形态校验不通过时**不写**（保留原配置）→ 这里必须把失败传上去，
+    #   不能照样打「✓ 配置文件已生成」（那是在骗人）。
+    if ! generate_complete_config "$endpoints"; then
+        echo -e "${RED}✗ 配置文件未写入（已保留原配置）${NC}"
+        return 1
+    fi
 
     echo -e "${GREEN}✓ 多规则配置文件已生成${NC}"
     echo -e "${BLUE}配置详情: $enabled_count 个启用的转发规则${NC}"
@@ -1100,11 +1153,34 @@ service_restart() {
         echo -e "${GREEN}✓ 规则排序优化完成${NC}"
     fi
 
+    # ★ 改动前先备份当前配置（A-17 护栏的回滚点）
+    #   万一新配置让 realm 崩了（panic ⇒ 全站断流），要能退回去。
+    local _cfg_prev=""
+    if [ -f "$CONFIG_PATH" ]; then
+        _cfg_prev="${CONFIG_PATH}.prev"
+        cp -f "$CONFIG_PATH" "$_cfg_prev" 2>/dev/null || _cfg_prev=""
+    fi
+
     # 重新生成配置文件
     echo -e "${BLUE}重新生成配置文件...${NC}"
-    generate_realm_config
+    if ! generate_realm_config; then
+        echo -e "${RED}✗ 配置生成失败（已保留原配置，realm 未重启）${NC}"
+        return 1
+    fi
 
     if svc_restart; then
+        # ★ A-17 判据 2（红线）：**不能只看「配置生成成功」**
+        #   必须确认 realm 重启后真的活着 —— 配置形态非法 ⇒ realm panic ⇒ 全站断流。
+        if ! svc_is_active; then
+            echo -e "${RED}✗ Realm 重启后未处于 active 状态（配置可能让 realm 崩溃）${NC}"
+            if [ -n "$_cfg_prev" ] && [ -f "$_cfg_prev" ]; then
+                if cp -f "$_cfg_prev" "$CONFIG_PATH" 2>/dev/null && svc_restart >/dev/null 2>&1; then
+                    echo -e "${YELLOW}  已回滚到改动前的配置并重启${NC}"
+                fi
+            fi
+            svc_status_detail
+            return 1
+        fi
         echo -e "${GREEN}✓ Realm 服务重启成功${NC}"
     else
         echo -e "${RED}✗ Realm 服务重启失败${NC}"

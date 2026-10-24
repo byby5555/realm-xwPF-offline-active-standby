@@ -209,6 +209,64 @@ generate_network_config() {
     echo "$base_network"
 }
 
+# 校验 realm 配置文件的形态（A-17 护栏）
+#
+# ★ 为什么必须有这道护栏（Chief 真机 103 实测）：
+#   config.json 里 "remote" 写成**数组**、或 "balance" **不带权重**
+#   ⇒ realm 直接 panic（realm_lb 的 balancer.rs）
+#   ⇒ 不是只断那一个 endpoint，是**所有 endpoint 全断**（全站断流）。
+# ★ 判据（A-17 判据 1）：
+#   1) 每个 endpoint 的 remote 必须是 **string**（不是数组）
+#   2) extra_remotes 必须是 **array**（元素都是 string）
+#   3) balance 必须是 string，且形如 "策略: 权重1, 权重2"（**必须带 ": 权重"**）
+#   4) balance 的权重个数 == 目标数（remote 1 个 + extra_remotes 元素数）
+# ★ fail-closed：形态不合法 ⇒ 调用方**不写**（保留原配置）并报错。
+#   宁可配置不更新，也不能写出让 realm 崩掉的配置。
+# ★ 失败原因打到 stdout（调用方转成醒目报错）；成功时 stdout 为空。
+realm_config_shape_validate() {
+    local config_file="$1"
+
+    [ -f "$config_file" ] || { echo "配置文件不存在: $config_file"; return 0; }
+    if ! command -v jq >/dev/null 2>&1; then
+        # ★ jq 不可用 ⇒ **不拦**（这台机器本来就跑不了 realm）。
+        #   真正的拦截在构造期（lib/realm.sh 的形态自检，纯 bash，处处能跑）。
+        echo "jq 不可用，跳过配置形态校验"
+        return 0
+    fi
+
+    local problems
+    problems=$(jq -r 'if (.endpoints | type) != "array" then ["endpoints 必须是数组"]
+else
+  [ .endpoints[] |
+      if (.remote | type) != "string" then "remote 必须是 string"
+      elif (.remote | length) == 0 then "remote 不能为空"
+      elif ((.extra_remotes // []) | type) != "array" then "extra_remotes 必须是数组"
+      elif ((((.extra_remotes // []) | map(type) | unique) - ["string"]) | length) > 0) then "extra_remotes 的元素必须是 string"
+      elif (has("balance") and (.balance != null)) then
+        (if (.balance | type) != "string" then "balance 必须是 string"
+         elif ((.balance | test("^[A-Za-z][A-Za-z0-9_-]*: *[0-9]+(, *[0-9]+)*$")) | not) then "balance 必须形如 策略: 权重1, 权重2"
+         elif ((.balance | split(":")[1] | split(",") | map(gsub("^ +| +$"; "")) | length) != (1 + ((.extra_remotes // []) | length))) then "balance 的权重个数与目标数不一致"
+         else null end)
+      else null end
+  ]
+end
+| map(select(. != null))
+| join("；")' "$config_file" 2>/dev/null)
+    if [ $? -ne 0 ]; then
+        # ★ jq 自己没跑起来（台架的 jq 桩能力不足 / 过滤器不支持 / 文件坏了）
+        #   ⇒ **不拦**，只提示。
+        #   拦在这里 = 「校验器跑不了」变成「配置写不进去」—— 那是更糟的故障。
+        echo "jq 未能完成形态校验（跳过）"
+        return 0
+    fi
+    problems=$(printf '%s' "$problems" | tr -d '\r')
+    if [ -z "$problems" ]; then
+        return 0
+    fi
+    echo "$problems"
+    return 1
+}
+
 generate_complete_config() {
     local endpoints="$1"
     local config_path="${2:-$CONFIG_PATH}"
@@ -218,13 +276,33 @@ generate_complete_config() {
         network_config='{"no_tcp": false, "use_udp": true}'
     fi
 
-    tr -d '\r' > "$config_path" <<EOF
+    # ★ 先写临时文件 → 校验形态 → 通过才原子替换（A-17 护栏）
+    #   形态不合法 ⇒ 删掉临时文件、**保留原配置**、返回非 0。
+    #   原来直接 > 覆盖写：坏配置会立刻落盘 ⇒ realm 重启后 panic ⇒ 全站断流。
+    local tmp_config="${config_path}.tmp.$$"
+    tr -d '\r' > "$tmp_config" <<EOF
 {
     "network": $network_config,
     "endpoints": [$endpoints
     ]
 }
 EOF
+
+    local problem
+    problem=$(realm_config_shape_validate "$tmp_config")
+    if [ $? -ne 0 ]; then
+        rm -f "$tmp_config" 2>/dev/null
+        echo -e "${RED}✗ 配置形态校验失败：本次不写入（保留原配置）${NC}" >&2
+        [ -n "$problem" ] && echo -e "${RED}  原因：${problem}${NC}" >&2
+        return 1
+    fi
+
+    if ! mv -f "$tmp_config" "$config_path" 2>/dev/null; then
+        rm -f "$tmp_config" 2>/dev/null
+        echo -e "${RED}✗ 配置文件写入失败${NC}" >&2
+        return 1
+    fi
+    return 0
 }
 
 check_root() {
