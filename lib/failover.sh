@@ -12,6 +12,10 @@ XWPF_FAILOVER_SERVICE="xwpf-failover"
 XWPF_FAILOVER_UNIT="/etc/systemd/system/xwpf-failover.service"
 XWPF_FAILOVER_CONF_DIR="/etc/xwpf"
 XWPF_FAILOVER_CONF="${XWPF_FAILOVER_CONF_DIR}/failover.json"
+# 状态文件（守护进程写、菜单读）—— 落点跟着配置目录走
+# ★ 写端只有一处：cmd/xwpf-failover.py 的 StateStore（默认同一个落点，-s 可改）
+#   读端只有一处：lib/ui.sh 的 ui_show_failover_state
+XWPF_FAILOVER_STATE_FILE="${XWPF_FAILOVER_STATE_FILE:-${XWPF_FAILOVER_CONF_DIR}/failover-state.json}"
 # 已安装 daemon 的版本记录（用于判断是否需要重装升级）
 XWPF_FAILOVER_VERSION_FILE="/usr/local/bin/.xwpf-failover-version"
 # 端口占用探测结果（failover_check_port_listening 写入，调用方打印原因用）
@@ -98,37 +102,61 @@ failover_validate_addr() {
 # ★ 旧实现有个洞：socket() 创建失败（协议族不可用，例如内核禁用 IPv6）
 #   也走 except OSError → 一律判「端口被占用」。查不到占用者却下结论，
 #   比直接报错更误导运维。现在三态：不可用 → 「无法判定」。
+#
+# ★ F4（另一个同族洞）：socket() 成功但 bind() 报 EADDRNOTAVAIL / EAFNOSUPPORT
+#   —— 这是**该协议族在本机不可用**（典型：IPv6-only 主机上 bind(("0.0.0.0", port))），
+#   旧实现同样打印 BUSY → 误报「端口被占用」→ 拒绝写 failover.json →
+#   用户建池失败，而且**原因完全不对**。现在这类 errno 归入「该族不可用」→ 跳过该族。
 failover_check_port_listening() {
     local port="${1:?port required}"
     local out=""
     FAILOVER_PORT_PROBE_DETAIL=""
     command -v python3 >/dev/null 2>&1 || return 2
     out="$(python3 - "$port" 2>/dev/null <<'PY'
-import socket, sys
+import errno, socket, sys
 try:
     port = int(sys.argv[1])
 except (IndexError, ValueError):
     sys.exit(2)
+# ★ 三态判定：
+#   BUSY    = 端口确实被别的进程占着（EADDRINUSE）
+#   FREE    = 至少一个协议族试绑成功
+#   UNKNOWN = 试绑失败，但原因**不是**「被占用」
+# ★ F4 修复：协议族不可用（IPv6-only 主机上 bind(("0.0.0.0", port)) 报 EADDRNOTAVAIL）
+#   以前一律打印 BUSY → 误报「端口被占用」→ 拒绝写配置 → 用户建池失败且**原因不对**。
+#   现在这类错误算「该协议族不可用」→ 跳过该族 → 换另一个族试。
+probed = 0
+unavailable = []
 for fam, addr in ((socket.AF_INET, ("0.0.0.0", port)),
                   (socket.AF_INET6, ("::", port))):
     try:
         s = socket.socket(fam, socket.SOCK_STREAM)
-    except OSError:
-        # 该协议族不可用（例如内核禁用 IPv6）→ 跳过，
-        # 不能据此判定「端口被占用」。
+    except OSError as e:
+        unavailable.append("%s:%d socket() 失败: %s" % (addr[0], port, e.strerror or str(e)))
         continue
     try:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind(addr)
+        probed += 1
     except OSError as e:
-        print("BUSY %s:%d %s" % (addr[0], port, e.strerror or str(e)))
+        if e.errno == errno.EADDRINUSE:
+            print("BUSY %s:%d %s" % (addr[0], port, e.strerror or str(e)))
+            sys.exit(0)
+        if e.errno in (errno.EADDRNOTAVAIL, errno.EAFNOSUPPORT, errno.EPROTONOSUPPORT):
+            # ★ 该协议族在本机不可用 —— 不是端口被占
+            unavailable.append("%s:%d %s" % (addr[0], port, e.strerror or str(e)))
+            continue
+        print("UNKNOWN %s:%d %s" % (addr[0], port, e.strerror or str(e)))
         sys.exit(0)
     finally:
         try:
             s.close()
         except OSError:
             pass
-print("FREE")
+if probed:
+    print("FREE")
+else:
+    print("UNKNOWN " + ("; ".join(unavailable) if unavailable else "试绑失败"))
 PY
 )" || return 2
     case "$out" in
@@ -137,6 +165,9 @@ PY
         BUSY*)
             FAILOVER_PORT_PROBE_DETAIL="${out#BUSY }"
             return 1 ;;
+        UNKNOWN*)
+            FAILOVER_PORT_PROBE_DETAIL="${out#UNKNOWN }"
+            return 2 ;;
     esac
     return 2
 }
@@ -162,7 +193,10 @@ failover_require_listen_port_free() {
     else
         # 无法判定：**不能**写「已被占用」——
         # 查不到占用者却下结论，比直接报错更误导运维。
-        echo -e "${RED}无法确认端口 ${port} 是否空闲 (探测环境不可用: 缺 python3 或探测失败) — 拒绝写入 ${XWPF_FAILOVER_CONF}${NC}"
+        echo -e "${RED}无法确认端口 ${port} 是否空闲 (探测环境不可用) — 拒绝写入 ${XWPF_FAILOVER_CONF}${NC}"
+        if [ -n "$FAILOVER_PORT_PROBE_DETAIL" ]; then
+            echo -e "  原因: ${FAILOVER_PORT_PROBE_DETAIL}"
+        fi
         echo -e "${YELLOW}处置: 装好 python3 后重试；或先用 ss -lntp 确认端口状态${NC}"
     fi
     return 1
@@ -324,10 +358,19 @@ failover_pool_write_json() {
     # Args:
     # $1 = name  $2 = listen  $3 = primary_port  $4 = primary_rule_id
     # $5 = backup_ports_csv  $6 = backups_csv  $7 = backup_rules_csv
+    # $8 = primary_real_addr（★ 新增，可选）：主线的**真实后端**地址
+    #     N3 起 primary 也写成双地址「回环|真实后端」：
+    #     转发走回环（保留 realm 的 TLS / per-rule 日志），探测打真实后端。
+    #     不给第 8 个参数 → 退回单地址（= 现在行为，不炸，老调用方不受影响）。
     local name="$1" listen="$2" primary_port="$3" primary_rule_id="$4"
     local backup_ports_csv="$5" backups_csv="$6" backup_rules_csv="$7"
+    local primary_real="${8:-}"
     mkdir -p "${XWPF_FAILOVER_CONF_DIR}"
-    primary_args=(--name "$name" --listen "$listen" --primary "127.0.0.1:$primary_port")
+    if [ -n "$primary_real" ]; then
+        primary_args=(--name "$name" --listen "$listen" --primary "127.0.0.1:$primary_port|$primary_real")
+    else
+        primary_args=(--name "$name" --listen "$listen" --primary "127.0.0.1:$primary_port")
+    fi
     # Build backup args + rule_ids list (passed in via --primary/--backup as values)
     backup_args=()
     IFS=',' read -ra bps <<< "$backup_ports_csv"
@@ -336,7 +379,8 @@ failover_pool_write_json() {
     local i=0
     for bp in "${bps[@]}"; do
         if [ "${#brs[@]}" -gt "$i" ]; then
-            backup_args+=(--backup "127.0.0.1:$bp|${bas[$i]}|${brs[$i]}")
+            # ★ 规则 ID 用显式标记 "|rule:<id>" 传递（不再靠「最后一段是不是数字」猜）
+            backup_args+=(--backup "127.0.0.1:$bp|${bas[$i]}|rule:${brs[$i]}")
         else
             backup_args+=(--backup "127.0.0.1:$bp|${bas[$i]}")
         fi
@@ -359,10 +403,16 @@ backups_raw = [v for k,v in zip(sys.argv[2::2], sys.argv[3::2]) if k == "--backu
 backups = []
 backup_rule_ids = []
 for b in backups_raw:
-    parts = b.rsplit("|", 1) if "|" in b else [b, ""]
-    if len(parts) == 2 and parts[1].isdigit():
-        backups.append(parts[0])
-        backup_rule_ids.append(int(parts[1]))
+    # ★ 规则 ID 用显式标记 "|rule:<id>" 传递 —— 不靠「最后一段是不是数字」猜：
+    #   真实后端地址允许是纯端口（host 语义缺失，缺陷待 Chief 裁定），
+    #   纯端口 + 旧写法会被误当成规则 ID → 地址被截断成只剩回环口，
+    #   而且删池时会去删一个根本不存在的 rule-<纯端口>.conf。
+    #   failover.json 里的 backups 仍是「回环|真实」两段（schema 不变）。
+    marker = "|rule:"
+    if marker in b:
+        addr, rid = b.rsplit(marker, 1)
+        backups.append(addr)
+        backup_rule_ids.append(int(rid) if rid.isdigit() else None)
     else:
         backups.append(b)
         backup_rule_ids.append(None)
@@ -459,6 +509,9 @@ failover_pool_create_direct() {
         echo -e "${RED}写入主备池配置失败${NC}"
         return 1
     fi
+
+    # 建池成功 = 之前的故障已被处理 → 自动清 unit 的 failed 状态（限流后不再卡住）
+    failover_reset_failed_state
 
     echo -e "${GREEN}已创建主备池 '$name' (direct 模式, 不走 realm)${NC}"
     echo -e "  公开监听: ${YELLOW}${public_listen}${NC}"
@@ -620,17 +673,36 @@ failover_pool_create() {
     bas_csv="$(IFS=,; echo "${backups[*]}")"
     brs_csv="$(IFS=,; echo "${backup_rule_ids[*]}")"
 
+    # ★ N3：主线的真实后端地址 → 双地址「回环|真实后端」。
+    #   转发走回环（保留 realm 的 TLS / per-rule 日志），
+    #   探测打真实后端（只探回环的话 realm 活着就永远判健康 → 真实后端挂了也不切换）。
+    #   口径与 failover_create_server_rule 写进 FORWARD_TARGET 的完全一致（同一份真源）。
+    #   纯端口形态（host 语义缺失，第 4 个同族缺陷待 Chief 裁定）→ 暂不写双地址，
+    #   保持单地址 = 现在行为，不擅自改产品形态。
+    local primary_real=""
+    if [[ "$primary_addr" =~ ^([^:]+):([0-9]+)$ ]]; then
+        primary_real="${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"
+    elif [[ "$primary_addr" =~ ^([^:]+)$ ]] && ! [[ "$primary_addr" =~ ^[0-9]+$ ]]; then
+        primary_real="${primary_addr}:443"
+    fi
+
     # 同上：写配置失败必须当场报错，不能被后面的 echo 覆盖返回码。
     # 注意此模式（realm 回环）在写配置**之前**已经生成过 realm 规则，
     # 所以失败时提示里要说明可能留下了半成品。
-    if ! failover_pool_write_json "${name}" "${public_listen}" "${primary_internal_port}" "${primary_rule_id}" "${bps_csv}" "${bas_csv}" "${brs_csv}"; then
+    if ! failover_pool_write_json "${name}" "${public_listen}" "${primary_internal_port}" "${primary_rule_id}" "${bps_csv}" "${bas_csv}" "${brs_csv}" "${primary_real}"; then
         echo -e "${RED}写入主备池配置失败（realm 回环规则可能已生成，请检查后手工清理）${NC}"
         return 1
     fi
 
+    # 建池成功 = 之前的故障已被处理 → 自动清 unit 的 failed 状态（限流后不再卡住）
+    failover_reset_failed_state
+
     echo -e "${GREEN}已创建主备池 '${name}'${NC}"
     echo -e "  公开监听: ${YELLOW}${public_listen}${NC}"
     echo -e "  ${BLUE}主${NC}  → ${primary_addr}  (loopback :${primary_internal_port}, rule-${primary_rule_id}.conf)"
+    if [ -n "$primary_real" ]; then
+        echo -e "         ${GRAY}守护进程按「转发=回环 :${primary_internal_port} / 探测=${primary_real}」工作${NC}"
+    fi
     local i=1
     for b in "${backups[@]}"; do
         echo -e "  ${BLUE}备${i}${NC}  → ${b}  (loopback :${backup_internal_ports[$((i-1))]}, rule-${backup_rule_ids[$((i-1))]}.conf)"
@@ -926,6 +998,12 @@ failover_install_files() {
     failover_write_crash_loop_guard || true
     systemctl daemon-reload || true
 
+    # ★ install = 故障已被处理（新二进制 + 新 unit 已就位）→ 自动清 unit 的 failed 状态。
+    #   不清的后果：崩溃循环被 systemd 限流后 unit 停在 failed，systemd 不会再拉起；
+    #   装完新版本还是不通，而 failed 状态一直挂着误导运维。
+    #   该清的自动清，不该清的（没装成功 / 没建池）留着让人看。
+    failover_reset_failed_state
+
     # 记录已安装版本，供下次比对决定是否重装
     failover_save_version "$(failover_source_version "${src_dir}/xwpf-failover.py" 2>/dev/null || true)"
 
@@ -979,11 +1057,41 @@ failover_service_stop() {
 
 failover_status_header() {
     echo -e "${BLUE}=== xwpf-failover ===${NC}"
+    failover_service_status_lines
+}
+
+# === 守护 unit 状态行（限流 / failed 可见） ===
+# ★ is-active 只回答「在不在跑」；崩溃循环被 systemd 限流后 unit 停在 **failed**，
+#   is-active 看不出来 → 运维以为「装好了」，实际转发早就断了。
+#   所以状态查询必须同时看 Result（上次退出结果）与 NRestarts（重启次数）。
+failover_service_status_lines() {
+    local res="" nrest="" state=""
+    res="$(systemctl show -p Result "${XWPF_FAILOVER_SERVICE}" 2>/dev/null | tr -d '\r' | sed -n 's/^Result=//p')"
+    nrest="$(systemctl show -p NRestarts "${XWPF_FAILOVER_SERVICE}" 2>/dev/null | tr -d '\r' | sed -n 's/^NRestarts=//p')"
     if systemctl is-active "${XWPF_FAILOVER_SERVICE}" >/dev/null 2>&1; then
-        echo -e "  ${GREEN}● ACTIVE${NC}"
+        state="${GREEN}● 运行中${NC}"
+    elif [ "$res" = "exit-code" ] || [ "$res" = "failed" ]; then
+        state="${RED}● failed${NC}"
     else
-        echo -e "  ${RED}● INACTIVE${NC}"
+        state="${RED}● 已停止${NC}"
     fi
+    echo -e "  守护状态: ${state}"
+    if [ -n "$nrest" ]; then
+        echo -e "  重启次数: ${nrest}"
+    fi
+    if [ "$res" = "exit-code" ] || [ "$res" = "failed" ]; then
+        echo -e "  ${YELLOW}unit 处于 failed (Result=${res}) —— 多半是崩溃循环被 systemd 限流后停手${NC}"
+        echo -e "  ${YELLOW}处置: 先查根因 journalctl -u ${XWPF_FAILOVER_SERVICE} -n 50, 修好后 systemctl reset-failed ${XWPF_FAILOVER_SERVICE}${NC}"
+    fi
+}
+
+# === 清 unit 的 failed 状态 ===
+# ★ 只在「故障已经被处理」的时刻调用：pf install / 升级 / 建池成功。
+#   该清的自动清，不该清的留着让人看 —— 未处理的限流故障不该被悄悄抹掉。
+failover_reset_failed_state() {
+    command -v systemctl >/dev/null 2>&1 || return 0
+    systemctl reset-failed "${XWPF_FAILOVER_SERVICE}" 2>/dev/null || true
+    return 0
 }
 
 failover_log_follow() {
