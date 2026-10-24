@@ -122,7 +122,7 @@ is_valid_port() {
 # 用法：ui_read_into "提示语" 变量名   —— 把读到的内容放进指定变量
 ui_read_into() {
     local __prompt="$1" __name="$2" __val
-    if ! IFS= read -r -p "$__prompt" __val; then
+    if ! read -r -p "$__prompt" __val; then
         # EOF / 读失败：干净退出，不回菜单循环
         exit 0
     fi
