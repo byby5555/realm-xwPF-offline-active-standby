@@ -318,7 +318,7 @@ $ ps -p 26755,26756,26825 -o pid,ppid,stat,%cpu,time,args
 ## 9. 仍未闭环的项
 
 1. **本机 `xwpf-failover` 到底该不该跑、跑什么配置** —— 需要产品侧决定主备池的形态（§7「未做的事」）。
-2. **`87.83.105.109`（原 VPS）仍不可达** —— 本轮的实机结论**很可能同样适用**（同 systemd、同 `RestartSec=2s`），但**没有实机证据**，不能替代现场取证。建议在那台机器上先跑 `systemctl show xwpf-failover -p NRestarts -p ExecMainStatus` 与 `journalctl -u xwpf-failover | grep -c 'Start request repeated too quickly'` 这两条。
+2. **`VPS-87`（原 VPS）仍不可达** —— 本轮的实机结论**很可能同样适用**（同 systemd、同 `RestartSec=2s`），但**没有实机证据**，不能替代现场取证。建议在那台机器上先跑 `systemctl show xwpf-failover -p NRestarts -p ExecMainStatus` 与 `journalctl -u xwpf-failover | grep -c 'Start request repeated too quickly'` 这两条。
 3. **N1（菜单 EOF 忙循环）在仓库里零覆盖** —— 需要补台架用例（§5 给了断言形态）。
 4. **N2（/tmp tmpfs 无界输出）在仓库里零覆盖** —— 建议加「脚本产物必须有大小上限」的检查。
 5. **第 3 轮报告 §E.4 后半（单 pool 隔离 + 退避重试）本轮未触及** —— 仍只做了风险评估。

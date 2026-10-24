@@ -235,7 +235,7 @@ systemctl show xwpf-failover -p Restart -p RestartUSec -p StartLimitBurst -p Sta
 
 **判据**：生效值里的 `Restart=` 必须是 `always`。若不是，先看是谁写的 —— 那才是真正要动的东西（人工文件由运维处置，不要让产品去删别人的文件）。
 
-### 6.4 【建议】另一台 VPS `87.83.105.109` 仍不可达
+### 6.4 【建议】另一台 VPS `VPS-87` 仍不可达
 
 SSH banner 超时、ping 50% 丢包，**本轮全程没能取到实机证据**。它若也跑着老的 `Restart=always` + `RestartSec=2s` unit 且没有 drop-in，**大概率同样中招**。升级窗口内建议恢复连通后按 6.1 巡一遍。
 
@@ -250,7 +250,7 @@ SSH banner 超时、ping 50% 丢包，**本轮全程没能取到实机证据**�
 1. **本轮全程只读**：仓库侧只做 `git show` / `git grep`（未改 `lib/`、`tests/`、`docs/`、`cmd/`，未做任何 git 写操作）；VPS 侧本轮**未再连**（第二节的落地核验全部在仓库侧完成的），上一轮（19:19–19:20）在 VPS 上只执行了 `systemctl show` / `journalctl` / `ls` / `cat` / `sha256sum` / `pgrep` / `ss` / `df` / `free`，外加**一次**手动运行守护（用**不存在的配置文件路径** `-c /etc/xwpf/nonexistent.json` 与**手动运行时已占端口**两种方式各一次，**没有**改动任何状态文件、**没有**重启/停止任何 unit）。
 2. **没有**在 VPS 上复现「配置缺失 + `Restart=always`」的无限循环（该路径已由 `reports/round3-vps-live-verification.md` 取证过），本轮只验证了「现装 drop-in 下会怎样」。
 3. **退出码语义的新版行为未实机复跑** —— 新版二进制（`7c95dca:cmd/xwpf-failover.py`）只在**代码层**核过（`_main` 返回 `exit_code`，`main` 交 `sys.exit(code)`，`EADDRINUSE` → `ListenAddressInUse` → task 异常 → 非 0）；**没有**在真机上跑新版二进制做端口占用实测。**「新版端口占用退出码非 0」这一条目前是代码级结论，不是实机结论。**
-4. **另一台 VPS `87.83.105.109` 仍不可达** —— 无实机证据。
+4. **另一台 VPS `VPS-87` 仍不可达** —— 无实机证据。
 5. **未审**：`cmd/xwpf-failover.py` 的探测与切换状态机本身（不在本轮范围）。
 6. **未跑门禁**：本轮没有改动被测产物（只改 `reports/**`），不需要重测台架。第 6.2 节的台架断言**尚未有人实现**，本轮也未替台架 owner 写。
 

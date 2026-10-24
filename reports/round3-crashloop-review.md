@@ -17,7 +17,7 @@
 | 【文档级】 | systemd 官方 man page 原文 | 取自 freedesktop.org 的 `systemd.service(5)` / `systemd.unit(5)` / `systemd-system.conf(5)`（systemd 255） |
 | 【源码级】 | systemd v255 源码逐行读出 | 取自 `github.com/systemd/systemd`（tag v255）的 `src/basic/ratelimit.c`、`src/core/service.c`、`src/core/unit.c` |
 | 【仿真】 | 把 systemd 源码函数逐字移植后在本地复算 | 把 `ratelimit_below()` 逐字移植为 Python，跑 200 次 attempt 的时间线 |
-| 【待现场】 | 必须在那台 VPS 上执行才能确认 | `87.83.105.109` 当前 SSH banner 超时、ping 50% 丢包，本轮**无法登录**，相关项只给命令不给结论 |
+| 【待现场】 | 必须在那台 VPS 上执行才能确认 | `VPS-87` 当前 SSH banner 超时、ping 50% 丢包，本轮**无法登录**，相关项只给命令不给结论 |
 
 本机环境：Windows + PowerShell 5.1，**无 systemd / 无 WSL / 无 Docker / 无 realm**。因此 systemd 侧结论全部是「文档级 + 源码级 + 仿真级」，**没有一条是 systemd 实机实测**；这一点在每处相关结论里都标明了。
 
@@ -568,7 +568,7 @@ bool ratelimit_below(RateLimit *r) {
 
 ## F. 最小止血顺序（线上机器已宕）
 
-**前提**：VPS `87.83.105.109` 当前 SSH banner 超时、ping 50% 丢包 → **本轮无法登录**，以下命令必须由用户在**云厂商的 VNC / 串口 / 网页控制台**执行。
+**前提**：VPS `VPS-87` 当前 SSH banner 超时、ping 50% 丢包 → **本轮无法登录**，以下命令必须由用户在**云厂商的 VNC / 串口 / 网页控制台**执行。
 
 **总原则**：**先让机器恢复可用（断循环），再取证（现场不等人），最后修因（从容做）。** 取证材料不会因为晚一步而消失 —— journal 会保留，配置还在磁盘上。
 
