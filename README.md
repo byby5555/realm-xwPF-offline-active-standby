@@ -1,6 +1,6 @@
 # Realm 全功能一键网络转发管理,纯脚本快速搭建中转服务器   修改自用自用自用，感谢作者
 
-[中文](README.md) | [English](README_EN.md) | [端口流量狗脚本介绍](port-traffic-dog-README.md)
+[中文](README.md) | [English](README_EN.md) | [文档索引](docs/README.md) | [端口流量狗脚本介绍](port-traffic-dog-README.md)
 
 ---
 
@@ -267,17 +267,19 @@ bash /usr/local/bin/xwPF.sh
 
 使用步骤：先在同一端口下配多个目标（可以是单规则 `REMOTE_HOST` 写逗号分隔的多个地址，或拆成多条规则），然后 `pf` → 负载均衡管理 → 切换负载均衡模式 → 选 `4. 主备模式 (active-standby)`，再 → 开启/关闭故障转移 → 选该端口 → 选 `2. 主备模式`。状态转换与生成的 realm config 示例见 `docs/active-standby-logic.md`。
 
+也可以直接用**权重含 0** 触发主备（推荐）：`pf` → 转发配置管理 → 负载均衡管理 → 权重配置管理 → 填 `1,0,0`（1=主，0=备）。系统会自动切到主备模式、开启故障转移并拉起健康检查服务。详见 [端口组与权重](docs/port-groups-and-weights.md)。
+
 - 脚本的实现原理
 ```
-1. systemd定时器触发 (每4秒)
+1. systemd定时器触发 (按最小检查间隔,默认4秒)
    ↓
-2. 执行健康检查脚本
+2. 执行健康检查脚本 (flock 独占锁,上一轮没跑完就跳过)
    ↓
-3. 读取规则配置文件
+3. 读取规则配置文件 (中转+已启用+已开启故障转移的规则)
    ↓
 4. 对每个目标执行TCP连通性检测
-   ├── nc -z -w3 target port
-   └── 备用: telnet target port
+   ├── nc -z -w <超时> target port     (nc 需支持 -z 探测模式)
+   └── 回退: timeout + bash /dev/tcp   (没装 nc 也能探,不再全判故障)
    ↓
 5. 更新健康状态文件（原子更新）
    ├── 成功: success_count++, fail_count=0
@@ -287,8 +289,12 @@ bash /usr/local/bin/xwPF.sh
    ├── 连续失败2次 → 标记为故障
    └── 连续成功2次+冷却期120秒(避免抖动频繁切换) → 标记为恢复
    ↓
-7. 如有状态变化，创建更新标记文件
+7. 如有状态变化，执行 pf --restart-service
+   └── 重新生成 /etc/realm/config.json → 重启 realm → 生效
 ```
+
+健康检查参数（间隔 / 失败阈值 / 成功阈值 / 连接超时 / 恢复冷却）可按端口组配置，
+详见 [健康检查与故障转移](docs/health-check-and-failover.md)。
 
 客户端可使用指令`while ($true) { (Invoke-WebRequest -Uri 'http://ifconfig.me/ip' -UseBasicParsing).Content; Start-Sleep -Seconds 1 }` 或 `while true; do curl -s ifconfig.me; echo; sleep 1; done` 实时监听IP变化情况,确定模式生效
 
@@ -345,11 +351,20 @@ IP地址：MPTCP协议需要知道可以使用哪些IP地址建立子流
 |------------|----------------|-------------|------------------|
 | `curl`     | 下载和IP获取   | `wget`      | 备用下载工具     |
 | `tar`      | 解压缩工具     | `unzip`     | ZIP解压缩        |
-| `bc`       | 数值计算       | `nc`        | 网络连接测试     |
-| `bash /dev/tcp` | 网络连接测试（内置） | `inotify`   | 标记文件         |
+| `bc`       | 数值计算       | `nc`        | 健康检查TCP探测  |
+| `bash /dev/tcp` | 网络连接测试（内置，建规则预检 + 健康检查回退） | `inotify`   | 标记文件         |
 | `grep`/`cut` | 文本处理识别 | `jq`        | JSON数据处理     |
 | `iproute2` | MPTCP端点管理  | `nftables`  | 端口流量统计     |
 | `tc`       | 流量控制限制   |             |                  |
+
+自动安装的工具（`lib/core.sh:24`）：`curl` `wget` `tar` `grep` `cut` `bc` `jq` `openssl` `python3`
+
+> ℹ️ **`nc` 不在自动安装清单里，但健康检查已经不再依赖它。**
+> 探测优先走 `nc -z -w`；系统没装 `nc`（或 `nc` 不支持 `-z`，例如 busybox 的 nc）时，
+> 自动回退到 bash 内置 `bash /dev/tcp` + `timeout`，**不会再把全部目标误判成故障**。
+> 装上 `nc` 探测更快更省进程：`apt-get install -y netcat-openbsd`（Debian/Ubuntu）、
+> `apk add --no-cache netcat-openbsd`（Alpine）、`dnf install -y nmap-ncat`（CentOS/RHEL）。
+> 详见 [安装、升级与卸载 §1.3](docs/install-and-upgrade.md)。
 
 ## 文件结构
 
@@ -361,3 +376,94 @@ IP地址：MPTCP协议需要知道可以使用哪些IP地址建立子流
 系统文件
 ├── /usr/local/bin/
 │   ├── realm                    # Realm 主程序
+│   ├── xwPF.sh                  # 管理脚本主入口
+│   ├── pf                       # 快捷命令（软链 → xwPF.sh）
+│   ├── lib/                     # 模块目录
+│   │   ├── core.sh              # 核心工具（系统探测 / 依赖 / 网络 / 校验）
+│   │   ├── rules.sh             # 规则管理（增删改查 / 负载均衡 / 权重）
+│   │   ├── server.sh            # 服务端配置（中转与出口交互 / MPTCP）
+│   │   ├── realm.sh             # Realm 安装 / 配置生成 / 服务管理
+│   │   ├── failover.sh          # 主备池核心模块（含 daemon 安装函数）
+│   │   └── ui.sh                # 交互菜单 / 状态显示 / 卸载
+│   ├── cmd/                     # 主备守护文件
+│   │   ├── xwpf-failover.py     # active/passive 热备守护进程
+│   │   └── xwpf-failover.service
+│   ├── xwpf-failover            # 已安装的守护进程（0755）
+│   └── .xwpf-failover-version   # 已装版本指纹（判断是否需要重装）
+│
+├── /etc/realm/                  # Realm 配置目录
+│   ├── config.json              # Realm 工作配置（由脚本生成，勿手改）
+│   ├── rules/                   # 转发规则目录
+│   │   ├── rule-1.conf          # 规则 1 配置
+│   │   └── ...
+│   └── health/                  # 开启故障转移后生成
+│       ├── health_check.sh      # 健康检查脚本
+│       └── health_status.conf   # 健康状态文件
+│
+├── /etc/xwpf/                   # 主备守护进程配置目录
+│   └── failover.json            # 主备池配置
+│
+└── /etc/systemd/system/
+    ├── realm.service            # Realm 服务 unit
+    ├── realm-health-check.service  # 健康检查 service（开启故障转移后生成）
+    ├── realm-health-check.timer    # 健康检查 timer（开启故障转移后生成）
+    └── xwpf-failover.service    # 主备守护进程 unit
+```
+
+### 按需下载（点到对应菜单才拉取）
+
+```
+故障转移（进入「开启/关闭故障转移」时）
+├── /etc/realm/xwFailover.sh     # 故障转移管理脚本
+├── /etc/realm/health/
+│   └── health_status.conf       # 健康状态文件
+└── /etc/systemd/system/
+    ├── realm-health-check.service
+    └── realm-health-check.timer
+
+端口流量狗（进入「端口流量狗」时）
+├── /usr/local/bin/port-traffic-dog.sh
+├── /usr/local/bin/dog                   # 快捷命令
+└── /etc/port-traffic-dog/
+    ├── config.json
+    ├── traffic_data.json
+    ├── notifications/                   # 通知模块
+    │   ├── telegram.sh
+    │   └── wecom.sh
+    └── logs/
+
+中转网络链路测试（进入「中转网络链路测试」时）
+└── /etc/realm/speedtest.sh
+
+配置识别导入（进入配置识别导入时）
+└── /etc/realm/xw_realm_OCR.sh
+
+MPTCP（开启 MPTCP 后创建）
+└── /etc/sysctl.d/90-enable-MPTCP.conf
+```
+
+## 📚 文档
+
+完整文档在 [`docs/`](docs/)，按场景索引：
+
+| 文档 | 什么时候读 |
+|------|------------|
+| [安装、升级与卸载](docs/install-and-upgrade.md) | 装机器、离线安装、升级、卸载、首次初始化 |
+| [端口组与权重](docs/port-groups-and-weights.md) | 一个端口转多个出口、权重分流、`1,0,0` 主备写法 |
+| [健康检查与故障转移](docs/health-check-and-failover.md) | 健康检查参数、systemd unit、状态文件、切换与回切 |
+| [故障排查手册](docs/troubleshooting.md) | realm 起不来、规则不生效、无 `nc` 全判失败、下载 404、日志位置 |
+| [主备模式状态转换推演](docs/active-standby-logic.md) | 理解主备每一步怎么翻权重 |
+| [主备 active/passive 守护进程](cmd/README-failover.md) | 进程级主备热切换 |
+
+## 🤝 支持
+
+- **更多项目:** [https://github.com/byby5555](https://github.com/byby5555)
+- **介绍主页:** [https://zywe.de](https://zywe.de)
+- **问题反馈:** [GitHub Issues](https://github.com/byby5555/realm-xwPF-offline-active-standby/issues)
+- **交流群:** [Telegram](https://t.me/zywe_chat)
+
+---
+
+**⭐ 如果这个项目对你有用，欢迎点个 Star！**
+
+[![Star History Chart](https://api.star-history.com/svg?repos=byby5555/realm-xwPF-offline-active-standby&type=Date)](https://www.star-history.com/#byby5555/realm-xwPF-offline-active-standby&Date)

@@ -1,6 +1,6 @@
 # Realm Full-Featured One-Click Network Forwarding Management — Pure Script Relay Server Setup
 
-[中文](README.md) | [English](README_EN.md) | [Port Traffic Dog Introduction](port-traffic-dog-README.md)
+[中文](README.md) | [English](README_EN.md) | [Documentation Index](docs/README.md) | [Port Traffic Dog Introduction](port-traffic-dog-README.md)
 
 ---
 
@@ -85,12 +85,38 @@ Completed: 2025-08-28 20:12:29 | Source: https://github.com/byby5555/realm-xwPF-
 wget -qO- https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-active-standby/main/xwPF.sh | sudo bash -s install
 ```
 
+Or with `curl`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-active-standby/main/xwPF.sh | sudo bash -s install
+```
+
 ### Behind a Restricted Network? Use an Accelerated Mirror
 
 ```bash
 wget -qO- https://v6.gh-proxy.org/https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-active-standby/main/xwPF.sh | sudo bash -s install
 ```
 If the mirror is down, retry a few times or switch to another proxy with built-in acceleration.
+
+### One-Click Uninstall (built into the menu)
+
+Once installed, the main menu ships with an **uninstall** option:
+
+```bash
+sudo pf
+```
+
+Then pick `8. 卸载服务` (phased uninstall).
+
+If the `pf` command is missing, run the script directly:
+
+```bash
+sudo bash /usr/local/bin/xwPF.sh
+```
+
+The uninstall runs in two phases — phase 1 removes the Realm service and all of its
+configuration, phase 2 removes the script files themselves. See
+[Install, Upgrade & Uninstall](docs/install-and-upgrade.md) for the full breakdown.
 
 ## Offline Installation (No Internet Access)
 
@@ -103,6 +129,11 @@ For servers with absolutely no network connectivity.
 
 - **Main script**: [xwPF.sh](https://github.com/byby5555/realm-xwPF-offline-active-standby/raw/main/xwPF.sh)
 - **Module files** (all required): https://github.com/byby5555/realm-xwPF-offline-active-standby/tree/main/lib
+- **Failover daemon files** (required for active/passive hot standby): https://github.com/byby5555/realm-xwPF-offline-active-standby/tree/main/cmd
+
+> The Realm binary itself is **not** part of this fork — it comes from the official
+> upstream release page below. Everything else (scripts, modules, daemon) comes from
+> `byby5555/realm-xwPF-offline-active-standby`.
 
 - **Realm binary** (pick the one matching your architecture):
 
@@ -112,17 +143,23 @@ For servers with absolutely no network connectivity.
 | aarch64 | ARM64 servers | [realm-aarch64-unknown-linux-gnu.tar.gz](https://github.com/zhboner/realm/releases/latest) | `uname -m` → `aarch64` |
 | armv7 | ARM32 (e.g. Raspberry Pi) | [realm-armv7-unknown-linux-gnueabihf.tar.gz](https://github.com/zhboner/realm/releases/latest) | `uname -m` → `armv7l` / `armv6l` |
 
+> Alpine uses the `musl` build; the installer picks the right suffix automatically.
+
 **2. Place the files on the target server**
 
 ```
 /usr/local/bin/            ← Script install directory (fixed path)
 ├── xwPF.sh                ← Main script
-└── lib/                   ← Create this subdirectory
-    ├── core.sh
-    ├── rules.sh
-    ├── server.sh
-    ├── realm.sh
-    └── ui.sh
+├── lib/                   ← Create this subdirectory
+│   ├── core.sh
+│   ├── rules.sh
+│   ├── server.sh
+│   ├── realm.sh
+│   ├── failover.sh
+│   └── ui.sh
+└── cmd/                   ← Failover daemon files (must be placed manually offline)
+    ├── xwpf-failover.py
+    └── xwpf-failover.service
 
 ~/                         ← Put the Realm tarball anywhere else
 └── realm-xxx.tar.gz
@@ -160,8 +197,9 @@ Select **1. Install & Configure**, then:
 - **Smart Detection** — Auto-detects system architecture, port conflicts, and connection availability
 
 - **Tunnel Building** — Dual-Realm architecture with TLS, WS, WSS tunnel support
-- **Load Balancing** — Round-robin, IP hash, and configurable weight distribution
-- **Failover** — Automatic failure detection using native system tools, keeping things lightweight
+- **Load Balancing** — Round-robin, IP hash, and active-standby strategies, with configurable weight distribution
+- **Failover** — Automatic failure detection using native system tools, keeping things lightweight. Supports strict active-standby mode (1 primary + N standbys taking over in order, weights flipped to 0/1)
+- **Active/Passive Hot Standby** — Process-level primary/standby hot switching via the independent `xwpf-failover` daemon (see `cmd/README-failover.md`)
 - **Rule Annotations** — Clear labeling for every rule — no more memorizing port mappings
 
 - **Port Traffic Dog** — Per-port traffic stats, rate limiting, throttling, with configurable notifications
@@ -228,15 +266,15 @@ Native Realm does not currently support failover.
 
 - How the script implements it
 ```
-1. systemd timer fires (every 4 seconds)
+1. systemd timer fires (smallest configured interval, 4s by default)
    ↓
-2. Run health-check script
+2. Run health-check script (flock — a second run is skipped while one is in flight)
    ↓
-3. Read rule configuration files
+3. Read rule configuration files (relay + enabled + failover-enabled rules)
    ↓
 4. TCP connectivity probe for each target
-   ├── nc -z -w3 target port
-   └── Fallback: telnet target port
+   ├── nc -z -w <timeout> target port     (nc must support -z)
+   └── fallback: timeout + bash /dev/tcp  (works without nc, no more false DOWNs)
    ↓
 5. Atomically update health status file
    ├── Success: success_count++, fail_count=0
@@ -246,11 +284,38 @@ Native Realm does not currently support failover.
    ├── 2 consecutive failures → mark as DOWN
    └── 2 consecutive successes + 120 s cooldown (prevents flapping) → mark as UP
    ↓
-7. If state changed, create an update marker file
+7. If state changed, run pf --restart-service
+   └── regenerate /etc/realm/config.json → restart realm → take effect
 ```
+
+Health-check parameters (interval / failure threshold / success threshold / connection
+timeout / recovery cooldown) are configurable per port group — see
+[Health Check & Failover](docs/health-check-and-failover.md).
 
 Monitor IP changes in real time from the client:
 `while ($true) { (Invoke-WebRequest -Uri 'http://ifconfig.me/ip' -UseBasicParsing).Content; Start-Sleep -Seconds 1 }` or `while true; do curl -s ifconfig.me; echo; sleep 1; done`
+
+- Active/Standby Mode (active-standby)
+
+Strict primary/standby: 1 primary + N standbys taking over in order. The health check probes
+every target independently (it does not rely on weights). When the primary fails its weight is
+set to 0 and the first healthy standby is set to 1; if the primary and standby 1 both fail,
+standby 2 takes over, and so on. When the primary recovers it switches back immediately
+(strict primary/standby — it never degrades into multi-active). Under the hood the script
+still emits `balance: roundrobin: 0, 1, 0` to realm; a target with weight 0 is effectively
+absent from traffic distribution.
+
+To use it: first configure multiple targets on the same port (either one rule with a
+comma-separated `REMOTE_HOST`, or several separate rules), then `pf` → Load Balancing
+Management → Switch load-balancing mode → pick `4. 主备模式 (active-standby)`, then →
+Enable/Disable Failover → pick the port → pick `2. 主备模式`. See
+`docs/active-standby-logic.md` for the state transitions and the generated realm config.
+
+You can also trigger it directly with **a weight of 0** (recommended): `pf` → Forwarding
+Config Management → Load Balancing Management → Weight Configuration → enter `1,0,0`
+(1 = primary, 0 = standby). The script then switches to active-standby mode, enables
+failover and starts the health-check service automatically. See
+[Port Groups & Weights](docs/port-groups-and-weights.md).
 
 </details>
 
@@ -302,11 +367,21 @@ All dependencies are **native Linux lightweight tools** — keeping the system c
 |---|---|---|---|
 | `curl` | Downloads & IP lookup | `wget` | Fallback downloader |
 | `tar` | Archive extraction | `unzip` | ZIP extraction |
-| `bc` | Arithmetic | `nc` | TCP connectivity probe |
-| `bash /dev/tcp` | TCP connectivity probe (built-in) | `inotify` | File-change markers |
+| `bc` | Arithmetic | `nc` | Health-check TCP probe |
+| `bash /dev/tcp` | TCP connectivity probe (built-in: rule pre-check + health-check fallback) | `inotify` | File-change markers |
 | `grep`/`cut` | Text processing | `jq` | JSON processing |
 | `iproute2` | MPTCP endpoint mgmt | `nftables` | Per-port traffic stats |
 | `tc` | Traffic shaping | | |
+
+Auto-installed by the installer (`lib/core.sh:24`): `curl` `wget` `tar` `grep` `cut` `bc` `jq` `openssl` `python3`
+
+> ℹ️ **`nc` is NOT auto-installed, but the health check no longer depends on it.**
+> The probe prefers `nc -z -w`; when `nc` is missing (or does not support `-z`, e.g. busybox),
+> it falls back to bash's built-in `bash /dev/tcp` + `timeout`, so **targets are no longer
+> falsely judged DOWN**. Installing `nc` still makes probing faster and cheaper:
+> `apt-get install -y netcat-openbsd` (Debian/Ubuntu), `apk add --no-cache netcat-openbsd` (Alpine),
+> `dnf install -y nmap-ncat` (CentOS/RHEL). See
+> [Install, Upgrade & Uninstall §1.3](docs/install-and-upgrade.md).
 
 ## File Structure
 
@@ -319,30 +394,44 @@ System Files
 ├── /usr/local/bin/
 │   ├── realm                    # Realm binary
 │   ├── xwPF.sh                  # Management script entry point
+│   ├── pf                       # Quick-launch shortcut (symlink → xwPF.sh)
 │   ├── lib/                     # Module directory
 │   │   ├── core.sh              # Core utilities (system detection / deps / network / validation)
 │   │   ├── rules.sh             # Rule management (CRUD / load balancing / weights)
 │   │   ├── server.sh            # Server config (relay & exit interaction / MPTCP management)
 │   │   ├── realm.sh             # Realm install / config generation / service management
+│   │   ├── failover.sh          # Failover pool core module (incl. daemon install functions)
 │   │   └── ui.sh                # Interactive menu / status display / uninstall
-│   └── pf                       # Quick-launch shortcut
+│   ├── cmd/                     # Failover daemon files
+│   │   ├── xwpf-failover.py     # active/passive hot-standby daemon
+│   │   └── xwpf-failover.service
+│   ├── xwpf-failover            # Installed daemon (0755)
+│   └── .xwpf-failover-version   # Installed-version fingerprint
 │
 ├── /etc/realm/                  # Realm configuration directory
-│   ├── manager.conf             # State management file
-│   ├── config.json              # Realm working config
-│   └── rules/                   # Forwarding rules directory
-│       ├── rule-1.conf          # Rule 1 config
-│       └── ...
+│   ├── config.json              # Realm working config (generated — do not hand-edit)
+│   ├── rules/                   # Forwarding rules directory
+│   │   ├── rule-1.conf          # Rule 1 config
+│   │   └── ...
+│   └── health/                  # Created when failover is enabled
+│       ├── health_check.sh      # Health-check script
+│       └── health_status.conf   # Health status file
+│
+├── /etc/xwpf/                   # Failover daemon config directory
+│   └── failover.json            # Failover pool configuration
 │
 └── /etc/systemd/system/
-    └── realm.service            # Realm service unit
+    ├── realm.service            # Realm service unit
+    ├── realm-health-check.service  # Health-check service (when failover enabled)
+    ├── realm-health-check.timer    # Health-check timer (when failover enabled)
+    └── xwpf-failover.service    # Failover daemon unit
 ```
 
 ### Downloaded on Demand (fetched when you select the feature)
 
 ```
 Failover (downloaded when failover is enabled)
-├── /usr/local/bin/xwFailover.sh         # Failover management script
+├── /etc/realm/xwFailover.sh             # Failover management script
 ├── /etc/realm/health/
 │   └── health_status.conf               # Health status file
 └── /etc/systemd/system/
@@ -356,11 +445,12 @@ Port Traffic Dog (downloaded when selected)
     ├── config.json                      # Monitoring configuration
     ├── traffic_data.json                # Traffic data backup
     ├── notifications/                   # Notification modules
-    │   └── telegram.sh                  # Telegram notification module
+    │   ├── telegram.sh                  # Telegram notification module
+    │   └── wecom.sh                     # WeCom notification module
     └── logs/                            # Log directory
 
 Relay Network Link Test (downloaded when selected)
-└── /usr/local/bin/speedtest.sh          # Network link test script
+└── /etc/realm/speedtest.sh              # Network link test script
 
 Config Recognition Import (downloaded when selected)
 └── /etc/realm/xw_realm_OCR.sh           # Realm config recognition script
@@ -368,6 +458,19 @@ Config Recognition Import (downloaded when selected)
 MPTCP (created when MPTCP is enabled)
 └── /etc/sysctl.d/90-enable-MPTCP.conf   # MPTCP sysctl config
 ```
+
+## 📚 Documentation
+
+Full documentation lives in [`docs/`](docs/):
+
+| Document | Read it when |
+|---|---|
+| [Install, Upgrade & Uninstall](docs/install-and-upgrade.md) | Setting up a machine, offline install, upgrading, uninstalling, first-time setup |
+| [Port Groups & Weights](docs/port-groups-and-weights.md) | Forwarding one port to multiple exits, weighted splitting, the `1,0,0` primary/standby form |
+| [Health Check & Failover](docs/health-check-and-failover.md) | Health-check parameters, systemd unit, status file, switch and fail-back logic |
+| [Troubleshooting](docs/troubleshooting.md) | Realm won't start, rule changes don't apply, no `nc` → everything judged down, download 404, where the logs are |
+| [Active-Standby State Transitions](docs/active-standby-logic.md) | Understanding how weights flip at each step |
+| [Active/Passive Failover Daemon](cmd/README-failover.md) | Process-level primary/standby hot switching |
 
 ## 🤝 Support
 
