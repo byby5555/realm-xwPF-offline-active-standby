@@ -2047,6 +2047,7 @@ probe_all_targets_latency() {
 # 切换负载均衡模式（按端口分组管理）
 switch_balance_mode() {
     while true; do
+        sleep 0.2
         ui_clear
         echo -e "${YELLOW}=== 切换负载均衡模式 ===${NC}"
         echo ""
@@ -2307,6 +2308,7 @@ switch_balance_mode() {
 # 权重配置管理菜单
 weight_management_menu() {
     while true; do
+        sleep 0.2
         ui_clear
         echo -e "${GREEN}=== 权重配置管理 ===${NC}"
         echo ""
