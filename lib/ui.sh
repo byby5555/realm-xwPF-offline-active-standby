@@ -33,6 +33,65 @@ import_realm_config() {
 }
 
 
+# === 主备状态展示（读守护进程写的状态文件） ===
+# ★ 写端只有一处：cmd/xwpf-failover.py 的 StateStore
+#   读端只有这一处：本函数
+#   两边字段同名：active_forward / active_probe / fail_streak / last_switch_at / last_probe
+#   —— 写状态与读状态同属一条路径链，避免字段口径错配。
+ui_show_failover_state() {
+    local state_file="${XWPF_FAILOVER_STATE_FILE:-/etc/xwpf/failover-state.json}"
+    if [ ! -f "$state_file" ]; then
+        echo -e "  ${GRAY}(暂无状态文件: ${state_file} —— 守护进程还没写过状态)${NC}"
+        return 0
+    fi
+    XWPF_FP_STATE="$state_file" python3 <<'PY'
+import json, os
+path = os.environ.get("XWPF_FP_STATE", "")
+try:
+    with open(path) as f:
+        data = json.load(f) or {}
+except Exception as e:
+    print("  (状态文件读失败: %s)" % e)
+    raise SystemExit(0)
+pools = data.get("pools") or {}
+if not pools:
+    print("  (状态文件里还没有池状态 —— 守护进程可能刚启动，还没跑完第一轮探测)")
+    raise SystemExit(0)
+KIND = {
+    "": "ok",
+    "refused": "refused(服务没监听, 线路是好的)",
+    "timeout": "timeout(包丢了, 链路有问题)",
+    "dns": "dns(域名解析失败)",
+    "error": "error(其它)",
+}
+def label(i):
+    return "主" if i == 0 else "备%d" % i
+for name, st in pools.items():
+    mode = "direct 直连" if st.get("direct") else "realm 回环"
+    role = st.get("active_role", "primary")
+    print("  池 %s [%s]  当前主: %s" % (name, mode, role))
+    print("      转发目标: %s" % (st.get("active_forward") or "-"))
+    print("      探测目标: %s" % (st.get("active_probe") or "-"))
+    if st.get("active_legacy"):
+        print("      旧格式(无 '|'): 探测与转发同址 -> 真实后端故障不会触发切换 (重建该池可拿到双地址)")
+    fs = st.get("fail_streak") or []
+    ss = st.get("succ_streak") or []
+    print("      连续失败数: %s" % "  ".join("%s=%s" % (label(i), v) for i, v in enumerate(fs)))
+    print("      连续成功数: %s" % "  ".join("%s=%s" % (label(i), v) for i, v in enumerate(ss)))
+    sw = st.get("last_switch_at") or ""
+    print("      上次切换时间: %s" % (sw if sw else "(从未切换)"))
+    for p in (st.get("last_probe") or []):
+        if not p:
+            continue
+        kind = p.get("err_kind", "")
+        print("      最近探测 %s -> %s %sms" % (
+            p.get("target", "-"),
+            KIND.get(kind, kind),
+            p.get("elapsed_ms", "-")))
+PY
+}
+
+
 # === Top-of-menu active/passive failover summary ===
 # Shown in the top-level rules menu so user can see running pools
 # without drilling into the 3rd-level failover_proxy_menu.
@@ -50,9 +109,10 @@ ui_show_top_failover() {
     fi
 
     local raw n
-    raw=$(XWPF_TOP_FP_CONF="$conf" python3 -c '
+    raw=$(XWPF_TOP_FP_CONF="$conf" XWPF_TOP_FP_STATE="${XWPF_FAILOVER_STATE_FILE:-/etc/xwpf/failover-state.json}" python3 -c '
 import json, os
 conf = os.environ.get("XWPF_TOP_FP_CONF", "/etc/xwpf/failover.json")
+state_path = os.environ.get("XWPF_TOP_FP_STATE", "")
 try:
     with open(conf) as f:
         pools = json.load(f) or []
@@ -60,6 +120,11 @@ except Exception:
     pools = []
 if not isinstance(pools, list):
     pools = []
+try:
+    with open(state_path) as f:
+        st_pools = (json.load(f) or {}).get("pools") or {}
+except Exception:
+    st_pools = {}
 for i, p in enumerate(pools, 1):
     name = p.get("name", "?")
     listen = p.get("listen", "?")
@@ -72,6 +137,13 @@ for i, p in enumerate(pools, 1):
         if len(backups) > 2:
             bk_short += ", +" + str(len(backups) - 2)
         parts.append("备: " + bk_short)
+    st = st_pools.get(name)
+    if isinstance(st, dict):
+        role = st.get("active_role", "primary")
+        cur = "主" if role == "primary" else role
+        parts.append("当前主=" + cur)
+        if st.get("active_legacy"):
+            parts.append("旧格式")
     print(" | ".join(parts))
 print("__COUNT__{}__".format(len(pools)))
 ')
@@ -751,17 +823,18 @@ failover_proxy_menu() {
         echo -e "        权重填 ${GREEN}5,5${NC} → 回到普通负载均衡（按比例分流）"
         echo ""
 
-        # 守护状态
-        if systemctl is-active "${XWPF_FAILOVER_SERVICE}" >/dev/null 2>&1; then
-            echo -e "  守护状态: ${GREEN}● 运行中${NC}"
-        else
-            echo -e "  守护状态: ${RED}● 已停止${NC}"
-        fi
+        # 守护状态（含 failed / 限流可见 —— is-active 看不出这两种）
+        failover_service_status_lines
         echo ""
 
         # 当前池列表
         echo -e "${GREEN}当前主备池:${NC}"
         failover_pool_list
+        echo ""
+
+        # 守护进程写的运行状态（当前主 / 探测目标 / 转发目标 / 连续失败数 / 上次切换时间）
+        echo -e "${GREEN}运行状态:${NC}"
+        ui_show_failover_state
         echo ""
 
         echo "请选择操作:"
@@ -813,7 +886,7 @@ failover_proxy_menu() {
                         fi
                     fi
                 else
-                    echo -e "${YELLOW}注意: 旧模式的探测点是 realm 回环口 —— realm 进程活着就一直算健康, 主备可能不切换${NC}"
+                    echo -e "${YELLOW}注意: 旧模式经 realm 回环转发 —— 守护进程「转发打回环口、探测打真实后端」(真实后端故障才会切)${NC}"
                     failover_pool_create "$name" "$listen" "$primary" "$backups"
                     echo ""
                     echo -e "${YELLOW}提示: 重启 realm 让新生成的回环规则生效${NC}"
