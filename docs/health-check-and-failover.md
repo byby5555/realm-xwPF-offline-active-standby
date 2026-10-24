@@ -17,10 +17,11 @@
 > 都 `source` 同一个文件，不再各写一份。
 >
 > 例外只有一处：生成的 `/etc/realm/health/health_check.sh` 是一份**独立可执行**的脚本
-> （systemd 直接调用它，不能依赖 pf 的安装目录），
-> 所以它的探测逻辑在 `lib/health.sh` 里另有一份内联副本。
-> **改动 `check_connectivity` 时两处必须同步**——
-> `tests/test_connectivity.sh` 的 C 组用例专门盯这一条。
+> （systemd 直接调用它，不能依赖 pf 的安装目录）。
+> 但它里面的探测逻辑**不是手抄的第二份**：生成时由 `lib/health.sh` 的 `health_emit_function`
+> 从 `lib/health.sh` 里**原样抽取** `check_connectivity` 拼进去，
+> 所以两边不可能漂移，改探测实现不需要在别处手工同步。
+> 台架用例 T28 盯这一条（源实现与生成物里的探测实现必须一致）。
 
 ---
 
@@ -487,7 +488,7 @@ bash /etc/realm/xwFailover.sh status
 
 | 项 | 说明 |
 |----|------|
-| `lib/health.sh` 已落盘 | 健康检查脚本由 `lib/health.sh` 的 `health_check_script_body` 生成，`xwFailover.sh` 与 `pf` 共用同一份实现。生成的 `health_check.sh` 是独立可执行脚本，其探测逻辑另有一份内联副本（两处必须同步，`tests/test_connectivity.sh` C 组盯着） |
+| `lib/health.sh` 已落盘 | 健康检查脚本由 `lib/health.sh` 的 `health_check_script_body` 生成，`xwFailover.sh` 与 `pf` 共用同一份实现。生成的 `health_check.sh` 是独立可执行脚本，其探测逻辑由 `lib/health.sh` 的 `health_emit_function` 原样抽取注入，与真源逐字一致，无需手工同步 |
 | 主备优先级按权重排序 | 已实现：主目标 = 权重最大的健康目标（同权重保持原始顺序）。详见 [端口组与权重 §5.3](port-groups-and-weights.md#53-主备优先级与权重的关系) |
 | 探测只到 TCP 握手 | 端口通但业务已死、或故障发生在「客户端 → 中转机」这一段，探测都发现不了 → 排查见 [故障排查 §6.7](troubleshooting.md#67-ip-还通但链路不通为什么没切) |
 | 探测对象不可自定义 | 探测目标固定为规则里的 `REMOTE_HOST:REMOTE_PORT`，不支持换成独立的健康端口 |

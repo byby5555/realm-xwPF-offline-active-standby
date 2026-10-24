@@ -150,6 +150,6 @@
 另外还有：
 
 - `tests/test_active_standby.sh` —— 权重含 0 自动进主备、选主、故障切换、兜底、反向切回
-- `tests/test_connectivity.sh` —— TCP 探测与 `/dev/tcp` 回退，以及两份探测实现的一致性
+- `tests/test_connectivity.sh` —— TCP 探测与 `/dev/tcp` 回退，以及探测真源与生成物是否逐字一致
 
 完整台架索引见 [文档索引 · 测试台架](README.md#测试台架索引)。
