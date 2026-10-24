@@ -91,7 +91,7 @@ if ! pwd >/dev/null 2>&1; then
 fi
 
 # 输入配置文件路径
-read -p "请输入配置文件的完整路径：" CONFIG_FILE
+read -p "请输入配置文件的完整路径：" CONFIG_FILE || CONFIG_FILE=""
 echo ""
 
 if [ -z "$CONFIG_FILE" ]; then
@@ -608,7 +608,7 @@ echo ""
 echo -e "${RED}警告: 导入操作将清空现有规则并导入新配置！${NC}"
 echo -e "${YELLOW}这是初始化导入，会删除所有现有的转发规则${NC}"
 echo ""
-read -p "确认清空现有规则并导入新配置？(y/n): " confirm
+read -p "确认清空现有规则并导入新配置？(y/n): " confirm || confirm=""
 if ! echo "$confirm" | grep -qE "^[Yy]$"; then
     echo -e "${BLUE}已取消导入操作${NC}"
     rm -rf "$OUTPUT_DIR"

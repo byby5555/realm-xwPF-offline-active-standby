@@ -89,7 +89,8 @@ print("__COUNT__{}__".format(len(pools)))
 
 rules_management_menu() {
     while true; do
-        clear
+        sleep 0.2
+        ui_clear
         echo -e "${GREEN}=== 转发配置管理 ===${NC}"
         echo ""
 
@@ -224,7 +225,8 @@ rules_management_menu() {
         case $choice in
             1)
                 while true; do
-                    clear
+                    sleep 0.2
+                    ui_clear
                     echo -e "${GREEN}=== 配置文件管理 ===${NC}"
                     echo ""
                     echo "请选择操作:"
@@ -698,7 +700,8 @@ failover_management_menu() {
     fi
 
     while true; do
-        clear
+        sleep 0.2
+        ui_clear
         echo -e "${YELLOW}=== 故障转移管理 (旧) ===${NC}"
         echo ""
         echo -e "${GREEN}1.${NC} 开启/关闭故障转移"
@@ -735,7 +738,8 @@ failover_management_menu() {
 # 主备 active/passive 故障转移菜单（新版，xwpf-failover 守护）
 failover_proxy_menu() {
     while true; do
-        clear
+        sleep 0.2
+        ui_clear
         echo -e "${YELLOW}=== 主备 active/passive 高可用 ===${NC}"
         echo ""
         echo -e "  ${BLUE}说明:${NC} 基于独立守护进程配合 realm 回环监听，"
@@ -804,7 +808,7 @@ failover_proxy_menu() {
                     else
                         echo ""
                         echo -e "${YELLOW}提示: 直连模式不依赖 realm —— 守护进程启动时读一次配置, 需重启守护才会生效${NC}"
-                        if read -p "是否立即重启守护服务? [y/N]: " yesno && [[ "$yesno" =~ ^[Yy]$ ]]; then
+                        if ui_read_default "是否立即重启守护服务? [y/N]: " yesno && [[ "$yesno" =~ ^[Yy]$ ]]; then
                             failover_service_restart
                         fi
                     fi
@@ -813,7 +817,7 @@ failover_proxy_menu() {
                     failover_pool_create "$name" "$listen" "$primary" "$backups"
                     echo ""
                     echo -e "${YELLOW}提示: 重启 realm 让新生成的回环规则生效${NC}"
-                    if read -p "是否立即重启 realm? [y/N]: " yesno && [[ "$yesno" =~ ^[Yy]$ ]]; then
+                    if ui_read_default "是否立即重启 realm? [y/N]: " yesno && [[ "$yesno" =~ ^[Yy]$ ]]; then
                         service_restart
                     fi
                 fi
@@ -828,7 +832,7 @@ failover_proxy_menu() {
                     failover_pool_delete "$pidx"
                     echo ""
                     echo -e "${YELLOW}提示: 重启 realm 移除失效规则${NC}"
-                    if read -p "是否立即重启 realm? [y/N]: " yesno && [[ "$yesno" =~ ^[Yy]$ ]]; then
+                    if ui_read_default "是否立即重启 realm? [y/N]: " yesno && [[ "$yesno" =~ ^[Yy]$ ]]; then
                         service_restart
                     fi
                 else
@@ -838,7 +842,7 @@ failover_proxy_menu() {
                 ;;
             3)
                 echo -e "${RED}即将清空所有主备池并删除关联规则文件${NC}"
-                if read -p "  确认? [y/N]: " yesno && [[ "$yesno" =~ ^[Yy]$ ]]; then
+                if ui_read_default "  确认? [y/N]: " yesno && [[ "$yesno" =~ ^[Yy]$ ]]; then
                     # Delete each pool sequentially to clean up rules
                     local n
                     n=$(python3 -c 'import json; print(len(json.load(open("'"${XWPF_FAILOVER_CONF}"'")) or []))' 2>/dev/null || echo 0)
@@ -848,7 +852,7 @@ failover_proxy_menu() {
                     done
                     failover_pool_delete_all
                     echo -e "${YELLOW}提示: 重启 realm 清空所有回环规则${NC}"
-                    if read -p "是否立即重启 realm? [y/N]: " yesno && [[ "$yesno" =~ ^[Yy]$ ]]; then
+                    if ui_read_default "是否立即重启 realm? [y/N]: " yesno && [[ "$yesno" =~ ^[Yy]$ ]]; then
                         service_restart
                     fi
                 fi
@@ -864,7 +868,7 @@ failover_proxy_menu() {
                 fi
                 echo ""
                 echo -e "${YELLOW}提示: 重启 realm 让所有 loopback 监听生效${NC}"
-                if read -p "是否立即重启 realm? [y/N]: " yesno && [[ "$yesno" =~ ^[Yy]$ ]]; then
+                if ui_read_default "是否立即重启 realm? [y/N]: " yesno && [[ "$yesno" =~ ^[Yy]$ ]]; then
                     service_restart
                 fi
                 ui_pause "按回车继续..."
@@ -948,7 +952,8 @@ port_traffic_dog_menu() {
 show_menu() {
     ui_require_tty
     while true; do
-        clear
+        sleep 0.2
+        ui_clear
         echo -e "${GREEN}=== xwPF Realm全功能一键脚本 $SCRIPT_VERSION ===${NC}"
         echo -e "${GREEN}介绍主页:${NC}https://zywe.de | ${GREEN}项目开源:${NC}https://github.com/byby5555/realm-xwPF-offline-active-standby"
         echo -e "${GREEN}一个开箱即用、轻量可靠、灵活可控的 Realm 转发管理工具${NC}"

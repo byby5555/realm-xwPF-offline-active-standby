@@ -26,6 +26,26 @@ UPDATE_REALM_DOWNLOAD_BASE="${UPDATE_REALM_DOWNLOAD_BASE:-https://github.com}"
 UPDATE_BACKUP_DIR="${UPDATE_BACKUP_DIR:-/usr/local/bin/.xwpf-backup}"
 UPDATE_LOCK_DIR="${UPDATE_LOCK_DIR:-/var/lock/xwpf-update.lock}"
 UPDATE_STAGING_ROOT="${UPDATE_STAGING_ROOT:-/tmp/xwpf-update}"
+
+# === 更新临时目录登记 + EXIT trap 清理 ===
+# ★ 为什么：staging 目录建在 /tmp（真机上是 tmpfs，吃的是内存）。
+#   正常路径每一步都有 `rm -rf "$staging"`，但异常退出（Ctrl-C / 被 kill /
+#   中断）时走不到那一步 → 残留目录一直堆在 tmpfs 里。
+#   这里统一登记 + 用 EXIT trap 兜底：任何退出路径都会清掉。
+UPDATE_TMP_PATHS=""
+update_tmp_register() {
+    [ -n "${1:-}" ] || return 0
+    UPDATE_TMP_PATHS="${UPDATE_TMP_PATHS} $1"
+}
+update_tmp_cleanup() {
+    [ -n "${UPDATE_TMP_PATHS}" ] || return 0
+    local p
+    for p in $UPDATE_TMP_PATHS; do
+        rm -rf "$p" 2>/dev/null
+    done
+    UPDATE_TMP_PATHS=""
+}
+trap update_tmp_cleanup EXIT
 UPDATE_KEEP_BACKUPS="${UPDATE_KEEP_BACKUPS:-5}"
 
 # 脚本包文件清单（xwPF.sh 单独处理）
@@ -280,6 +300,7 @@ safe_update_realm() {
 
     rm -rf "$staging" 2>/dev/null
     mkdir -p "$staging" 2>/dev/null
+    update_tmp_register "$staging"
 
     # 1) 当前状态
     local current_desc current_ver
@@ -479,6 +500,7 @@ safe_update_scripts() {
 
     rm -rf "$staging" 2>/dev/null
     mkdir -p "${staging}/lib" "${staging}/cmd" 2>/dev/null
+    update_tmp_register "$staging"
 
     # 1) 全部下载到 staging（一个都成功前，现有文件一个都不动）
     local failed=0 f
@@ -625,7 +647,8 @@ update_status_display() {
 update_center_menu() {
     ui_require_tty
     while true; do
-        clear
+        sleep 0.2
+        ui_clear
         update_status_display
         echo ""
         echo "请选择操作:"

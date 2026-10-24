@@ -109,15 +109,23 @@ is_valid_port() {
 }
 
 # === 交互菜单读入：stdin EOF 安全（无人值守场合的硬要求）===
-# ★ 为什么必须有这个：交互菜单若直接用 `read`，在 **stdin 是 EOF** 时
-#   （管道 / 后台 / cron / systemd / 无人值守执行 / 终端被关闭）
-#   `read` 会**立刻返回非 0**（不阻塞）→ 读到的变量为空 →
-#   `case` 不匹配任何分支 → 回到 `while true` 顶部 → **无限重绘 + 忙循环 + 无界输出**。
-#   实机后果：`/tmp` 是 tmpfs，无界输出会把它灌满 → 内存 + swap 耗尽 →
-#   sshd 握不上手，整机被压垮（103.42.31.186 实测：5.7 小时灌满 479MB tmpfs，
-#   11.8% CPU，内存 + swap 全部耗尽）。
-#   修法：菜单读入统一走下面两个 helper —— 读到 EOF 就**干净退出**（退出码 0），
-#   绝不回到菜单循环顶部。
+# ★ 交互菜单若直接用 `read`，在 stdin 是 EOF 时（管道 / 后台 / cron / systemd /
+#   无人值守执行 / 终端关闭）`read` 会立刻返回非 0 → 变量为空 → case 不匹配 →
+#   回到 while 顶部 → 无限重绘 + 忙循环 + 无界输出。
+#   实机后果：/tmp 是 tmpfs，无界输出灌满它 → 内存+swap 耗尽 → sshd 握不上手。
+#   修法：菜单读入统一走下面几个 helper，读到 EOF 绝不回到菜单循环顶部。
+#
+# ★ 三种读入语义（按「EOF 之后该做什么」区分，别混用）：
+#   ui_read_into    —— 菜单读入。EOF → 立刻干净退出（退出码 0）。
+#   ui_pause        —— 「按回车键继续」类。EOF → 立刻干净退出（退出码 0）。
+#   ui_read_default —— 一次性询问。EOF → **不退出**，取默认值并返回 1
+#                      （给安装流程等可能被无人值守触发的路径用：那里 EOF 是常态，
+#                        当成错误把流程打断会变成「静默空跑」）。
+#
+# ★ 本块在 lib/core.sh 与 3 个独立脚本（xwFailover.sh / port-traffic-dog.sh /
+#   speedtest.sh）里各有一份。独立脚本是**独立安装单元**、拿不到 lib/，
+#   所以「一份实现」只能是「四份逐字一致的拷贝」——
+#   台架把「份数 == 4 且四份逐字一致」钉成不变式，任何漂移都判红。
 #
 # 用法：ui_read_into "提示语" 变量名   —— 把读到的内容放进指定变量
 ui_read_into() {
@@ -134,8 +142,19 @@ ui_pause() {
     read -p "$1" || exit 0
 }
 
-# 用法：ui_require_tty   —— 菜单入口护栏：stdin 不是终端就**不进菜单**
-#   （无人值守 / 管道 / 后台 / cron / systemd 场景）
+# 用法：ui_read_default "提示语" 变量名 [默认值]
+#   读到 EOF 时把变量置成默认值（缺省空串）并返回 1，由调用方决定分支。
+ui_read_default() {
+    local __prompt="$1" __name="$2" __default="${3:-}" __val=""
+    if ! read -r -p "$__prompt" __val; then
+        printf -v "$__name" '%s' "$__default"
+        return 1
+    fi
+    printf -v "$__name" '%s' "$__val"
+    return 0
+}
+
+# 用法：ui_require_tty   —— 菜单入口护栏：stdin 不是终端就不进菜单
 ui_require_tty() {
     if [ ! -t 0 ]; then
         echo -e "${YELLOW}检测到标准输入不是终端（管道 / 后台 / 无人值守执行），已退出交互菜单。${NC}"
@@ -143,6 +162,18 @@ ui_require_tty() {
         exit 0
     fi
 }
+
+# 用法：ui_clear   —— 清屏。TERM 没设时 `clear` 会往 stderr 吐
+#   "TERM environment variable not set." 并返回非 0（无人值守时输出更难看），
+#   所以自己兜底：TERM 正常用 clear，缺失或 dumb 用 ANSI 序列。
+ui_clear() {
+    if [ -n "${TERM:-}" ] && [ "${TERM}" != "dumb" ]; then
+        clear 2>/dev/null || printf '\033[H\033[2J'
+    else
+        printf '\033[H\033[2J'
+    fi
+}
+
 
 # 打印用法说明（--help / -h / help）
 show_usage() {
@@ -436,7 +467,7 @@ check_port_usage() {
     echo -e "${BLUE}占用进程信息:${NC}"
     echo "$output" | sed 's/^/  /'
 
-    read -p "是否继续配置？(y/n): " ans
+    ui_read_default "是否继续配置？(y/n): " ans
     [[ "$ans" =~ ^[Yy]$ ]] || { echo "配置已取消"; exit 1; }
     return 0
 }

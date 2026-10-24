@@ -164,7 +164,7 @@ compare_and_ask_update() {
         return 1
     else
         echo -e "${YELLOW}发现新版本: ${current_ver} → ${latest_version}${NC}"
-        read -p "是否更新到最新版本？(y/n) [默认: n]: " update_choice
+        ui_read_default "是否更新到最新版本？(y/n) [默认: n]: " update_choice
         if [[ ! "$update_choice" =~ ^[Yy]$ ]]; then
             echo -e "${BLUE}使用现有的 realm 安装${NC}"
             return 1
@@ -240,7 +240,7 @@ install_realm() {
 
     # 离线安装选项
     local download_file=""
-    read -p "离线安装realm输入完整路径(回车默认自动下载): " local_package_path
+    ui_read_default "离线安装realm输入完整路径(回车默认自动下载): " local_package_path
     
     if [ -n "$local_package_path" ] && [ -f "$local_package_path" ]; then
         echo -e "${GREEN}✓ 使用本地文件: $local_package_path${NC}"
@@ -1038,7 +1038,7 @@ smart_install() {
 
     # 脚本更新（首次安装跳过，菜单进入则询问）
     if [ "${_SKIP_SCRIPT_UPDATE:-}" != "1" ]; then
-        read -p "是否更新脚本？(y/N): " update_script
+        ui_read_default "是否更新脚本？(y/N): " update_script
         [[ "$update_script" =~ ^[Yy]$ ]] && _bootstrap
     fi
 

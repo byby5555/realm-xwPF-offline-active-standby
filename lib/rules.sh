@@ -637,8 +637,8 @@ edit_nat_server_config() {
     
     local new_listen_port
     while true; do
-        echo -ne "请输入本地监听端口 (客户端连接的端口，回车默认${GREEN}${LISTEN_PORT}${NC}): "
-        read new_listen_port
+        sleep 0.2
+        ui_read_default "请输入本地监听端口 (客户端连接的端口，回车默认${GREEN}${LISTEN_PORT}${NC}): " new_listen_port
         if [ -z "$new_listen_port" ]; then
             new_listen_port="$LISTEN_PORT"
             break
@@ -651,8 +651,7 @@ edit_nat_server_config() {
     done
     
     local new_listen_ip
-    echo -ne "自定义(指定)入口监听IP/网卡接口(客户端连接IP/网卡,回车默认${GREEN}${LISTEN_IP:-::}${NC}): "
-    read new_listen_ip
+    ui_read_default "自定义(指定)入口监听IP/网卡接口(客户端连接IP/网卡,回车默认${GREEN}${LISTEN_IP:-::}${NC}): " new_listen_ip
     if [ -z "$new_listen_ip" ]; then
         new_listen_ip="${LISTEN_IP:-::}"
     elif ! validate_ip "$new_listen_ip" && ! [[ "$new_listen_ip" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
@@ -661,8 +660,7 @@ edit_nat_server_config() {
     fi
     
     local new_through_ip
-    echo -ne "自定义(指定)出口IP/网卡接口(适用于多IP/网卡出口情况,回车默认${GREEN}${THROUGH_IP:-::}${NC}): "
-    read new_through_ip
+    ui_read_default "自定义(指定)出口IP/网卡接口(适用于多IP/网卡出口情况,回车默认${GREEN}${THROUGH_IP:-::}${NC}): " new_through_ip
     if [ -z "$new_through_ip" ]; then
         new_through_ip="${THROUGH_IP:-::}"
     elif ! validate_ip "$new_through_ip" && ! [[ "$new_through_ip" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
@@ -674,8 +672,7 @@ edit_nat_server_config() {
     echo -e "${YELLOW}=== 编辑出口服务器信息配置 ===${NC}"
     
     local new_remote_host
-    echo -ne "出口服务器的IP地址或域名(回车默认${GREEN}${REMOTE_HOST}${NC}): "
-    read new_remote_host
+    ui_read_default "出口服务器的IP地址或域名(回车默认${GREEN}${REMOTE_HOST}${NC}): " new_remote_host
     if [ -z "$new_remote_host" ]; then
         new_remote_host="$REMOTE_HOST"
     elif ! validate_single_address "$new_remote_host"; then
@@ -685,8 +682,8 @@ edit_nat_server_config() {
     
     local new_remote_port
     while true; do
-        echo -ne "出口服务器的监听端口(回车默认${GREEN}${REMOTE_PORT}${NC}): "
-        read new_remote_port
+        sleep 0.2
+        ui_read_default "出口服务器的监听端口(回车默认${GREEN}${REMOTE_PORT}${NC}): " new_remote_port
         if [ -z "$new_remote_port" ]; then
             new_remote_port="$REMOTE_PORT"
             break
@@ -718,8 +715,7 @@ edit_nat_server_config() {
 
     # 规则备注编辑
     local current_note="${RULE_NOTE:-}"
-    echo -ne "规则备注(回车默认${GREEN}${current_note}${NC}): "
-    read new_note
+    ui_read_default "规则备注(回车默认${GREEN}${current_note}${NC}): " new_note
     new_note=$(echo "$new_note" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | cut -c1-50)
     if [ -z "$new_note" ]; then
         new_note="$current_note"
@@ -810,8 +806,8 @@ edit_exit_server_config() {
     
     local new_listen_port
     while true; do
-        echo -ne "请输入监听端口 (回车默认${GREEN}${LISTEN_PORT}${NC}): "
-        read new_listen_port
+        sleep 0.2
+        ui_read_default "请输入监听端口 (回车默认${GREEN}${LISTEN_PORT}${NC}): " new_listen_port
         if [ -z "$new_listen_port" ]; then
             new_listen_port="$LISTEN_PORT"
             break
@@ -827,8 +823,7 @@ edit_exit_server_config() {
     local current_target_port="${FORWARD_TARGET##*:}"
     
     local new_target_host
-    echo -ne "转发目标IP地址(回车默认${GREEN}${current_target_host}${NC}): "
-    read new_target_host
+    ui_read_default "转发目标IP地址(回车默认${GREEN}${current_target_host}${NC}): " new_target_host
     if [ -z "$new_target_host" ]; then
         new_target_host="$current_target_host"
     elif ! validate_target_address "$new_target_host"; then
@@ -838,8 +833,8 @@ edit_exit_server_config() {
     
     local new_target_port
     while true; do
-        echo -ne "转发目标业务端口(回车默认${GREEN}${current_target_port}${NC}): "
-        read new_target_port
+        sleep 0.2
+        ui_read_default "转发目标业务端口(回车默认${GREEN}${current_target_port}${NC}): " new_target_port
         if [ -z "$new_target_port" ]; then
             new_target_port="$current_target_port"
             break
@@ -853,8 +848,7 @@ edit_exit_server_config() {
     
     # 规则备注编辑
     local current_note="${RULE_NOTE:-}"
-    echo -ne "规则备注(回车默认${GREEN}${current_note}${NC}): "
-    read new_note
+    ui_read_default "规则备注(回车默认${GREEN}${current_note}${NC}): " new_note
     new_note=$(echo "$new_note" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | cut -c1-50)
     if [ -z "$new_note" ]; then
         new_note="$current_note"
@@ -886,6 +880,7 @@ interactive_add_rule() {
     echo ""
     local RULE_ROLE
     while true; do
+        sleep 0.2
         ui_read_into "请输入数字 [1-2]: " RULE_ROLE
         case $RULE_ROLE in
             1)
@@ -1507,7 +1502,8 @@ proxy_management_menu() {
     init_proxy_fields
 
     while true; do
-        clear
+        sleep 0.2
+        ui_clear
         echo -e "${GREEN}=== Proxy Protocol 管理 ===${NC}"
         echo ""
 
@@ -1795,7 +1791,8 @@ restart_service_for_proxy() {
 
 load_balance_management_menu() {
     while true; do
-        clear
+        sleep 0.2
+        ui_clear
         echo -e "${GREEN}=== 负载均衡管理(按端口组管理) ===${NC}"
         echo ""
 
@@ -2050,7 +2047,7 @@ probe_all_targets_latency() {
 # 切换负载均衡模式（按端口分组管理）
 switch_balance_mode() {
     while true; do
-        clear
+        ui_clear
         echo -e "${YELLOW}=== 切换负载均衡模式 ===${NC}"
         echo ""
 
@@ -2310,7 +2307,7 @@ switch_balance_mode() {
 # 权重配置管理菜单
 weight_management_menu() {
     while true; do
-        clear
+        ui_clear
         echo -e "${GREEN}=== 权重配置管理 ===${NC}"
         echo ""
 
@@ -2441,7 +2438,7 @@ configure_port_group_weights() {
     local targets_str="$3"
     local current_weights_str="$4"
 
-    clear
+    ui_clear
     echo -e "${GREEN}=== 权重配置: $rule_name ===${NC}"
     echo ""
 
@@ -2560,7 +2557,7 @@ preview_port_group_weight_config() {
     shift 3
     local targets=("$@")
 
-    clear
+    ui_clear
     echo -e "${GREEN}=== 配置预览 ===${NC}"
     echo ""
     echo "规则组: $rule_name (端口: $port)"

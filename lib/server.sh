@@ -556,7 +556,8 @@ mptcp_management_menu() {
     init_mptcp_fields
 
     while true; do
-        clear
+        sleep 0.2
+        ui_clear
         echo -e "${GREEN}=== MPTCP 管理 ===${NC}"
         echo ""
 
@@ -821,8 +822,7 @@ mptcp_select_interface() {
     done
     echo "" >&2
 
-    echo -n "请选择网卡 [1-$interface_count]: " >&2
-    read interface_choice
+    ui_read_default "请选择网卡 [1-$interface_count]: " interface_choice
     if [[ ! "$interface_choice" =~ ^[0-9]+$ ]] || [ "$interface_choice" -lt 1 ] || [ "$interface_choice" -gt $interface_count ]; then
         echo -e "${RED}无效的选择${NC}" >&2
         return 1
@@ -870,8 +870,7 @@ mptcp_select_ips() {
     done
     echo "" >&2
 
-    echo -n "请选择IP地址(回车默认全选): " >&2
-    read ip_choice
+    ui_read_default "请选择IP地址(回车默认全选): " ip_choice
 
     if [ -z "$ip_choice" ]; then
         echo -e "${BLUE}已选择全部IP地址${NC}" >&2
@@ -900,8 +899,7 @@ mptcp_select_endpoint_type() {
     echo -e "${YELLOW}3.${NC} subflow backup (备用模式)" >&2
     echo "" >&2
 
-    echo -n "请选择端点类型(回车默认 1) [1-3]: " >&2
-    read type_choice
+    ui_read_default "请选择端点类型(回车默认 1) [1-3]: " type_choice
 
     if [ -z "$type_choice" ]; then
         type_choice="1"
@@ -965,8 +963,7 @@ mptcp_select_endpoint_to_delete() {
     fi
 
     echo "" >&2
-    echo -n "请选择要删除的端点编号 [1-$endpoint_count]: " >&2
-    read choice
+    ui_read_default "请选择要删除的端点编号 [1-$endpoint_count]: " choice
 
     if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt $endpoint_count ]; then
         echo -e "${RED}无效的选择${NC}" >&2
@@ -1142,6 +1139,7 @@ configure_nat_server() {
 
 echo -e "${BLUE}多端口使用,逗号分隔(回车随机端口)${NC}"
 while true; do
+    sleep 0.2
     ui_read_into "请输入本地监听端口 (客户端连接的端口，nat机需使用分配的端口): " NAT_LISTEN_PORT
 
     if [[ -z "$NAT_LISTEN_PORT" ]]; then
@@ -1202,6 +1200,7 @@ done
         echo ""
 
         while true; do
+            sleep 0.2
             ui_read_into "自定义(指定)入口监听IP/网卡接口(客户端连接IP/网卡,回车默认全部监听 ::): " listen_ip_input
 
             if [ -z "$listen_ip_input" ]; then
@@ -1229,6 +1228,7 @@ done
         echo ""
 
         while true; do
+            sleep 0.2
             ui_read_into "自定义(指定)出口IP/网卡接口(适用于多IP/网卡出口情况,回车默认全部监听 ::): " through_ip_input
 
             if [ -z "$through_ip_input" ]; then
@@ -1260,6 +1260,7 @@ done
     echo ""
     
     while true; do
+        sleep 0.2
         ui_read_into "出口服务器的IP地址或域名: " REMOTE_IP
         if [ -n "$REMOTE_IP" ]; then
             if validate_ip "$REMOTE_IP" || [[ "$REMOTE_IP" =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
@@ -1273,6 +1274,7 @@ done
     done
 
     while true; do
+        sleep 0.2
         ui_read_into "出口服务器的监听端口(多端口使用,逗号分隔): " REMOTE_PORT
         if validate_ports "$REMOTE_PORT"; then
             break
@@ -1330,6 +1332,7 @@ done
     echo ""
 
     while true; do
+        sleep 0.2
         ui_read_into "请输入选择(回车默认1) [1-6]: " transport_choice
         if [ -z "$transport_choice" ]; then
             transport_choice="1"
@@ -1377,6 +1380,7 @@ done
 
                 echo ""
                 while true; do
+                    sleep 0.2
                     ui_read_into "请输入证书文件路径: " TLS_CERT_PATH
                     if [ -f "$TLS_CERT_PATH" ]; then
                         break
@@ -1386,6 +1390,7 @@ done
                 done
 
                 while true; do
+                    sleep 0.2
                     ui_read_into "请输入私钥文件路径: " TLS_KEY_PATH
                     if [ -f "$TLS_KEY_PATH" ]; then
                         break
@@ -1436,6 +1441,7 @@ done
 
                 echo ""
                 while true; do
+                    sleep 0.2
                     ui_read_into "请输入证书文件路径: " TLS_CERT_PATH
                     if [ -f "$TLS_CERT_PATH" ]; then
                         break
@@ -1445,6 +1451,7 @@ done
                 done
 
                 while true; do
+                    sleep 0.2
                     ui_read_into "请输入私钥文件路径: " TLS_KEY_PATH
                     if [ -f "$TLS_KEY_PATH" ]; then
                         break
@@ -1520,6 +1527,7 @@ configure_exit_server() {
 
     echo -e "${BLUE}多端口使用,逗号分隔${NC}"
     while true; do
+        sleep 0.2
         ui_read_into "请输入监听端口 (等待中转服务器连接的端口，NAT VPS需使用商家分配的端口): " EXIT_LISTEN_PORT
         if validate_ports "$EXIT_LISTEN_PORT"; then
             echo -e "${GREEN}监听端口设置为: $EXIT_LISTEN_PORT${NC}"
@@ -1550,6 +1558,7 @@ configure_exit_server() {
 
     # 转发目标地址配置
     while true; do
+        sleep 0.2
         ui_read_into "转发目标IP地址(默认:127.0.0.1): " input_target
         if [ -z "$input_target" ]; then
             input_target="127.0.0.1"
@@ -1569,6 +1578,7 @@ configure_exit_server() {
     # 转发目标端口配置
     local forward_port
     while true; do
+        sleep 0.2
         ui_read_into "转发目标业务端口(多端口使用,逗号分隔): " forward_port
         if validate_ports "$forward_port"; then
             echo -e "${GREEN}转发端口设置为: $forward_port${NC}"
@@ -1648,6 +1658,7 @@ configure_exit_server() {
     echo ""
 
     while true; do
+        sleep 0.2
         ui_read_into "请输入选择(回车默认1) [1-6]: " transport_choice
         if [ -z "$transport_choice" ]; then
             transport_choice="1"
@@ -1707,6 +1718,7 @@ configure_exit_server() {
 
                 echo ""
                 while true; do
+                    sleep 0.2
                     ui_read_into "请输入证书文件路径: " TLS_CERT_PATH
                     if [ -f "$TLS_CERT_PATH" ]; then
                         break
@@ -1716,6 +1728,7 @@ configure_exit_server() {
                 done
 
                 while true; do
+                    sleep 0.2
                     ui_read_into "请输入私钥文件路径: " TLS_KEY_PATH
                     if [ -f "$TLS_KEY_PATH" ]; then
                         break
@@ -1766,6 +1779,7 @@ configure_exit_server() {
 
                 echo ""
                 while true; do
+                    sleep 0.2
                     ui_read_into "请输入证书文件路径: " TLS_CERT_PATH
                     if [ -f "$TLS_CERT_PATH" ]; then
                         break
@@ -1775,6 +1789,7 @@ configure_exit_server() {
                 done
 
                 while true; do
+                    sleep 0.2
                     ui_read_into "请输入私钥文件路径: " TLS_KEY_PATH
                     if [ -f "$TLS_KEY_PATH" ]; then
                         break
