@@ -43,6 +43,16 @@ _upd_site() {
         p_libs="core.sh health.sh rules.sh server.sh realm.sh ui.sh update.sh"
     fi
     for f in $p_libs; do
+        # ★ core.sh 在上面刚写过（带 SCRIPT_VERSION="v2.2.1"）——
+        #   这个循环会把它覆盖成 `#!/bin/bash\n# core.sh` ⇒ 版本号没了
+        #   ⇒ T47 的「下载失败时 core.sh 没被替换」「语法错误时 core.sh 没被替换」
+        #     两条断言恒为 0（**恒假**，跟产品行为无关）。
+        #   ⇒ core.sh 不走这个循环，保留上面那份带版本号的。
+        #   ★ 用 case 而不是 `[ "$f" = "core.sh" ] && continue`：
+        #     后者在条件不成立时整条命令退出码为 1 ⇒ set -e 下会中止脚本。
+        case "$f" in
+            core.sh) continue ;;
+        esac
         printf '#!/bin/bash\n# %s\n' "$f" > "$site/install/lib/$f"
     done
     printf '#!/bin/bash\n# xwPF\n' > "$site/install/xwPF.sh"

@@ -315,7 +315,13 @@ _n8_prepare_degraded_lib() {
             ;;
         hard-timeout)
             # 「超时预算写死 3s」：check_connectivity 忽略传入的预算
-            sed -i 's|local timeout="\${3:-3}"|local timeout=3|' "$libroot/lib/health.sh"
+            # ★ 注入点必须锚在**当前产品写法**上：探测超时预算默认已从 3s 放宽到 10s
+            #   （当前写法 = local timeout="${3:-10}"，出现在 check_connectivity 与
+            #    probe_with_latency 两处）⇒ 锚在旧写法 "${3:-3}" 上会**打空**
+            #   ⇒ 退化没生效 ⇒ 判定器在本例上恒绿（假绿）。
+            # ★ 两处一起改：check_connectivity 忽略第三参（真正的退化点），
+            #   probe_with_latency 也写死 —— 任一处单独生效都足以让「预算 10」只等 3s。
+            sed -i 's|local timeout="\${3:-10}"|local timeout=3|g' "$libroot/lib/health.sh"
             grep -q 'local timeout=3' "$libroot/lib/health.sh" && changed=1
             ;;
         no-rollback)
@@ -1235,6 +1241,15 @@ case_T73_no_false_switch_slow_target() {
         t1=$(date +%s%3N)
         dw10=$((t1 - t0))
         h_log "退化后 预算2 → ${dw2}ms；预算10 → ${dw10}ms"
+        # ★ 行为自检（注入是否**真的生效**）：退化后「传预算 10」也只等 ≈3s
+        #   ⇒ dw10 必须落在 [1500, 8000) —— 既不是 0（压根没等）也不是 ≈10s（预算仍被尊重）。
+        #   这条**独立**于 _n8_judge_budget：判定器判红可能是因为别的原因，
+        #   这条只证明「写死 3s」这个退化确实改变了行为 ⇒ 否则判定器的「红」不算证明。
+        if [ "$dw10" -ge 1500 ] 2>/dev/null && [ "$dw10" -lt 8000 ] 2>/dev/null; then
+            h_pass "退化行为自检：传预算 10 也只等了 ${dw10}ms（≈3s）⇒ 写死预算的退化确实生效"
+        else
+            h_fail "退化行为自检：传预算 10 用了 ${dw10}ms（期望落在 [1500,8000)）⇒ 退化没真正生效（判定器这次的『红』不能算证明）"
+        fi
         j=$(_n8_judge_budget "$dw2" "$dw10")
         h_log "退化预算判定: $j"
         h_check_contains "$j" "FAIL" "负向对照（注入式退化：超时预算写死 3s）：判定器必须判红"

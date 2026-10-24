@@ -267,11 +267,17 @@ case_T05_failover_help_vs_docs() {
     done
     h_log "文档检索路径: ${paths[*]}"
     for c in $cmds; do
-        if grep -rEl "xwFailover\.sh[[:space:]]+${c}([^A-Za-z0-9_-]|$)" "${paths[@]}" >/dev/null 2>&1; then
-            documented=$((documented + 1))
-        else
-            missing="$missing $c"
-        fi
+        # ★ grep 退出码语义：0=命中 / 1=没命中 / **2=出错了**（检索范围里有坏路径）。
+        #   把 2 当成「没找到」⇒ 就是**静默假红**的经典形态：文档明明在，用例照样红。
+        #   ⇒ 2 必须单独报成「判定器坏了」，不能算进「文档缺失」。
+        #   ★ 用 `|| grc=$?` 而不是 `if grep ...`：独立成一条命令时返回 1/2 会被 set -e 打断。
+        local grc=0
+        grep -rEl "xwFailover\.sh[[:space:]]+${c}([^A-Za-z0-9_-]|$)" "${paths[@]}" >/dev/null 2>&1 || grc=$?
+        case "$grc" in
+            0) documented=$((documented + 1)) ;;
+            1) missing="$missing $c" ;;
+            *) h_fail "判定器坏了：grep 检索子命令「$c」时退出码 $grc（2=检索范围里有坏路径）—— 不能当成「文档缺失」" ;;
+        esac
     done
     h_log "有文档说明的子命令: $documented / 7"
     h_log "缺文档的子命令:$missing"

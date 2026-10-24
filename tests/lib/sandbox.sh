@@ -225,6 +225,22 @@ sbx_install_shims() {
         cp "$SBX_BIN/nc" "$SBX_BIN_NC/nc"
         chmod +x "$SBX_BIN_NC/nc"
     fi
+    # ★ 沙箱里必须有一份**真 bash**
+    #   路径映射表里有 "/bin|bin" ⇒ 被测产物的 shebang（#!/bin/bash）会被
+    #   重定向成 "#!<沙箱>/bin/bash" ⇒ 那个解释器**并不存在** ⇒ 直接执行报
+    #   "bad interpreter"（rc=126）。
+    #   ★ 产品里有一条**直接执行已装脚本**的自检：
+    #     lib/update.sh 的 "${INSTALL_DIR}/xwPF.sh" --help
+    #   ⇒ 沙箱里没有 bash ⇒ 自检必败 ⇒ 被误判成「脚本包更新失败」
+    #     ⇒ 自动回滚 ⇒ 升路径用例恒红，而且根因离症状很远（看着像下载/版本问题）。
+    #   ⇒ 沙箱提供一份真 bash：路径映射管的是「被测产物里引用的路径」，
+    #     解释器本身必须是真能跑的那个。
+    #   ★ 不进越界扫描范围（sbx_escape_scan 只扫 $SBX_RUN）。
+    local _bash
+    _bash=$(command -v bash 2>/dev/null)
+    if [ -n "$_bash" ] && [ -x "$_bash" ]; then
+        cp -f "$_bash" "$SBX_BIN/bash" 2>/dev/null && chmod +x "$SBX_BIN/bash" 2>/dev/null
+    fi
 }
 
 sbx_export_env() {

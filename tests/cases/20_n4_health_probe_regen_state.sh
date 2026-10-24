@@ -515,6 +515,60 @@ case_T85_probe_artifact_regenerated_on_install_and_update() {
     artifact="$(_n4_probe_script)"
     local j
 
+    # ─────────────────────────────────────────────────────────────
+    # ★ 预置一个「已装 realm」的替身（根因修复）
+    #   症状：装路径卡在 realm 二进制下载 404 ⇒ lib/realm.sh 的 exit 1 提前退出
+    #        ⇒ 根本走不到「重新生成生成物」那步 ⇒ T85 判红。
+    #   ⇒ **这不是产品回归，是场景没搭对**（产品侧流程是对的：安装顺序里
+    #      realm 下载失败就该中止）。
+    #   ★ 做法：放一个可执行的假 realm 到 REALM_PATH，让装路径走
+    #       「已装 realm → 查版本 → 已是最新 → 不更新（return 1）→ install_realm return 0」
+    #       这条分支 ⇒ **不联网、不下载** ⇒ 直达脚本安装 + 生成物重生成。
+    #     · --help 必须返回 0（否则被当成损坏 → 重新安装 → 又去下载）
+    #     · --version 输出**该镜像自己的 $REALM_VERSION**（从镜像 lib/core.sh 抽，不写死）
+    #       ⇒ compare_and_ask_update 判「当前版本已是最新版本」⇒ return 1
+    #       ⇒ 走「已是最新」分支，**完全不碰交互读**（不依赖 stdin 行为）
+    #   ★ REALM_PATH 用**命令前缀**传，不做全局 export ⇒ 不会污染同批次其它用例。
+    #   ★ 负向对照 (c) 用的是另一棵历史树 ⇒ 那个镜像要**另造一个**假 realm
+    #     （版本号跟着那棵树的 core.sh 走）⇒ 两边都不会掉进下载分支。
+    # ─────────────────────────────────────────────────────────────
+    _n4_fake_realm() {
+        local core="$1" out="$2" ver
+        ver=$(sed -n 's/^REALM_VERSION="\(.*\)"$/\1/p' "$core" 2>/dev/null | head -1)
+        [ -z "$ver" ] && ver="v0.0.0"
+        # ★ 目录可能还不存在（第一次用 n4/ 时）⇒ `cat > "$out"` 会**静默失败**，
+        #   而本函数照样把版本号打到 stdout ⇒ 日志看着像「假 realm 已就位」，
+        #   实际文件压根没生成 ⇒ 装路径照样去下载（404 ⇒ fail fast 提前 exit）
+        #   ⇒ 用例判红，而根因离症状隔了三层（看着像下载/版本问题）。
+        #   ⇒ 自己建目录；落盘后**自检文件真的在且可执行**，失败就明确报出去。
+        mkdir -p "$(dirname "$out")" 2>/dev/null
+        cat > "$out" <<EOF
+#!/bin/bash
+case "\${1:-}" in
+    --help|-h) echo "Realm (fake for sandbox)"; exit 0 ;;
+    --version|-v) echo "$ver"; exit 0 ;;
+    *) exit 0 ;;
+esac
+EOF
+        chmod +x "$out" 2>/dev/null
+        if [ ! -x "$out" ]; then
+            echo "假 realm 生成失败（不可执行）：$out" >&2
+            return 1
+        fi
+        printf '%s' "$ver"
+    }
+    local realm_bin="$SBX_ROOT/n4/realm"
+    local realm_ver
+    if ! realm_ver=$(_n4_fake_realm "$SBX_RUN/lib/core.sh" "$realm_bin"); then
+        h_fail "假 realm 没能生成（$realm_bin）⇒ 装路径一定会去下载（404 ⇒ fail fast 提前中断）⇒ 后面全是连带红，先修这个"
+        return 1
+    fi
+    if [ ! -x "$realm_bin" ]; then
+        h_fail "假 realm 不可执行（$realm_bin）⇒ 装路径会判它是损坏的 ⇒ 又去下载"
+        return 1
+    fi
+    h_log "已预置假 realm: $realm_bin（--version → $realm_ver，与冻结态 core.sh 的 REALM_VERSION 一致 ⇒ 装路径不下载）"
+
     # ──────────────────────────────
     # ① 装路径：xwPF.sh install
     # ──────────────────────────────
@@ -527,7 +581,7 @@ case_T85_probe_artifact_regenerated_on_install_and_update() {
     h_log "装路径 · 旧生成物指纹: $before"
 
     local out rc
-    out=$(SBX_MIRROR="$priv" bash "$priv/xwPF.sh" install </dev/null 2>&1)
+    out=$(SBX_MIRROR="$priv" REALM_PATH="$realm_bin" bash "$priv/xwPF.sh" install </dev/null 2>&1)
     rc=$?
     h_log "装路径 · install rc=$rc"
     h_log "装路径 · 输出尾部: $(printf '%s' "$out" | sed -e 's/\x1b\[[0-9;]*m//g' | tail -6 | tr '\n' ' ' | cut -c1-240)"
@@ -602,7 +656,14 @@ case_T85_probe_artifact_regenerated_on_install_and_update() {
     rm -rf "$badtree"
     mkdir -p "$badtree/lib"
     cp -r "$SBX_RUN"/. "$badtree"/ 2>/dev/null
-    sed -i 's|local timeout="${3:-3}"|local timeout="${3:-99}"|' "$badtree/lib/health.sh" 2>/dev/null
+    # ★ 注入点必须锚在**当前产品写法**上：探测超时预算默认已从 3s 放宽到 10s
+    #   （当前写法 = local timeout="${3:-10}"）⇒ 只锚旧写法 "${3:-3}" 会**打空**
+    #   ⇒ 注入没生效 ⇒ 这条负向对照恒绿（假绿；审稿第 18 次修订 ⑦ 指的就是这处）。
+    #   ★ 两条目标串都试（当前写法优先、旧的留作跨冻结点兜底）；
+    #     靠下面「inj ≥ 1」的自检兜住 —— 打空就判红，绝不静默放过。
+    sed -i -e 's|local timeout="${3:-10}"|local timeout="${3:-99}"|g' \
+           -e 's|local timeout="${3:-3}"|local timeout="${3:-99}"|g' \
+           "$badtree/lib/health.sh" 2>/dev/null
     local inj
     inj=$(grep -c 'local timeout="${3:-99}"' "$badtree/lib/health.sh" 2>/dev/null)
     h_log "负向对照 (b)：已把真源副本的探测超时改坏（命中 $inj 处）"
@@ -619,7 +680,17 @@ case_T85_probe_artifact_regenerated_on_install_and_update() {
     _n4_private_mirror "$priv_pre" "$_N4_PRE_SHA"
     _n4_stale_artifact "$artifact"
     before=$(_n4_fingerprint "$artifact")
-    out=$(SBX_MIRROR="$priv_pre" bash "$priv_pre/xwPF.sh" install </dev/null 2>&1)
+    # ★ 负向对照 (c) 用的是另一棵历史树 ⇒ 另造一个假 realm（版本号跟着那棵树的 core.sh 走）
+    #   不造的话，这一版也会掉进 realm 下载分支 ⇒ 它的「没重新生成」结论会被
+    #   「下载失败提前退出」这个**别的**原因污染 ⇒ 证明力打折。
+    local realm_bin_pre="$SBX_ROOT/n4/realm_pre"
+    local realm_ver_pre
+    if ! realm_ver_pre=$(_n4_fake_realm "$priv_pre/lib/core.sh" "$realm_bin_pre"); then
+        h_fail "负向对照 (c) 的假 realm 没能生成（$realm_bin_pre）⇒ 这一版也会掉进下载分支 ⇒ 它的『没重新生成』结论被别的原因污染"
+        return 1
+    fi
+    h_log "负向对照 (c) · 另造假 realm: $realm_bin_pre（--version → $realm_ver_pre）"
+    out=$(SBX_MIRROR="$priv_pre" REALM_PATH="$realm_bin_pre" bash "$priv_pre/xwPF.sh" install </dev/null 2>&1)
     after=$(_n4_fingerprint "$artifact")
     h_log "负向对照 (c) · 缺陷版 ($_N4_PRE_SHA) 装路径前后指纹: $before → $after"
     b_sha=$(printf '%s' "$before" | cut -d' ' -f1); b_mt=$(printf '%s' "$before" | cut -d' ' -f2)
@@ -907,6 +978,16 @@ EOF
     h_check_contains "$j" "FAIL" "负向对照 1：缺陷版（$_N4_INHERIT_PRE_SHA）真串了（拿到别的 RULE_ID 的 failed）→ 判定器必须判红"
 
     # ── 负向对照 2 · 老实现本来是对的（inherit-ok = f59e389，组合键）→ 必须**不串** ──
+    #   ★ 归因（**实测**，别再凭印象改口径）：f59e389 的生成物里 health_status_find_row
+    #     **出现 0 次** ⇒ 老实现走的是**内联组合键**路径，不是 find_row 路径：
+    #       target_key="${RULE_ID}|${target_endpoint}"   → grep "^${target_key}|"
+    #       legacy_key="${RULE_ID}|${target}"             → 旧格式兜底
+    #     ⇒ 它的「不串」是**组合键自带 RULE_ID** 带来的。
+    #   ★ 所以这条对照**不能只验「不串」**：一个「永远不继承」（每轮把失败计数重置）的
+    #     坏实现同样能通过「不串」⇒ 恒绿假绿。必须**双向**验：
+    #       (1) 不同 RULE_ID + 同一地址 ⇒ 不得继承（不串）
+    #       (2) 同 RULE_ID + 同一地址   ⇒ **必须继承**（认得对组合键）
+    #     (2) 才是这条对照的**牙齿**：它把「认错组合键」与「压根不继承」这两种坏分开。
     local ok_tree ok_probe
     if ! _n4_prepare_old_tree "$_N4_INHERIT_OK_SHA" "inherit_ok"; then
         h_fail "负向对照 2 搭不出「老实现」产品树（取不到 $_N4_INHERIT_OK_SHA:lib/health.sh）—— 对照跑不起来等于没在证明"
@@ -916,7 +997,15 @@ EOF
     ok_probe="$SBX_ROOT/n4/inherit_ok_probe.sh"
     _n4_gen_probe "$ok_tree" "$ok_probe"
     has_fn=$(grep -c '^health_status_find_row() {' "$ok_probe" 2>/dev/null)
-    h_log "负向对照 2 · 「老实现」($_N4_INHERIT_OK_SHA) 的生成物里 health_status_find_row 出现 $has_fn 次（0 = 老实现没有这个函数，走的是组合键）"
+    h_log "负向对照 2 · 「老实现」($_N4_INHERIT_OK_SHA) 的生成物里 health_status_find_row 出现 $has_fn 次（0 = 老实现没有这个函数，走的是内联组合键）"
+    # ★ 路径存在性断言（对称于负向对照 1 的「被测函数必须存在」）：
+    #   这条对照走的是**内联组合键**路径 ⇒ 生成物里必须能看到「键里带 RULE_ID」的痕迹。
+    #   少了它，将来这个 SHA 被换成走别的路径的版本时，这条对照会**静默变成另一个东西**。
+    local ok_ck
+    ok_ck=$(grep -c 'target_key="\${RULE_ID}|' "$ok_probe" 2>/dev/null)
+    [ -z "$ok_ck" ] && ok_ck=0
+    h_log "负向对照 2 · 生成物里「组合键带 RULE_ID」的痕迹出现 $ok_ck 次"
+    h_check_ge 1 "$ok_ck" "负向对照 2 路径自检：老实现的生成物里必须能看到组合键（RULE_ID|地址）—— 否则这条对照走的是别的路径，结论不能采信"
 
     _n4_reset_rules
     _n4_make_rule "$SBX_ROOT/realm/rules/rule-2.conf" 2 9502 "127.0.0.1" "$_N4_PORT_A"
@@ -924,7 +1013,13 @@ EOF
 # Realm健康状态文件
 2|127.0.0.1:$_N4_PORT_A|failed|3|0|100|0
 EOF
-    _n4_run_round "$ok_probe"
+    # ★ 与负向对照 1 **完全对称**：换 ID 之后**只跑那一轮**。
+    #   ★★ 这里原本还多跑了一轮（换 ID 之前）—— 那一轮会把老行的 success_count 推到 1
+    #      ⇒ 换 ID 后那一轮够 SUCCESS_THRESHOLD(2) ⇒ 触发「恢复」分支 ⇒
+    #      status 翻回 healthy ⇒ **「串」的信号被抹掉**
+    #      ⇒ 「老实现不串」这个绿**不成立**（假绿；审稿第 18 次修订 ⑥）。
+    #      对照 1 之所以没这个问题，是因为它压根没先跑那一轮（success_count 留在 0）。
+    #      ⇒ 两边必须对称，绿侧才有证明力。
     rm -f "$SBX_ROOT/realm/rules/rule-2.conf"
     _n4_make_rule "$SBX_ROOT/realm/rules/rule-1.conf" 1 9502 "127.0.0.1" "$_N4_PORT_A"
     _n4_run_round "$ok_probe"
@@ -933,6 +1028,26 @@ EOF
     j=$(_n4_judge_row_status "$status_file" "1|127.0.0.1:$_N4_PORT_A|healthy")
     h_log "负向对照 2 · 判定: $(printf '%s' "$j" | cut -f1) —— $(printf '%s' "$j" | cut -f2-)"
     h_check_contains "$j" "PASS" "负向对照 2：老实现（$_N4_INHERIT_OK_SHA，组合键）跑同一场景**不串**（同一场景必须判绿）"
+
+    # ── 负向对照 2 的第二腿：同 RULE_ID + 同地址 ⇒ **必须继承** ──
+    #   ★ 这一腿是上面「不串」那条断言的**牙齿**：只验「不继承」的话，
+    #     一个「永远不继承」（每轮都把失败计数重置）的实现也能全绿 —— 那是另一种坏，
+    #     而且更隐蔽。两条合起来才说得清「老实现认得对组合键」。
+    #   ★ 用不可达端口（PORT_C）⇒ 探测结果恒为失败 ⇒ 只动「继承」这一条。
+    #     判据：继承 ⇒ 失败计数 1→2；没继承 ⇒ 0→1。
+    _n4_reset_rules
+    _n4_make_rule "$SBX_ROOT/realm/rules/rule-1.conf" 1 9501 "127.0.0.1" "$_N4_PORT_C"
+    cat > "$status_file" <<EOF
+# Realm健康状态文件
+1|127.0.0.1:$_N4_PORT_C|failed|1|0|100|100|12|12
+EOF
+    _n4_run_round "$ok_probe"
+    h_log "负向对照 2 · 第二腿（同 ID 同地址）老实现跑一轮之后: $(grep -v '^#' "$status_file" 2>/dev/null | tr '\n' ' ')"
+    local ok_fc
+    ok_fc=$(grep "^1|127.0.0.1:$_N4_PORT_C|" "$status_file" 2>/dev/null | head -1 | cut -d'|' -f4)
+    [ -z "$ok_fc" ] && ok_fc="(无)"
+    h_log "负向对照 2 · 第二腿失败计数 = $ok_fc（继承则 1→2；没继承则 0→1）"
+    h_check_eq "2" "$ok_fc" "负向对照 2 第二腿：老实现认得对组合键 ⇒ 同 ID 同地址必须延续失败计数（继承 1→2；没继承则是 1）"
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -1032,5 +1147,26 @@ EOF
         else
             h_check_contains "$j" "PASS" "$t_label（$t_sha，组合键）：必须判绿 —— 同一场景下它不串"
         fi
+
+        # ── 第二腿：同 RULE_ID + 同地址 ⇒ **必须继承**（两个版本都必须成立）──
+        #   ★ 这一腿是上面「串/不串」那条断言的**牙齿**：
+        #     只验「不同 ID 不继承」的话，一个「永远不继承」（每轮把失败计数重置）
+        #     的坏实现也能全绿 —— 那种坏更隐蔽。
+        #   ★ 缺陷版（只比对 TARGET）在「同 ID 同地址」上**同样该继承**
+        #     ⇒ 这条对两个版本都是**恒真断言**（不是只对老实现）。
+        #   ★ 用不可达端口（PORT_C）⇒ 探测恒失败 ⇒ 只动「继承」这一条。
+        #     继承 ⇒ 失败计数 1→2；没继承 ⇒ 0→1。
+        _n4_reset_rules
+        _n4_make_rule "$SBX_ROOT/realm/rules/rule-1.conf" 1 9501 "127.0.0.1" "$_N4_PORT_C"
+        cat > "$status_file" <<EOF
+# Realm健康状态文件
+1|127.0.0.1:$_N4_PORT_C|failed|1|0|100|100|12|12
+EOF
+        _n4_run_round "$probe"
+        local t_fc
+        t_fc=$(grep "^1|127.0.0.1:$_N4_PORT_C|" "$status_file" 2>/dev/null | head -1 | cut -d'|' -f4)
+        [ -z "$t_fc" ] && t_fc="(无)"
+        h_log "$t_label · 第二腿（同 ID 同地址）跑一轮之后: $(grep -v '^#' "$status_file" 2>/dev/null | tr '\n' ' ') · 失败计数=$t_fc"
+        h_check_eq "2" "$t_fc" "$t_label（$t_sha）：同 ID 同地址必须延续失败计数（1→2）—— 这条是「不串」断言的牙齿（只验不继承的话，坏实现也能全绿）"
     done
 }
