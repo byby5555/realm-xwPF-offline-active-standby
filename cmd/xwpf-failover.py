@@ -28,6 +28,11 @@ Schema (list of pools):
 
 Stdlib-only (asyncio). Logs go to stdout (journald-friendly when run as systemd service).
 """
+
+# 守护进程版本号：lib/failover.sh 用它判断已安装版本是否落后（不一致则自动重装）。
+# 修改本文件的功能时记得同步递增。
+__version__ = "1.0.0"
+
 import argparse
 import asyncio
 import json

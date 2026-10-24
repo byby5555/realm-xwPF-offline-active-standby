@@ -45,14 +45,20 @@ cleanup_on_exit() {
 }
 
 # 统一下载函数
+# 下载到临时文件 → 校验 → 原子替换，避免中途断网把目标文件截断成半截文件
 download_from_sources() {
     local url="$1"
     local target_path="$2"
+    local tmp="${target_path}.tmp.$$"
 
-    if curl -fsSL --connect-timeout $SHORT_CONNECT_TIMEOUT --max-time $SHORT_MAX_TIMEOUT "$url" -o "$target_path"; then
+    rm -f "${target_path}.tmp" "$tmp"
+
+    if curl -fsSL --connect-timeout $SHORT_CONNECT_TIMEOUT --max-time $SHORT_MAX_TIMEOUT "$url" -o "$tmp" && [ -s "$tmp" ]; then
+        mv -f "$tmp" "$target_path"
         echo -e "${GREEN}✓ 下载成功${NC}" >&2
         return 0
     else
+        rm -f "$tmp"
         echo -e "${RED}✗ 下载失败${NC}" >&2
         return 1
     fi
@@ -1505,7 +1511,7 @@ show_main_menu() {
 manual_update_script() {
     echo -e "${YELLOW}正在更新脚本...${NC}"
 
-    local script_url="https://raw.githubusercontent.com/zywe03/realm-xwPF/main/speedtest.sh"
+    local script_url="https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-active-standby/main/speedtest.sh"
     local temp_file=$(mktemp)
 
     if download_from_sources "$script_url" "$temp_file"; then

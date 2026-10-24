@@ -888,10 +888,14 @@ failover_proxy_menu() {
                 read -p "按回车继续..."
                 ;;
             4)
-                failover_install_check
-                failover_service_enable
+                if failover_install_check && failover_service_enable; then
+                    echo -e "${GREEN}✓ 守护已启用并启动${NC}"
+                else
+                    echo -e "${RED}✗ 守护安装或启动失败${NC}"
+                    read -p "按回车继续..."
+                    return 1
+                fi
                 echo ""
-                echo -e "${GREEN}守护已启用并启动${NC}"
                 echo -e "${YELLOW}提示: 重启 realm 让所有 loopback 监听生效${NC}"
                 if read -p "是否立即重启 realm? [y/N]: " yesno && [[ "$yesno" =~ ^[Yy]$ ]]; then
                     service_restart
@@ -933,17 +937,37 @@ failover_proxy_menu() {
 port_traffic_dog_menu() {
     local script_url="https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-active-standby/main/port-traffic-dog.sh"
     local dog_script="/usr/local/bin/port-traffic-dog.sh"
+    local dog_tmp="${dog_script}.tmp"
 
-    # 脚本不存在或不可执行时才下载
-    if [[ ! -f "$dog_script" || ! -x "$dog_script" ]]; then
-        echo -e "${GREEN}正在下载端口流量狗脚本...${NC}"
-        mkdir -p "$(dirname "$dog_script")"
-        if ! download_from_sources "$script_url" "$dog_script"; then
+    # 每次都拉取远端版本做内容比对：
+    # 旧逻辑「文件已存在就不下载」会让被自更新污染成上游版的脚本永远装不回 fork 版
+    echo -e "${GREEN}正在检查端口流量狗脚本版本...${NC}"
+    mkdir -p "$(dirname "$dog_script")"
+    rm -f "$dog_tmp"
+
+    if download_from_sources "$script_url" "$dog_tmp" && [ -s "$dog_tmp" ]; then
+        # 内容校验：不是流量狗脚本就不替换本地文件
+        if ! grep -q "端口流量狗" "$dog_tmp" 2>/dev/null; then
+            echo -e "${RED}下载内容校验失败，已保留本地脚本${NC}"
+            rm -f "$dog_tmp"
+        elif [[ ! -f "$dog_script" ]] || ! cmp -s "$dog_tmp" "$dog_script"; then
+            mv -f "$dog_tmp" "$dog_script"
+            chmod +x "$dog_script"
+            echo -e "${GREEN}端口流量狗脚本已更新${NC}"
+        else
+            rm -f "$dog_tmp"
+            echo -e "${GREEN}端口流量狗脚本已是最新版本${NC}"
+        fi
+    else
+        rm -f "$dog_tmp"
+        if [[ -f "$dog_script" && -x "$dog_script" ]]; then
+            # 离线环境：下载失败时使用本地已有脚本
+            echo -e "${YELLOW}下载失败，使用本地已有端口流量狗脚本${NC}"
+        else
             echo -e "${RED}无法下载端口流量狗脚本，请检查网络连接${NC}"
             read -p "按回车键返回主菜单..."
             return 1
         fi
-        chmod +x "$dog_script"
     fi
 
     echo -e "${BLUE}启动端口流量狗...${NC}"

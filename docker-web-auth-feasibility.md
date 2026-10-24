@@ -153,13 +153,13 @@
 ### 1) 标准一键安装命令（推荐）
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/byby5555/realm-xwPF-offline/main/install-docker-panel.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-active-standby/main/install-docker-panel.sh | sudo bash
 ```
 
 ### 2) 网络受限时的加速源命令
 
 ```bash
-curl -fsSL https://v6.gh-proxy.org/https://raw.githubusercontent.com/byby5555/realm-xwPF-offline/main/install-docker-panel.sh | sudo bash
+curl -fsSL https://v6.gh-proxy.org/https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-active-standby/main/install-docker-panel.sh | sudo bash
 ```
 
 ### 3) 命令背后建议完成的动作（脚本内）

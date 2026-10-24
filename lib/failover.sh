@@ -12,6 +12,8 @@ XWPF_FAILOVER_SERVICE="xwpf-failover"
 XWPF_FAILOVER_UNIT="/etc/systemd/system/xwpf-failover.service"
 XWPF_FAILOVER_CONF_DIR="/etc/xwpf"
 XWPF_FAILOVER_CONF="${XWPF_FAILOVER_CONF_DIR}/failover.json"
+# 已安装 daemon 的版本记录（用于判断是否需要重装升级）
+XWPF_FAILOVER_VERSION_FILE="/usr/local/bin/.xwpf-failover-version"
 
 # Loopback port range used by realm listeners backing each failover pool.
 XWPF_FAILOVER_PORT_BASE=10443
@@ -640,44 +642,140 @@ failover_pool_delete_all() {
 }
 
 # === Install/uninstall daemon ===
+# cmd/ 源文件目录（已安装布局下为 /usr/local/bin/cmd）
+failover_cmd_dir() {
+    local base
+    base="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    printf '%s\n' "${base}/cmd"
+}
+
+# 文件指纹：内容变化即视为新版本
+failover_file_fingerprint() {
+    local f="$1"
+    [ -f "$f" ] || return 1
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$f" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$f" | awk '{print $1}'
+    else
+        wc -c < "$f" | tr -d ' '
+    fi
+}
+
+# 取 daemon 源码版本：优先 __version__ 常量，取不到则退回文件指纹
+failover_source_version() {
+    local src="$1"
+    [ -f "$src" ] || return 1
+    local v
+    v=$(sed -n 's/^__version__[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$src" 2>/dev/null | head -n 1)
+    if [ -n "$v" ]; then
+        printf '%s\n' "$v"
+        return 0
+    fi
+    failover_file_fingerprint "$src"
+}
+
+# 已安装版本（无记录时返回空串）
+failover_installed_version() {
+    [ -f "${XWPF_FAILOVER_VERSION_FILE}" ] || return 0
+    head -n 1 "${XWPF_FAILOVER_VERSION_FILE}" 2>/dev/null | tr -d ' \r\n'
+}
+
+# 记录已安装版本
+failover_save_version() {
+    local ver="$1"
+    [ -n "$ver" ] || return 0
+    if printf '%s\n' "$ver" > "${XWPF_FAILOVER_VERSION_FILE}" 2>/dev/null; then
+        return 0
+    fi
+    echo -e "${YELLOW}警告: 写入版本文件失败: ${XWPF_FAILOVER_VERSION_FILE}${NC}"
+    return 0
+}
+
+# 已安装但版本落后时重装（例如 fork 更新了 cmd/xwpf-failover.py）
 failover_install_check() {
+    local src_dir src_py src_ver installed_ver
+    src_dir="$(failover_cmd_dir)"
+    src_py="${src_dir}/xwpf-failover.py"
+
     if [ ! -x "${XWPF_FAILOVER_BIN}" ] || [ ! -f "${XWPF_FAILOVER_UNIT}" ]; then
         echo -e "${YELLOW}未检测到 xwpf-failover, 正在安装...${NC}"
         failover_install_files
+        return $?
     fi
+
+    installed_ver="$(failover_installed_version)"
+    src_ver="$(failover_source_version "$src_py" 2>/dev/null || true)"
+
+    if [ -z "$src_ver" ]; then
+        # 拿不到源码版本（离线且缺少 cmd/ 副本），保持现状不重装
+        echo -e "${YELLOW}未找到 cmd/xwpf-failover.py 源文件, 跳过版本比对${NC}"
+        return 0
+    fi
+
+    if [ "$installed_ver" != "$src_ver" ]; then
+        echo -e "${YELLOW}检测到 xwpf-failover 版本更新 (${installed_ver:-未记录} -> ${src_ver}), 正在安装...${NC}"
+        failover_install_files
+        return $?
+    fi
+
+    return 0
 }
 
 failover_install_files() {
     mkdir -p "${XWPF_FAILOVER_CONF_DIR}"
-    local src_dir repo_cmd_base name f url
-    src_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/cmd"
+    local src_dir repo_cmd_base name f url need_sync local_ver installed_ver
+    src_dir="$(failover_cmd_dir)"
     repo_cmd_base="https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-active-standby/main/cmd"
 
     # Bootstrap 只下载 xwPF.sh + lib/；cmd/ 源文件按 README「按需索取」原则处理：
-    # 本地 cmd/ 已有文件优先（离线安装场景需手动放置），缺失时从 GitHub raw 自动下载。
+    # 本地 cmd/ 已有文件优先（离线安装场景需手动放置），
+    # 但当本地副本与已安装版本不一致时必须重新下载，否则 fork 更新后的 daemon 永远同步不到 VPS。
+    local_ver="$(failover_source_version "${src_dir}/xwpf-failover.py" 2>/dev/null || true)"
+    installed_ver="$(failover_installed_version)"
+    need_sync=1
+    if [ -n "$local_ver" ] && [ "$local_ver" = "$installed_ver" ]; then
+        need_sync=0
+    fi
+
     for name in xwpf-failover.py xwpf-failover.service; do
         f="${src_dir}/${name}"
-        if [ -f "$f" ]; then
-            continue
-        fi
         url="${repo_cmd_base}/${name}"
         mkdir -p "$src_dir"
+        if [ -f "$f" ] && [ "$need_sync" -eq 0 ]; then
+            continue
+        fi
         if (curl -fL --retry 3 --retry-delay 2 --connect-timeout 10 --max-time 120 "$url" -o "${f}.tmp" ||
             wget -q --timeout=60 "$url" -O "${f}.tmp") 2>/dev/null && [ -s "${f}.tmp" ]; then
             mv -f "${f}.tmp" "$f"
             echo -e "${GREEN}已下载 cmd/${name}${NC}"
         else
             rm -f "${f}.tmp"
-            echo -e "${RED}未找到源文件: ${f}${NC}"
-            echo -e "${YELLOW}本地与 GitHub 均无法获取: ${url}${NC}"
-            echo -e "${YELLOW}离线环境请按 README 手动放置该文件到 ${src_dir}/ 后重试${NC}"
-            return 1
+            if [ -f "$f" ]; then
+                # 离线环境：下载失败时保留本地已有文件继续安装
+                echo -e "${YELLOW}下载失败, 使用本地 cmd/${name}${NC}"
+            else
+                echo -e "${RED}未找到源文件: ${f}${NC}"
+                echo -e "${YELLOW}本地与 GitHub 均无法获取: ${url}${NC}"
+                echo -e "${YELLOW}离线环境请按 README 手动放置该文件到 ${src_dir}/ 后重试${NC}"
+                return 1
+            fi
         fi
     done
 
-    install -m 0755 "${src_dir}/xwpf-failover.py" "${XWPF_FAILOVER_BIN}"
-    install -m 0644 "${src_dir}/xwpf-failover.service" "${XWPF_FAILOVER_UNIT}"
-    systemctl daemon-reload
+    if ! install -m 0755 "${src_dir}/xwpf-failover.py" "${XWPF_FAILOVER_BIN}"; then
+        echo -e "${RED}安装失败: ${XWPF_FAILOVER_BIN}${NC}"
+        return 1
+    fi
+    if ! install -m 0644 "${src_dir}/xwpf-failover.service" "${XWPF_FAILOVER_UNIT}"; then
+        echo -e "${RED}安装失败: ${XWPF_FAILOVER_UNIT}${NC}"
+        return 1
+    fi
+    systemctl daemon-reload || true
+
+    # 记录已安装版本，供下次比对决定是否重装
+    failover_save_version "$(failover_source_version "${src_dir}/xwpf-failover.py" 2>/dev/null || true)"
+
     echo -e "${GREEN}已安装${NC}"
 }
 
