@@ -88,8 +88,15 @@ sync_health_status_ids() {
         #     ② 退到「还没认领过这个目标」的候选规则（文件顺序 = RULE_ID 升序）
         #     ③ 都没有 ⇒ 这行不写（目标的规则已经没了 = 陈旧行，随整份重建一起消失）
         local new_rule_id=""
-        local _cand_ids=()
-        local _cand_idx=0
+        # ★ 候选规则的 RULE_ID 列表，用**空格分隔的普通变量**存，不用数组：
+        #   bash 4.4 之前（macOS 自带的 bash 3.2），`set -u` 下展开**空数组**会报
+        #   unbound variable（bash 4.4 起空数组不再算「未设置」）。
+        #   而「这个目标没有任何规则匹配」是**正常路径** ⇒ 候选列表为空是常态。
+        #   RULE_ID 是纯数字 ⇒ 空格分隔安全，对所有 bash 版本都免疫。
+        #   （注：产品脚本本身不开 set -u —— 只有 port-traffic-dog.sh 开 ——
+        #     所以这不是当前可达的崩溃，属于「不留坑」。）
+        local _cand_ids=""
+        local _cand_id=""
         for rule_file in "${RULES_DIR}"/rule-*.conf; do
             if [ -f "$rule_file" ] && read_rule_file "$rule_file"; then
                 if [ "$RULE_ROLE" = "1" ]; then
@@ -126,7 +133,7 @@ sync_health_status_ids() {
                         fi
                     fi
                     if [ "$_matched" = true ]; then
-                        _cand_ids+=("$RULE_ID")
+                        _cand_ids="${_cand_ids} ${RULE_ID}"
                     fi
                 else
                     local _fwd_ok=false
@@ -136,25 +143,25 @@ sync_health_status_ids() {
                         _fwd_ok=true
                     fi
                     if [ "$_fwd_ok" = true ]; then
-                        _cand_ids+=("$RULE_ID")
+                        _cand_ids="${_cand_ids} ${RULE_ID}"
                     fi
                 fi
             fi
         done
 
         # ① 身份优先：RULE_ID 与行首 old_rule_id 一致的候选
-        for _cand_idx in "${!_cand_ids[@]}"; do
-            [ "${_cand_ids[$_cand_idx]}" = "$old_rule_id" ] || continue
-            if ! _sync_status_pair_claimed "$temp_health_file" "${_cand_ids[$_cand_idx]}" "$target"; then
-                new_rule_id="${_cand_ids[$_cand_idx]}"
+        for _cand_id in $_cand_ids; do
+            [ "$_cand_id" = "$old_rule_id" ] || continue
+            if ! _sync_status_pair_claimed "$temp_health_file" "$_cand_id" "$target"; then
+                new_rule_id="$_cand_id"
                 break
             fi
         done
         # ② 退到还没认领过这个目标的候选
         if [ -z "$new_rule_id" ]; then
-            for _cand_idx in "${!_cand_ids[@]}"; do
-                if ! _sync_status_pair_claimed "$temp_health_file" "${_cand_ids[$_cand_idx]}" "$target"; then
-                    new_rule_id="${_cand_ids[$_cand_idx]}"
+            for _cand_id in $_cand_ids; do
+                if ! _sync_status_pair_claimed "$temp_health_file" "$_cand_id" "$target"; then
+                    new_rule_id="$_cand_id"
                     break
                 fi
             done
