@@ -214,6 +214,41 @@ check "更新中心有备份逻辑" "$([ "$(grep -c 'update_backup_dir_create' "
 check "安装路径也用同一套架构映射" "$(grep -c 'asset_name=$(detect_realm_asset_name)' "$REPO/lib/realm.sh")" "1"
 
 echo "=============================================="
+echo "J. 版本号归一化（回归：tag 带 v，二进制输出不带 v）"
+echo "=============================================="
+# 真实 realm 输出 "Realm 2.9.3 [brutal][proxy]..."（**不带** v），
+# 而 GitHub release 的 tag 是 "v2.9.6"（**带** v）。
+# 直接字符串比较会得出「期望 v2.9.6，实际 2.9.6」的假不一致 → 更新被永远拒绝，
+# 「已是最新」也永远判不出来。这条用例锁死这个行为。
+check "归一化：v2.9.6 → 2.9.6" "$(update_norm_version 'v2.9.6')" "2.9.6"
+check "归一化：2.9.6 → 2.9.6" "$(update_norm_version '2.9.6')" "2.9.6"
+check "归一化：V2.9.6 → 2.9.6" "$(update_norm_version 'V2.9.6')" "2.9.6"
+check "归一化：空串仍为空" "$(update_norm_version '')" ""
+
+make_installed
+# 现场：已装的 realm 输出 "Realm 2.9.3 ..."（无 v），上游 tag 是 "v2.9.6"（有 v）
+printf '#!/bin/bash\necho "Realm 2.9.3 [brutal][proxy]"\n' > "$REALM_PATH"
+chmod +x "$REALM_PATH"
+FAKE_TAG="v2.9.6"
+make_fake_tarball "2.9.6" "$SANDBOX/fake/realm.tar.gz"
+FAKE_DIGEST=$(sha256sum "$SANDBOX/fake/realm.tar.gz" | awk '{print $1}')
+
+out=$(update_status_display 2>&1)
+check "版本对照表显示归一化后的版本号" "$(echo "$out" | grep -c 'realm 主程序.*2\.9\.3 → 2\.9\.6')" "1"
+
+out=$(printf 'y\n' | safe_update_realm 2>&1); rc=$?
+echo "$out" | grep -E '已更新|不符|放弃' | head -2 | sed 's/^/    /'
+check "版本号格式不同也能更新成功" "$rc" "0"
+check "日志里没有「版本与目标不符」" "$(echo "$out" | grep -c '版本与目标不符')" "0"
+check "新二进制已装上" "$(grep -c 'realm 2.9.6' "$REALM_PATH")" "1"
+
+# 再跑一次：应识别为「已是最新」，而不是又去下载一遍
+out=$(printf 'y\n' | safe_update_realm 2>&1); rc=$?
+check "已是最新时返回 0" "$rc" "0"
+check "已是最新时提示跳过" "$(echo "$out" | grep -c '已是最新')" "1"
+check "已是最新时没有再次下载" "$(echo "$out" | grep -c '下载:')" "0"
+
+echo "=============================================="
 echo "结果: PASS=$PASS FAIL=$FAIL"
 echo "=============================================="
 rm -rf "$SANDBOX"

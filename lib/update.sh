@@ -69,7 +69,23 @@ update_sha256_of() {
     fi
 }
 
-# 当前 realm 版本号（纯版本号，如 v2.9.3；取不到返回空）
+# 归一化版本号：去掉前导 v/V
+#
+# 为什么必须有这一步：
+#   GitHub release 的 tag 带 v（v2.9.6），而 realm 二进制 --version 输出的是
+#   "Realm 2.9.6 [brutal][proxy]..."（不带 v）。直接做字符串比较会得出
+#   「期望 v2.9.6，实际 2.9.6」的假不一致 —— 更新会被无谓地拒绝，
+#   「已是最新」也永远判不出来。
+#   老的安装路径 compare_and_ask_update 早就做了同样的归一化，这里必须对齐。
+update_norm_version() {
+    local v="$1"
+    [ -n "$v" ] || return 0
+    v="${v#v}"
+    v="${v#V}"
+    echo "$v"
+}
+
+# 当前 realm 版本号（纯版本号，如 2.9.3；取不到返回空）
 update_realm_current_version() {
     local out=""
     [ -x "$REALM_PATH" ] || return 1
@@ -270,7 +286,7 @@ safe_update_realm() {
     echo -e "  最新版本: ${GREEN}${tag}${NC}"
 
     # 4) 已是最新
-    if [ -n "$current_ver" ] && [ "$current_ver" = "$tag" ]; then
+    if [ -n "$current_ver" ] && [ "$(update_norm_version "$current_ver")" = "$(update_norm_version "$tag")" ]; then
         echo -e "${GREEN}✓ 当前已是最新版本${NC}"
         rm -rf "$staging" 2>/dev/null
         update_lock_release
@@ -360,7 +376,7 @@ safe_update_realm() {
         update_lock_release
         return 1
     fi
-    if [ -n "$tag" ] && [ "$new_ver" != "$tag" ]; then
+    if [ -n "$tag" ] && [ "$(update_norm_version "$new_ver")" != "$(update_norm_version "$tag")" ]; then
         echo -e "${RED}✗ 新二进制版本与目标不符（期望 ${tag}，实际 ${new_ver}），放弃更新${NC}"
         rm -rf "$staging" 2>/dev/null
         update_lock_release
@@ -475,7 +491,7 @@ safe_update_scripts() {
     echo -e "  当前脚本版本: ${GREEN}${local_ver:-未知}${NC}"
     echo -e "  最新脚本版本: ${GREEN}${remote_ver:-未知}${NC}"
 
-    if [ -n "$remote_ver" ] && [ "$remote_ver" = "$local_ver" ]; then
+    if [ -n "$remote_ver" ] && [ "$(update_norm_version "$remote_ver")" = "$(update_norm_version "$local_ver")" ]; then
         echo -e "${GREEN}✓ 脚本包已是最新版本${NC}"
         rm -rf "$staging" 2>/dev/null
         update_lock_release
@@ -548,20 +564,26 @@ update_status_display() {
     current_ver=$(update_realm_current_version)
     latest_ver=$(update_realm_latest_tag)
     asset=$(detect_realm_asset_name)
-    if [ -n "$current_ver" ] && [ -n "$latest_ver" ] && [ "$current_ver" = "$latest_ver" ]; then
-        echo -e "  ${GREEN}realm 主程序${NC}  ${current_ver}  ${GREEN}(已是最新)${NC}"
+    local cur_n latest_n
+    cur_n=$(update_norm_version "$current_ver")
+    latest_n=$(update_norm_version "$latest_ver")
+    if [ -n "$cur_n" ] && [ -n "$latest_n" ] && [ "$cur_n" = "$latest_n" ]; then
+        echo -e "  ${GREEN}realm 主程序${NC}  ${cur_n}  ${GREEN}(已是最新)${NC}"
     else
-        echo -e "  ${GREEN}realm 主程序${NC}  ${current_ver:-未知} → ${latest_ver:-未知}"
+        echo -e "  ${GREEN}realm 主程序${NC}  ${cur_n:-未知} → ${latest_n:-未知}"
     fi
     [ -n "$asset" ] && echo -e "    ${BLUE}架构型号: ${asset}${NC}"
 
     # 脚本包
     local_ver=$(grep -oE '^SCRIPT_VERSION="[^"]+"' "${LIB_DIR}/core.sh" 2>/dev/null | head -1 | sed 's/.*="//; s/"$//')
     remote_ver=$(update_scripts_latest_version)
-    if [ -n "$remote_ver" ] && [ "$remote_ver" = "$local_ver" ]; then
-        echo -e "  ${GREEN}脚本包${NC}       ${local_ver:-未知}  ${GREEN}(已是最新)${NC}"
+    local local_n remote_n
+    local_n=$(update_norm_version "$local_ver")
+    remote_n=$(update_norm_version "$remote_ver")
+    if [ -n "$remote_n" ] && [ "$remote_n" = "$local_n" ]; then
+        echo -e "  ${GREEN}脚本包${NC}       ${local_n:-未知}  ${GREEN}(已是最新)${NC}"
     else
-        echo -e "  ${GREEN}脚本包${NC}       ${local_ver:-未知} → ${remote_ver:-未知}"
+        echo -e "  ${GREEN}脚本包${NC}       ${local_n:-未知} → ${remote_n:-未知}"
     fi
 
     return 0
