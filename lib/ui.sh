@@ -772,7 +772,15 @@ failover_proxy_menu() {
             1)
                 echo -e "${BLUE}创建主备池:${NC}"
                 echo ""
-                local name listen primary backups
+                echo -e "  ${GREEN}1.${NC} 直连 (${GREEN}推荐${NC}) —— 守护进程直连真实后端, 不经过 realm"
+                echo -e "  ${BLUE}2.${NC} 经 realm 回环 (旧模式) —— 流量先到 realm 再转发"
+                echo ""
+                local mode name listen primary backups yesno
+                ui_read_into "  选择模式 [1]: " mode
+                case "$mode" in
+                    2) mode="legacy" ;;
+                    *) mode="direct" ;;
+                esac
                 ui_read_into "  池名称 (例如 poolA, 区分大小写): " name
                 [ -z "$name" ] && { echo -e "${RED}名称不能为空${NC}"; ui_pause "按回车继续..."; continue; }
                 ui_read_into "  公开监听端口 (例如 443 或 0.0.0.0:443): " listen
@@ -781,11 +789,26 @@ failover_proxy_menu() {
                 [ -z "$primary" ] && { echo -e "${RED}主后端不能为空${NC}"; ui_pause "按回车继续..."; continue; }
                 ui_read_into "  备后端 (逗号分隔, 例如 5.6.7.8:443,9.10.11.12:443; 留空表示无备): " backups
                 echo ""
-                failover_pool_create "$name" "$listen" "$primary" "$backups"
-                echo ""
-                echo -e "${YELLOW}提示: 重启 realm 让新生成的回环规则生效${NC}"
-                if read -p "是否立即重启 realm? [y/N]: " yesno && [[ "$yesno" =~ ^[Yy]$ ]]; then
-                    service_restart
+                if [ "$mode" = "direct" ]; then
+                    failover_pool_create_direct "$name" "$listen" "$primary" "$backups"
+                    local pool_rc=$?
+                    if [ "$pool_rc" -ne 0 ]; then
+                        echo -e "${RED}创建失败, 未写入任何配置${NC}"
+                    else
+                        echo ""
+                        echo -e "${YELLOW}提示: 直连模式不依赖 realm —— 守护进程启动时读一次配置, 需重启守护才会生效${NC}"
+                        if read -p "是否立即重启守护服务? [y/N]: " yesno && [[ "$yesno" =~ ^[Yy]$ ]]; then
+                            failover_service_restart
+                        fi
+                    fi
+                else
+                    echo -e "${YELLOW}注意: 旧模式的探测点是 realm 回环口 —— realm 进程活着就一直算健康, 主备可能不切换${NC}"
+                    failover_pool_create "$name" "$listen" "$primary" "$backups"
+                    echo ""
+                    echo -e "${YELLOW}提示: 重启 realm 让新生成的回环规则生效${NC}"
+                    if read -p "是否立即重启 realm? [y/N]: " yesno && [[ "$yesno" =~ ^[Yy]$ ]]; then
+                        service_restart
+                    fi
                 fi
                 ui_pause "按回车继续..."
                 ;;
