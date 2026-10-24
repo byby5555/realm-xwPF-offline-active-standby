@@ -11,8 +11,10 @@
 >    —— 台架两条断言更新到新口径，并补上 N1 真正触发的形态（同一端口组内、同 host 不同端口）。
 >    上表里的冻结点与结果以**最终那次实测**为准；本文件是这一轮工作的完整记录。
 >
-> > 指纹清单（[`tests/baseline-manifest.txt`](./baseline-manifest.txt)）指向的实测冻结点是 `ed7a5bd`
-> > （`harness` 行 `v2.7.0`）—— 报告与指纹**指向同一次实测**，不出现「报告说 A、指纹说 B」。
+> > 指纹清单（[`tests/baseline-manifest.txt`](./baseline-manifest.txt)）是**滚动指针** —— 永远指向最近一次实测的冻结点。
+> > 本轮实测的冻结点是 `ed7a5bd`（`harness` 行 `v2.7.0`）；此后第 8 轮又跑了一次，指针已前移
+> > （见 [`BASELINE-round8.md`](./BASELINE-round8.md)）。
+> > **每份报告记自己那一轮的冻结点，指针只指最新那个** —— 这样就不会出现「报告说 A、指纹说 B」。
 > > 上一版（`1f98d44` / `v2.6.0`）的 52/52 结论同样成立：那之后**产品代码零变化**，只动了台架与报告。
 
 ---
@@ -21,7 +23,7 @@
 
 | 项 | 值 |
 |----|----|
-| **冻结点 BASE_SHA** | `ed7a5bd37798b6473613fab8a83d15064fdbbdd1`（短号 `ed7a5bd`）—— **指纹清单指向的实测冻结点** |
+| **冻结点 BASE_SHA** | `ed7a5bd37798b6473613fab8a83d15064fdbbdd1`（短号 `ed7a5bd`）—— **本轮实测的冻结点**（指纹清单是滚动指针，最新指针见第 8 轮报告） |
 | 冻结点标题 | `test(台架): 第 8 轮 —— T34 加固（行号引用硬断言 0 + 英文所有格写法 + 判定器自检）` |
 | **台架版本** | `v2.7.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive)` |
 | 产物来源 | `git show $BASE_SHA:<path>`（**不读工作区**） |

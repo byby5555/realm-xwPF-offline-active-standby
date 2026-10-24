@@ -1,18 +1,23 @@
 # 被测产物基线快照（冻结点机制）
 repo        : /c/Users/liwend/.minimax-agent-cn/projects/realm-xwPF-offline-active-standby
-BASE_SHA    : ed7a5bd37798b6473613fab8a83d15064fdbbdd1
-BASE_SHA 全 : ed7a5bd37798b6473613fab8a83d15064fdbbdd1
-BASE 标题   : Sat Oct 24 16:36:34 2026 +0800 test(台架): 第 8 轮 —— T34 加固（行号引用硬断言 0 + 英文所有格写法 + 判定器自检）
-harness     : v2.7.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive)
-time        : 2026-10-24 16:37:10 +0800
-sandbox     : /tmp/xwpf-sbx.a4fTd6
+BASE_SHA    : 02cc0e68566e353b9e0d70b93a719b7a9c25fbcd
+BASE_SHA 全 : 02cc0e68566e353b9e0d70b93a719b7a9c25fbcd
+BASE 标题   : Sat Oct 24 17:53:59 2026 +0800 fix(独立脚本): xwFailover.sh / port-traffic-dog.sh / speedtest.sh 的菜单读入改为 EOF 安全
+harness     : v2.8.1 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive + negctl-selfcheck + t45-portable-equiv + t45-win-mv-truth)
+time        : 2026-10-24 18:01:34 +0800
+sandbox     : /tmp/xwpf-sbx.K6PKgG
 
 --- 当前工作区 HEAD（仅供对照，不作为被测产物）---
-head        : ed7a5bd37798b6473613fab8a83d15064fdbbdd1
+head        : 02cc0e68566e353b9e0d70b93a719b7a9c25fbcd
 
 --- git status --porcelain（跑批时刻的工作区状态）---
  M tests/BASELINE-round7.md
-?? reports/round3-vps-live-verification.md
+ M tests/README.md
+ M tests/TEST-HARNESS.md
+ M tests/baseline-manifest.txt
+ M tests/cases/09_update_center.sh
+ M tests/run_tests.sh
+?? tests/BASELINE-round8.md
 
 --- sha256（冻结态原始 blob = 本次被测产物，git show $BASE_SHA:<path>）---
 5ff152f64acc20af1b741b9c06e472ea498b155e17c41922fba78473b3d8fb2b  README.md
@@ -27,30 +32,31 @@ c57749a8eedd85c8a708b5ebc466dc6d18aa74f781f34e59cea152c6ac97be19  docs/active-st
 f1eb2aa42b8d8d5f3d4f7a3dcfb78129ed18d70cdc85d4667faa56d3a0d5b90a  docs/install-and-upgrade.md
 b00fb1e86343a8c9dd3e2e54b058ad1414734a4aa39af96e62ac1d37c8b308ef  docs/port-groups-and-weights.md
 c35b19a76df8f2ec6278a1fbbd721974a9d1d84862c4656fe5856d9aa5dbfdb1  docs/troubleshooting.md
-666003c3b2f523bf4759fb9821c0d2f5c72fd5b3c9a5ce09f9845a1e29e87f08  lib/core.sh
+3ada96186c283691efae5c191d5dbeda597f1761bb94f4dfec9e78a9904da10b  lib/core.sh
 01116553e852bc2114ae0c6ef8e104a6fca9ecf390d2a776f143e43c1d322e55  lib/failover.sh
 e18de22868c3d394ce45b1ca7c9227896fb13bc6fb33aa900c60081a0d22c803  lib/health.sh
 0703072b633ab41cd6d6b9bb8d0f3812699a8e78d98726aa588290bc2d0520fc  lib/realm.sh
-5d8bde2df8983d685a054d246682c55b863a16c678692cef65e05ba786ab4f6b  lib/rules.sh
-80880eeed140942f81898cf0073e9a171be959179f382eacfd5c584980e05e40  lib/server.sh
-1948ae91d89013112578783877e621c2d9e83660b59f1e19fb542b50e106cd76  lib/ui.sh
-a869123029887b0b45522a60329a558cf6c84943a23d6e7b9d877c13248d2f44  lib/update.sh
+9293a291616d087da986a073c05ef782b6635e472ce940efe91ba7fef8d3cf47  lib/rules.sh
+dadf7275af0d7bd1e17ced72880530068c5122052cea7aed9d9661adb61965b4  lib/server.sh
+b3cf82d8d20e203520d89fefd336fc80f643805c8e70e7f0a971fb7cbff91ead  lib/ui.sh
+ff0b6e0c848112da6ec45a325c19e7af34fb5a17e94b1fe461d0222521f8b85e  lib/update.sh
 d1dbbe3fb2b6149cced539ad462fc38c285b84a2171833568ef1d6151fa8217d  notifications/telegram.sh
 d9a6c53a902de6bb64262fbdece99744320643f94f0c250d8760b8d3427e37d1  notifications/wecom.sh
 bf7b29b9f23afa2933a965618992622e68c3c677cef4c27597ceba27b848a1d1  port-traffic-dog-README.md
-ab37971ee9b2f05b9eb0de199228275ccb34baff5ae55d223c3a22f141516918  port-traffic-dog.sh
-4b7ed0d6ce53636da0a4072893a3894b2664d768b83593183d338ef97e778c2d  reports/real-machine-acceptance.md
+36976153a31c640a03e62b33603c5a5a5b37355ec77d4467834498ab983be6a6  port-traffic-dog.sh
+6176218845b5f57c5cd4ca4c091789d254896b4f7c49b772690425b69cc0dd34  reports/real-machine-acceptance.md
 be882c6b4d91bd812bc90fdde0fc6624417b87b7fb30536a7623870bf523a858  reports/round1-baseline-review.md
-5a5986b40f8b741fb74420822f71e2c8408ff5ee678a2e75f994b85dc62f9956  reports/round2-review.md
+e9221ed38f30f35faa48ce52f30f688bef900c594035168514aa4fc1cf523b52  reports/round2-review.md
 dd0f8d4ed768f98e6ee7fa26aa3e3bc583649b1ed0da8e88779fec3af5ef426a  reports/round3-crashloop-review.md
-7d8d826412842746c2e1562d4891cba413ab9e13f8e0cb132fddf1ab50b760eb  speedtest.sh
+8b39b64acc06049cd2840a25740955e2827ab67e34235c0e1ac65b2fb63ef3b8  reports/round3-vps-live-verification.md
+c93a11c67369632f21800c426f1e20deef7876b2275b5c4bb83e2f34e2a35dc2  speedtest.sh
 ff5b7eae8692c6f37a30b4b2e51b95f36aff5b9c209eb080443ec48d748b60c6  tests/BASELINE-round1.md
 fda683c526ae711bb954f9ae8cdae450704b91fe57b95cdf19952f92634cfde5  tests/BASELINE-round2.md
 09d934255fe55bc436c749503480e501b5398de7d2402041e772c0131dc0c76c  tests/BASELINE-round3.md
 64528ffc9236189c75b107db9e391fa8836b81e03668f751227c8e7c0e9fca95  tests/BASELINE-round4.md
 b604059b7ba859641aaa15f70c39fec1557163af3d62b45b0a50cce51aefcc8f  tests/BASELINE-round5.md
 854261f9edff00b5cd8a47f3beddc7f1c8be5f443566e38eb939164c27e37c01  tests/BASELINE-round6.md
-b30c362d843d59b49f3265221c4bb3b43007b769af7dc759a3f69828887cdb3b  tests/BASELINE-round7.md
+100837f59e4783f588084b438b0f083e8af1ca237fc625aa106cc6c940293a25  tests/BASELINE-round7.md
 8afd4250577ca8e16ee0ff5328760b744c2771014fe7433629155feac9ee718d  tests/README.md
 a73313b7ab2a1e40ced84b234d14361d1eca49a498e492f0e467d126a762fdd6  tests/TEST-HARNESS.md
 dda838f2fe10fca98e88020697b877582fe2c0980c067a3669717b4872c5002e  tests/cases/00_common.sh
@@ -76,6 +82,6 @@ b8946df65e1900e342ee42683bfb9372722c1e157e326b55ffccc635634490ca  tests/lib/sand
 91e4d3d380f4a33b58b264bf0e8078bf8b06f24d113acf4b143b2a98d3f9b3ad  tests/test_latency.sh
 f23622499a3e6a414f6d7b043abddd69174f8ce87eca9684800653240c4ae02f  tests/test_set_u.sh
 3b70ed5ceef2dc534da21425be40603df9a19a4b0d9ddad3e107e6849568a75b  tests/test_update.sh
-58976580e3caae3f7e8c9d58a677ce09c68f1ab575c6f661d08997e86d8b3cac  xwFailover.sh
+5dd8db04287962cdea1091c148e8ea10014285fb62d0233b40c75504cd323abe  xwFailover.sh
 c489561531f3b89a4c278dd9f57ee080a069c1b983aa9896218ebac5299cbd67  xwPF.sh
 433cd0d69cbc18b6cfc7e47ddcc1547f17d8f8357f4f541ee3002fccb38fd915  xw_realm_OCR.sh

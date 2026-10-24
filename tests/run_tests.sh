@@ -24,6 +24,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # 台架版本：台架自身的改动会让旧报告的结论打折，改了台架就 bump
+# v2.8.1：第 8 轮（续）—— T45 日志文字纠正（**台架说错了话**）
+#         · 路径 bug 未修时，「恢复失败」被误归因为系统锁 → 台架写下「连 mv 也绕不过」
+#         · 修好路径后实测：Windows 上 **mv（改目录项）能替换运行中的 exe**，被挡住的只有 cp
+#           → 这正好证明「必须走 mv 覆盖」，文字照实改，结论只加强不放松
+# v2.8.0：第 8 轮（续）—— 负向对照质量加固（Chief 的元规则）
+#         · T43/T44/T47：每条负向对照加「破坏手法生效」的**正向确认**（断言注入点命中数）
+#           —— 注入点没命中 → 症状不会出现 → 断言必红 → 会被误当成产品缺陷
+#         · T45/T46：函数覆盖型负向对照加「覆盖确实生效」的确认
+#         · T45：新增**本机可跑的等价断言**（inode 变化 = 走「替换」而不是原地 cp 覆写）
+#           —— ETXTBSY 是 Linux 内核行为，非 Linux 上那条等于没测（skip ≠ 放过）
+#         · 配套：每条负向对照都要在「修复前的冻结点」上验一次是红的
 # v2.7.0：第 8 轮 —— T34 加固（小编 R3-D01 交付后暴露出的两个盲区）
 #         · T34 行号引用从「兜底（文件缺失 / 行号越界才红）」收紧成**硬断言：必须为 0**
 #           —— 旧口径下「行号漂了但仍在文件范围内」是绿的，那正是 D-01 那类静默漂移
@@ -53,7 +64,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #         · tests/test_update.sh、tests/test_latency.sh 改薄封装（消除第二入口）
 #         · jq 桩扩能力：数组下标路径、-e 退出码语义、JSON 对象字面量；
 #           并把 `..` 这类「会被静默误解」的语法显式判为不支持
-HARNESS_VERSION="v2.7.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive)"
+HARNESS_VERSION="v2.8.1 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive + negctl-selfcheck + t45-portable-equiv + t45-win-mv-truth)"
 
 # shellcheck source=lib/harness.sh
 . "$SCRIPT_DIR/lib/harness.sh"

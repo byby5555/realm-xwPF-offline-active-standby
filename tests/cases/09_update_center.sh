@@ -178,7 +178,11 @@ EOS
     cp "$SBX_RUN/lib/"*.sh "$broken_site/lib/" 2>/dev/null
     sed -i 's|^    v="${v#v}"$|    : 归一化被破坏|; s|^    v="${v#V}"$|    : 归一化被破坏|' \
         "$broken_site/lib/update.sh"
-    h_log "负向对照：已从被测副本里去掉版本归一化（$(grep -c '归一化被破坏' "$broken_site/lib/update.sh") 处）"
+    local inj43
+    inj43=$(grep -c '归一化被破坏' "$broken_site/lib/update.sh" 2>/dev/null)
+    h_log "负向对照：已从被测副本里去掉版本归一化（$inj43 处）"
+    # ★ 破坏手法生效的**正向确认**：注入点没命中 → 症状当然不会出现 → 断言必红 → 会被误当成产品缺陷
+    h_check_eq "2" "$inj43" "负向对照自检：归一化破坏确实注入了 2 处（破坏手法生效）"
 
     {
         # ★ 坏副本必须在 prelude **之前** 指定，否则 prelude 里 source 的还是原版
@@ -283,7 +287,10 @@ EOS
     cp "$SBX_RUN/lib/"*.sh "$bsite/lib/" 2>/dev/null
     sed -i 's|if \[ "$got" != "$digest" \]; then|if false; then  # 负向对照：哈希校验被破坏|' \
         "$bsite/lib/update.sh"
-    h_log "负向对照：已把 sha256 校验改成永远通过"
+    local inj44
+    inj44=$(grep -c '哈希校验被破坏' "$bsite/lib/update.sh" 2>/dev/null)
+    h_log "负向对照：已把 sha256 校验改成永远通过（$inj44 处）"
+    h_check_eq "1" "$inj44" "负向对照自检：哈希校验破坏确实注入了 1 处（破坏手法生效）"
 
     {
         cat <<'EOS'
@@ -361,7 +368,11 @@ if [ -n "$SLEEP_BIN" ] && cp "$SLEEP_BIN" "$BUSY" 2>/dev/null && chmod +x "$BUSY
         echo "RESULT:etxtbsy=other:$cp_err"
     fi
     # 恢复：备份里的相对路径必须指向这个正在运行的二进制
-    REL="tmp/${site#/}/busy.bin"
+    # ★ 相对路径 = $site 去掉**一个**前导斜杠（restore 写的是 "/${rel}"）。
+    #   旧写法 "tmp/${site#/}/..." 把 /tmp 拼了两遍 → 目标目录不存在 → 恢复必然失败 →
+    #   这一子项其实**什么都没测**（假绿）。第 8 轮由 inode 等价断言把它抓出来后修掉。
+    REL="${site#/}/busy.bin"
+    echo "RESULT:busy_target_dir=$([ -d "/$(dirname "$REL")" ] && echo ok || echo missing)"
     BAK2="$site/backup/busy-bak"
     mkdir -p "$BAK2/$(dirname "$REL")"
     printf '#!/bin/bash\necho restored\n' > "$BAK2/$REL"
@@ -377,6 +388,30 @@ else
     echo "RESULT:busy_msg=skip"
     echo "RESULT:busy_content=skip"
 fi
+
+# (d) 【本机可跑的等价断言】恢复必须走「替换」语义（临时文件 + mv 覆盖），
+#     而不是「原地 cp 覆写」。
+#     为什么必须有它：ETXTBSY 是 **Linux 内核**行为 → Git Bash/Windows 上根本复现不出来，
+#     只断言 ETXTBSY 那条在非 Linux 上等于没测（skip ≠ 放过，必须有等价断言兜住）。
+#     判据选「inode 是否变化」：原地 cp 覆写 → inode 不变；替换（mv/rename）→ inode 变。
+#     这正是「会不会撞 ETXTBSY」的可观测代理 —— 断言的是**效果**，不是命令名。
+#     目标选**非运行中**的二进制：运行中的文件在本机会被系统锁住（device-busy），
+#     恢复失败与「实现对不对」无关 → inode 判据必须放在不被锁的场景里。
+IDLE="$site/idle.bin"
+if [ -n "$SLEEP_BIN" ]; then cp "$SLEEP_BIN" "$IDLE" 2>/dev/null; else printf '#!/bin/bash\necho idle\n' > "$IDLE"; fi
+chmod +x "$IDLE" 2>/dev/null
+REL2="${site#/}/idle.bin"
+echo "RESULT:idle_target_dir=$([ -d "/$(dirname "$REL2")" ] && echo ok || echo missing)"
+BAK3="$site/backup/idle-bak"
+mkdir -p "$BAK3/$(dirname "$REL2")"
+printf '#!/bin/bash\necho idle-restored\n' > "$BAK3/$REL2"
+ino_before=$(stat -c %i "$IDLE" 2>/dev/null)
+out=$(update_restore_backup "$BAK3" 2>&1); rc=$?
+ino_after=$(stat -c %i "$IDLE" 2>/dev/null)
+echo "RESULT:idle_rc=$rc"
+echo "RESULT:idle_inode_before=${ino_before:-none}"
+echo "RESULT:idle_inode_after=${ino_after:-none}"
+echo "RESULT:idle_content=$(grep -c 'idle-restored' "$IDLE" 2>/dev/null)"
 EOS
     } > "$scen"
 
@@ -399,8 +434,10 @@ EOS
     elif [ "$etxt" = "device-busy" ]; then
         # Windows 语义：运行中的 exe 被锁，**任何**替换工具（含 mv/rename）都绕不过
         #   → 唯一能要求的是「不许静默失败」：要么成功，要么明确报出失败原因并返回非 0
-        h_log "本机是 Windows 语义（cp 报 Device or resource busy）：运行中的可执行文件被系统锁住，"
-        h_log "  连 mv（改目录项）也绕不过 —— 因此这里只要求「不许静默失败」。"
+        h_log "本机是 Windows 语义（cp 报 Device or resource busy）：直接 cp 覆盖运行中的 exe 被系统挡住，"
+        h_log "  但 mv 改的是目录项 → **可以替换运行中的可执行文件**（本机实测 busy_restore_rc=0）。"
+        h_log "  → 这正好证明「必须走 mv 覆盖」：cp 会被挡、mv 不会。"
+        h_log "  （若某平台连 mv 也失败，则退化为「不许静默失败」：要么成功，要么明确报出原因并返回非 0。）"
         if [ "$brc" = "0" ]; then
             h_pass "覆盖正在运行的二进制成功"
             h_check_eq "1" "$(_upd_get "$out" busy_content)" "恢复后文件内容正确"
@@ -412,6 +449,29 @@ EOS
     else
         h_log "本机不产生 ETXTBSY（$etxt）→「覆盖正在运行的二进制」这一子项**不适用**"
         h_pass "ETXTBSY 场景不适用（本机不复现）"
+    fi
+
+    # ── 本机可跑的等价断言：恢复必须走「替换」语义（**不依赖 ETXTBSY**）──
+    #   ETXTBSY 是 Linux 内核行为 → 非 Linux 上「skip」等于没测；
+    #   这里用 inode 变化做等价判据：原地 cp 覆写 → inode 不变；替换（mv/rename）→ inode 变。
+    #   ★ 这一条让「修复前的冻结点 610a076^（直接 cp 覆写）」在本机也能判红。
+    local ibefore="$(_upd_get "$out" idle_inode_before)"
+    local iafter="$(_upd_get "$out" idle_inode_after)"
+    if [ "$(_upd_get "$out" idle_target_dir)" != "ok" ]; then
+        # 目标目录在沙箱里不可达 → 这一子项**不适用**，明确跳过（不假装测过）
+        h_log "沙箱里恢复目标目录不可达 → 「替换语义」这一子项不适用（明确 skip）"
+        h_pass "「替换语义」子项不适用（目标目录不可达）"
+    else
+    h_check_rc "0" "$(_upd_get "$out" idle_rc)" "恢复一个非运行中的二进制成功"
+    h_check_eq "1" "$(_upd_get "$out" idle_content)" "恢复后内容正确"
+    if [ -z "$ibefore" ] || [ "$ibefore" = "none" ]; then
+        h_log "本机无 stat（inode 判据不适用）→ 只保留「恢复成功 + 内容正确」两条"
+        h_pass "inode 判据不适用（本机无 stat）"
+    elif [ "$ibefore" != "$iafter" ]; then
+        h_pass "恢复走的是「替换」语义（inode 变化 $ibefore → $iafter）—— 不是原地 cp 覆写"
+    else
+        h_fail "恢复后 inode 未变化（$ibefore → $iafter）—— 疑似原地 cp 覆写，没有走 mv 覆盖"
+    fi
     fi
 
     # ── 负向对照：把回滚函数换成「什么都不做还返回 0」→ 失败必须不再被报出来 ──
@@ -428,6 +488,7 @@ EOS
         cat <<'EOS'
 # 负向对照：回滚变成空操作（静默吞错误的老毛病）
 update_restore_backup() { return 0; }
+echo "RESULT:broken_override=$(declare -f update_restore_backup | grep -c 'return 0')"
 BADBAK="$site/backup/bad-restore"
 mkdir -p "$BADBAK/nonexistent_dir_xyz"
 printf 'x' > "$BADBAK/nonexistent_dir_xyz/realm"
@@ -440,6 +501,7 @@ EOS
     local bout
     bout=$(_upd_run "$SBX_ROOT/upd/t45_broken.sh" "$bsite")
     h_log "负向对照输出: $(printf '%s' "$bout" | grep -a '^RESULT:' | tr '\n' ' ')"
+    h_check_eq "1" "$(_upd_get "$bout" broken_override)" "负向对照自检：回滚确实被替换成空操作（覆盖生效）"
     h_check_eq "0" "$(_upd_get "$bout" broken_rc)" "负向对照：回滚空操作后不再返回非 0"
     h_check_eq "0" "$(_upd_get "$bout" broken_msg)" "负向对照：回滚空操作后不再报失败原因"
 }
@@ -497,6 +559,7 @@ EOS
         _upd_prelude
         cat <<'EOS'
 update_restore_backup() { return 0; }   # 负向对照：回滚空操作
+echo "RESULT:broken_override=$(declare -f update_restore_backup | grep -c 'return 0')"
 rm -rf "$site/pkg"; mkdir -p "$site/pkg"
 printf '#!/bin/bash\necho "realm v9.9.9"\n' > "$site/pkg/realm"; chmod +x "$site/pkg/realm"
 tar -czf "$site/fake/realm.tar.gz" -C "$site/pkg" realm
@@ -514,6 +577,7 @@ EOS
     local bout
     bout=$(_upd_run "$SBX_ROOT/upd/t46_broken.sh" "$bsite")
     h_log "负向对照输出: $(printf '%s' "$bout" | grep -a '^RESULT:' | tr '\n' ' ')"
+    h_check_eq "1" "$(_upd_get "$bout" broken_override)" "负向对照自检：回滚确实被替换成空操作（覆盖生效）"
     h_check_eq "no" "$(_upd_get "$bout" broken_old_kept)" "负向对照：回滚空操作后旧版本没被恢复（说明本用例拦得住）"
 }
 
@@ -599,6 +663,10 @@ EOS
     cp "$SBX_RUN/lib/"*.sh "$bsite/lib/" 2>/dev/null
     sed -i 's|if ! bash -n "$f" 2>/dev/null; then|if false; then  # 负向对照：语法检查被破坏|' \
         "$bsite/lib/update.sh"
+    local inj47
+    inj47=$(grep -c '语法检查被破坏' "$bsite/lib/update.sh" 2>/dev/null)
+    h_log "负向对照：已去掉脚本语法检查（$inj47 处）"
+    h_check_eq "1" "$inj47" "负向对照自检：语法检查破坏确实注入了 1 处（破坏手法生效）"
     {
         cat <<'EOS'
 site="$2"
