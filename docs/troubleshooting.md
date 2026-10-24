@@ -495,7 +495,7 @@ journalctl -u realm-health-check.service -n 50 --no-pager
 | `语法检查失败: xxx` | 下载到的脚本不完整 | 现有文件未动，重试 |
 | `另一个更新进程正在运行` | 有人正在更新 | 等它结束；进程被 kill 留下的陈旧锁会自动接管 |
 | `获取上游最新版本失败` | 拿不到 GitHub release 信息 | 检查网络；脚本会退回解析 release 页面 |
-| `Text file busy` | 手工覆盖二进制时服务还在跑 | 先 `systemctl stop realm` 再覆盖（见下方手工回滚） |
+| `Text file busy` | 直接 `cp` 覆盖了正在运行的二进制 | 改用「拷到临时文件 + `mv` 覆盖」（见下方手工回滚） |
 | `恢复失败: /xxx` | 自动回滚时覆盖不到文件 | 按提示手工从备份目录恢复（脚本会打印备份路径） |
 
 ### 手工回滚
@@ -506,14 +506,19 @@ journalctl -u realm-health-check.service -n 50 --no-pager
 ls -1dt /usr/local/bin/.xwpf-backup/*/ | head
 
 # 例如把 realm 回滚到某一份
-# 注意：必须先停服务 —— 正在运行的二进制不能被直接覆盖，
-# 否则 cp 会报 "Text file busy"（ETXTBSY），文件其实没换掉
-systemctl stop realm
-cp -p /usr/local/bin/.xwpf-backup/realm-20261024-120000/usr/local/bin/realm /usr/local/bin/realm
-chmod +x /usr/local/bin/realm
-systemctl start realm
+#
+# 关键：**不要直接 cp 覆盖** /usr/local/bin/realm ——
+# 正在运行的二进制会被内核挡住（ETXTBSY / "Text file busy"）。
+# 而 realm 是被健康检查服务拉起来的（每秒一次），
+# systemctl stop realm 只能按住 2 秒，cp 照样失败。
+# 正确做法：先拷到临时文件，再用 mv 覆盖 ——
+# mv 改的是目录项（unlink + link），不受 ETXTBSY 限制。
+cp -p /usr/local/bin/.xwpf-backup/realm-20261024-120000/usr/local/bin/realm /tmp/realm.rollback
+chmod +x /tmp/realm.rollback
+mv -f /tmp/realm.rollback /usr/local/bin/realm
+systemctl restart realm
 systemctl status realm --no-pager
 ```
 
-脚本包的回滚同理（把 `scripts-时间戳/` 里的文件拷回原位）。
+脚本包的回滚同理（把 `scripts-时间戳/` 里的文件拷回原位，同样走「临时文件 + mv」）。
 
