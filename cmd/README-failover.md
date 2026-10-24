@@ -14,6 +14,8 @@ failure / success streaks.
 
 ## Layout
 
+### Direct mode (default)
+
 ```
    :443 (public)
         │
@@ -21,6 +23,22 @@ failure / success streaks.
    │ xwpf-failover  │       systemd: xwpf-failover.service
    │ /etc/xwpf/     │       binary:    /usr/local/bin/xwpf-failover
    │  failover.json │       config:    /etc/xwpf/failover.json
+   └───┬────────┬───┘
+       │        │   direct: the daemon opens the connection itself
+    primary     backup
+   1.2.3.4:443  5.6.7.8:443
+```
+
+The daemon forwards raw TCP to the **real backend addresses** — no realm
+rule is involved, one hop instead of two.
+
+### Realm loopback mode (legacy)
+
+```
+   :443 (public)
+        │
+   ┌────▼────────────┐
+   │ xwpf-failover  │
    └───┬────────┬───┘
    :10443     :10444
       │         │
@@ -30,9 +48,16 @@ failure / success streaks.
         :443        :443
 ```
 
+⚠️ **Known limitation of the legacy mode**: the probe target is the
+**loopback port**, not the real backend. If the backend dies but `realm` is
+still up, the probe still succeeds → **the failover never switches**
+(measured on a real host: after killing the primary backend it stayed on
+PRIMARY for 40 s; the same host in direct mode switched over in 8 s).
+Use **direct mode** when the switch must follow the backend's health.
+
 The menu under `pf` → 转发配置管理 → 6. 负载均衡管理 → 4. 主动/被动主备
-auto-generates both realm rules (A and B) and the `failover.json`, then
-restarts `realm` and `xwpf-failover`.
+asks which mode to use, writes `failover.json` accordingly, then restarts
+`xwpf-failover` (direct mode does not need a `realm` restart).
 
 ## Configuration schema
 
