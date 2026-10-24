@@ -22,14 +22,14 @@ import_realm_config() {
 
     if ! download_realm_ocr_script; then
         echo -e "${RED}无法下载配置识别脚本，功能暂时不可用${NC}"
-        read -p "按回车键返回..."
+        ui_pause "按回车键返回..."
         return 1
     fi
 
     bash "$ocr_script" "$RULES_DIR"
 
     echo ""
-    read -p "按回车键返回..."
+    ui_pause "按回车键返回..."
 }
 
 
@@ -218,7 +218,7 @@ rules_management_menu() {
         echo -e "${GREEN}0.${NC} 返回主菜单"
         echo ""
 
-        read -p "请输入选择 [0-9]: " choice
+        ui_read_into "请输入选择 [0-9]: " choice
         echo ""
 
         case $choice in
@@ -233,7 +233,7 @@ rules_management_menu() {
                     echo -e "${GREEN}3.${NC} 识别realm配置文件并导入"
                     echo -e "${GREEN}0.${NC} 返回上级菜单"
                     echo ""
-                    read -p "请输入选择 [0-3]: " sub_choice
+                    ui_read_into "请输入选择 [0-3]: " sub_choice
                     echo ""
 
                     case $sub_choice in
@@ -251,7 +251,7 @@ rules_management_menu() {
                             ;;
                         *)
                             echo -e "${RED}无效选择，请重新输入${NC}"
-                            read -p "按回车键继续..."
+                            ui_pause "按回车键继续..."
                             ;;
                     esac
                 done
@@ -262,7 +262,7 @@ rules_management_menu() {
                     echo -e "${YELLOW}正在重启服务以应用新配置...${NC}"
                     service_restart
                 fi
-                read -p "按回车键继续..."
+                ui_pause "按回车键继续..."
                 ;;
             3)
                 edit_rule_interactive
@@ -272,7 +272,7 @@ rules_management_menu() {
                 echo ""
                 if list_rules_with_info "management"; then
                     echo ""
-                    read -p "请输入要删除的规则ID(多ID使用逗号,分隔): " rule_input
+                    ui_read_into "请输入要删除的规则ID(多ID使用逗号,分隔): " rule_input
 
                     if [ -z "$rule_input" ]; then
                         echo -e "${RED}错误: 请输入规则ID${NC}"
@@ -293,14 +293,14 @@ rules_management_menu() {
                         fi
                     fi
                 fi
-                read -p "按回车键继续..."
+                ui_pause "按回车键继续..."
                 ;;
             5)
                 echo -e "${YELLOW}=== 启用/禁用中转规则 ===${NC}"
                 echo ""
                 if list_rules_with_info "management"; then
                     echo ""
-                    read -p "请输入要切换状态的规则ID: " rule_id
+                    ui_read_into "请输入要切换状态的规则ID: " rule_id
                     if [[ "$rule_id" =~ ^[0-9]+$ ]]; then
                         toggle_rule "$rule_id"
                         if [ $? -eq 0 ]; then
@@ -311,7 +311,7 @@ rules_management_menu() {
                         echo -e "${RED}无效的规则ID${NC}"
                     fi
                 fi
-                read -p "按回车键继续..."
+                ui_pause "按回车键继续..."
                 ;;
             6)
                 load_balance_management_menu
@@ -330,7 +330,7 @@ rules_management_menu() {
                 ;;
             *)
                 echo -e "${RED}无效选择，请输入 0-9${NC}"
-                read -p "按回车键继续..."
+                ui_pause "按回车键继续..."
                 ;;
         esac
     done
@@ -343,7 +343,7 @@ uninstall_realm() {
 
     # 第一阶段：Realm 服务和配置
     echo -e "${YELLOW}=== 第一阶段：Realm 相关全部服务和配置文件 ===${NC}"
-    read -p "确认删除 Realm 服务和配置？(y/n): " confirm_realm
+    ui_read_into "确认删除 Realm 服务和配置？(y/n): " confirm_realm
     if [[ "$confirm_realm" =~ ^[Yy]$ ]]; then
         uninstall_realm_stage_one
         echo -e "${GREEN}✓ 第一阶段完成${NC}"
@@ -355,7 +355,7 @@ uninstall_realm() {
     echo ""
     # 第二阶段：脚本文件
     echo -e "${YELLOW}=== 第二阶段：xwPF 脚本相关全部文件 ===${NC}"
-    read -p "确认删除脚本文件？(y/n): " confirm_script
+    ui_read_into "确认删除脚本文件？(y/n): " confirm_script
     if [[ "$confirm_script" =~ ^[Yy]$ ]]; then
         uninstall_script_files
         echo -e "${GREEN}🗑️  完全卸载完成${NC}"
@@ -673,7 +673,7 @@ speedtest_menu() {
 
     if ! download_speedtest_script; then
         echo -e "${RED}无法下载测速脚本，功能暂时不可用${NC}"
-        read -p "按回车键返回主菜单..."
+        ui_pause "按回车键返回主菜单..."
         return 1
     fi
 
@@ -682,7 +682,7 @@ speedtest_menu() {
     bash "$speedtest_script"
 
     echo ""
-    read -p "按回车键返回主菜单..."
+    ui_pause "按回车键返回主菜单..."
 }
 
 # 故障转移管理菜单（旧版 LB-mode failover，xwFailover.sh）
@@ -691,7 +691,7 @@ failover_management_menu() {
 
     if ! download_failover_script; then
         echo -e "${RED}无法下载故障转移脚本，功能暂时不可用${NC}"
-        read -p "按回车键返回主菜单..."
+        ui_pause "按回车键返回主菜单..."
         return 1
     fi
 
@@ -705,26 +705,26 @@ failover_management_menu() {
         echo -e "${YELLOW}0.${NC} 返回主菜单"
         echo ""
 
-        read -p "请输入选择 [0-3]: " failover_choice
+        ui_read_into "请输入选择 [0-3]: " failover_choice
         case "$failover_choice" in
             1)
                 bash "$failover_script" toggle
                 ;;
             2)
                 bash "$failover_script" config
-                read -p "按回车键继续..."
+                ui_pause "按回车键继续..."
                 ;;
             3)
                 bash "$failover_script" status
                 echo ""
-                read -p "按回车键继续..."
+                ui_pause "按回车键继续..."
                 ;;
             0)
                 return
                 ;;
             *)
                 echo -e "${RED}无效选择，请输入 0-3${NC}"
-                read -p "按回车键继续..."
+                ui_pause "按回车键继续..."
                 ;;
         esac
     done
@@ -765,7 +765,7 @@ failover_proxy_menu() {
         echo -e "${GREEN}0.${NC} 返回上级菜单"
         echo ""
 
-        read -p "请输入选择 [0-8]: " sub
+        ui_read_into "请输入选择 [0-8]: " sub
         echo ""
 
         case "$sub" in
@@ -773,13 +773,13 @@ failover_proxy_menu() {
                 echo -e "${BLUE}创建主备池:${NC}"
                 echo ""
                 local name listen primary backups
-                read -p "  池名称 (例如 poolA, 区分大小写): " name
-                [ -z "$name" ] && { echo -e "${RED}名称不能为空${NC}"; read -p "按回车继续..."; continue; }
-                read -p "  公开监听端口 (例如 443 或 0.0.0.0:443): " listen
-                [ -z "$listen" ] && { echo -e "${RED}监听端口不能为空${NC}"; read -p "按回车继续..."; continue; }
-                read -p "  主后端 (例如 1.2.3.4:443): " primary
-                [ -z "$primary" ] && { echo -e "${RED}主后端不能为空${NC}"; read -p "按回车继续..."; continue; }
-                read -p "  备后端 (逗号分隔, 例如 5.6.7.8:443,9.10.11.12:443; 留空表示无备): " backups
+                ui_read_into "  池名称 (例如 poolA, 区分大小写): " name
+                [ -z "$name" ] && { echo -e "${RED}名称不能为空${NC}"; ui_pause "按回车继续..."; continue; }
+                ui_read_into "  公开监听端口 (例如 443 或 0.0.0.0:443): " listen
+                [ -z "$listen" ] && { echo -e "${RED}监听端口不能为空${NC}"; ui_pause "按回车继续..."; continue; }
+                ui_read_into "  主后端 (例如 1.2.3.4:443): " primary
+                [ -z "$primary" ] && { echo -e "${RED}主后端不能为空${NC}"; ui_pause "按回车继续..."; continue; }
+                ui_read_into "  备后端 (逗号分隔, 例如 5.6.7.8:443,9.10.11.12:443; 留空表示无备): " backups
                 echo ""
                 failover_pool_create "$name" "$listen" "$primary" "$backups"
                 echo ""
@@ -787,13 +787,13 @@ failover_proxy_menu() {
                 if read -p "是否立即重启 realm? [y/N]: " yesno && [[ "$yesno" =~ ^[Yy]$ ]]; then
                     service_restart
                 fi
-                read -p "按回车继续..."
+                ui_pause "按回车继续..."
                 ;;
             2)
                 failover_pool_list
                 echo ""
                 local pidx
-                read -p "  输入要删除的池编号: " pidx
+                ui_read_into "  输入要删除的池编号: " pidx
                 if [[ "$pidx" =~ ^[0-9]+$ ]]; then
                     failover_pool_delete "$pidx"
                     echo ""
@@ -804,7 +804,7 @@ failover_proxy_menu() {
                 else
                     echo -e "${RED}无效编号${NC}"
                 fi
-                read -p "按回车继续..."
+                ui_pause "按回车继续..."
                 ;;
             3)
                 echo -e "${RED}即将清空所有主备池并删除关联规则文件${NC}"
@@ -822,14 +822,14 @@ failover_proxy_menu() {
                         service_restart
                     fi
                 fi
-                read -p "按回车继续..."
+                ui_pause "按回车继续..."
                 ;;
             4)
                 if failover_install_check && failover_service_enable; then
                     echo -e "${GREEN}✓ 守护已启用并启动${NC}"
                 else
                     echo -e "${RED}✗ 守护安装或启动失败${NC}"
-                    read -p "按回车继续..."
+                    ui_pause "按回车继续..."
                     return 1
                 fi
                 echo ""
@@ -837,23 +837,23 @@ failover_proxy_menu() {
                 if read -p "是否立即重启 realm? [y/N]: " yesno && [[ "$yesno" =~ ^[Yy]$ ]]; then
                     service_restart
                 fi
-                read -p "按回车继续..."
+                ui_pause "按回车继续..."
                 ;;
             5)
                 failover_service_restart
                 echo -e "${GREEN}守护已重启${NC}"
-                read -p "按回车继续..."
+                ui_pause "按回车继续..."
                 ;;
             6)
                 failover_service_stop
                 echo -e "${YELLOW}守护已停止${NC}"
                 echo -e "${RED}警告: 主备池已停保护，连接将由 realm 直通 loopback 但失去故障切换能力${NC}"
-                read -p "按回车继续..."
+                ui_pause "按回车继续..."
                 ;;
             7)
                 echo -e "${BLUE}=== ${XWPF_FAILOVER_SERVICE} (tail -n 50) ===${NC}"
                 failover_log_tail
-                read -p "按回车继续..."
+                ui_pause "按回车继续..."
                 ;;
             8)
                 echo -e "${BLUE}=== journalctl -fu ${XWPF_FAILOVER_SERVICE} (Ctrl+C 退出) ===${NC}"
@@ -864,7 +864,7 @@ failover_proxy_menu() {
                 ;;
             *)
                 echo -e "${RED}无效选择，请输入 0-8${NC}"
-                read -p "按回车继续..."
+                ui_pause "按回车继续..."
                 ;;
         esac
     done
@@ -902,7 +902,7 @@ port_traffic_dog_menu() {
             echo -e "${YELLOW}下载失败，使用本地已有端口流量狗脚本${NC}"
         else
             echo -e "${RED}无法下载端口流量狗脚本，请检查网络连接${NC}"
-            read -p "按回车键返回主菜单..."
+            ui_pause "按回车键返回主菜单..."
             return 1
         fi
     fi
@@ -911,11 +911,12 @@ port_traffic_dog_menu() {
     echo ""
     bash "$dog_script"
     echo ""
-    read -p "按回车键返回主菜单..."
+    ui_pause "按回车键返回主菜单..."
 }
 
 
 show_menu() {
+    ui_require_tty
     while true; do
         clear
         echo -e "${GREEN}=== xwPF Realm全功能一键脚本 $SCRIPT_VERSION ===${NC}"
@@ -938,7 +939,7 @@ show_menu() {
         echo -e "${YELLOW}0.${NC} 退出"
         echo ""
 
-        read -p "请输入选择 [0-9]: " choice
+        ui_read_into "请输入选择 [0-9]: " choice
         echo ""
 
         case $choice in
@@ -953,12 +954,12 @@ show_menu() {
             3)
                 check_dependencies
                 service_restart
-                read -p "按回车键继续..."
+                ui_pause "按回车键继续..."
                 ;;
             4)
                 check_dependencies
                 service_stop
-                read -p "按回车键继续..."
+                ui_pause "按回车键继续..."
                 ;;
             5)
                 check_dependencies
@@ -976,7 +977,7 @@ show_menu() {
             8)
                 check_dependencies
                 uninstall_realm
-                read -p "按回车键继续..."
+                ui_pause "按回车键继续..."
                 ;;
             9)
                 # 更新中心：查版本 + 安全更新（备份/校验/验证/回滚）
@@ -988,7 +989,7 @@ show_menu() {
                 ;;
             *)
                 echo -e "${RED}无效选择，请输入 0-9${NC}"
-                read -p "按回车键继续..."
+                ui_pause "按回车键继续..."
                 ;;
         esac
     done

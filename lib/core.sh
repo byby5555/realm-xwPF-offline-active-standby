@@ -108,6 +108,42 @@ is_valid_port() {
     [ "$port" -ge 1 ] && [ "$port" -le 65535 ]
 }
 
+# === 交互菜单读入：stdin EOF 安全（无人值守场合的硬要求）===
+# ★ 为什么必须有这个：交互菜单若直接用 `read`，在 **stdin 是 EOF** 时
+#   （管道 / 后台 / cron / systemd / 无人值守执行 / 终端被关闭）
+#   `read` 会**立刻返回非 0**（不阻塞）→ 读到的变量为空 →
+#   `case` 不匹配任何分支 → 回到 `while true` 顶部 → **无限重绘 + 忙循环 + 无界输出**。
+#   实机后果：`/tmp` 是 tmpfs，无界输出会把它灌满 → 内存 + swap 耗尽 →
+#   sshd 握不上手，整机被压垮（103.42.31.186 实测：5.7 小时灌满 479MB tmpfs，
+#   11.8% CPU，内存 + swap 全部耗尽）。
+#   修法：菜单读入统一走下面两个 helper —— 读到 EOF 就**干净退出**（退出码 0），
+#   绝不回到菜单循环顶部。
+#
+# 用法：ui_read_into "提示语" 变量名   —— 把读到的内容放进指定变量
+ui_read_into() {
+    local __prompt="$1" __name="$2" __val
+    if ! IFS= read -r -p "$__prompt" __val; then
+        # EOF / 读失败：干净退出，不回菜单循环
+        exit 0
+    fi
+    printf -v "$__name" '%s' "$__val"
+}
+
+# 用法：ui_pause "提示语"   —— 「按回车键继续 / 返回」类读入
+ui_pause() {
+    read -p "$1" || exit 0
+}
+
+# 用法：ui_require_tty   —— 菜单入口护栏：stdin 不是终端就**不进菜单**
+#   （无人值守 / 管道 / 后台 / cron / systemd 场景）
+ui_require_tty() {
+    if [ ! -t 0 ]; then
+        echo -e "${YELLOW}检测到标准输入不是终端（管道 / 后台 / 无人值守执行），已退出交互菜单。${NC}"
+        echo "Interactive menu requires a terminal on stdin; exiting."
+        exit 0
+    fi
+}
+
 # 打印用法说明（--help / -h / help）
 show_usage() {
     echo -e "${GREEN}用法:${NC} pf [命令]"

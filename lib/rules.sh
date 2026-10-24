@@ -509,35 +509,35 @@ edit_rule_interactive() {
     echo ""
     
     if ! list_rules_with_info "management"; then
-        read -p "按回车键返回..."
+        ui_pause "按回车键返回..."
         return 1
     fi
     
     echo ""
-    read -p "请输入要编辑的规则ID: " rule_id
+    ui_read_into "请输入要编辑的规则ID: " rule_id
     
     if [ -z "$rule_id" ]; then
         echo -e "${RED}未输入规则ID${NC}"
-        read -p "按回车键返回..."
+        ui_pause "按回车键返回..."
         return 1
     fi
     
     if ! [[ "$rule_id" =~ ^[0-9]+$ ]]; then
         echo -e "${RED}无效的规则ID${NC}"
-        read -p "按回车键返回..."
+        ui_pause "按回车键返回..."
         return 1
     fi
     
     local rule_file="${RULES_DIR}/rule-${rule_id}.conf"
     if [ ! -f "$rule_file" ]; then
         echo -e "${RED}规则 $rule_id 不存在${NC}"
-        read -p "按回车键返回..."
+        ui_pause "按回车键返回..."
         return 1
     fi
     
     if ! read_rule_file "$rule_file"; then
         echo -e "${RED}无法读取规则文件${NC}"
-        read -p "按回车键返回..."
+        ui_pause "按回车键返回..."
         return 1
     fi
     
@@ -556,7 +556,7 @@ edit_rule_interactive() {
         service_restart
     fi
     
-    read -p "按回车键返回..."
+    ui_pause "按回车键返回..."
 }
 
 # 从TARGET_STATES移除指定目标，保持目标与权重的索引对应关系
@@ -886,7 +886,7 @@ interactive_add_rule() {
     echo ""
     local RULE_ROLE
     while true; do
-        read -p "请输入数字 [1-2]: " RULE_ROLE
+        ui_read_into "请输入数字 [1-2]: " RULE_ROLE
         case $RULE_ROLE in
             1)
                 echo -e "${GREEN}已选择: 中转服务器${NC}"
@@ -1004,7 +1004,7 @@ delete_rule() {
             fi
             echo ""
 
-            read -p "确认删除此规则？(y/n): " confirm
+            ui_read_into "确认删除此规则？(y/n): " confirm
             if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
                 echo "删除已取消"
                 return 1
@@ -1090,7 +1090,7 @@ batch_delete_rules() {
     done
     echo ""
 
-    read -p "确认删除以上 $valid_count 个规则？(y/n): " confirm
+    ui_read_into "确认删除以上 $valid_count 个规则？(y/n): " confirm
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
         local deleted_count=0
         for id in "${valid_ids_array[@]}"; do
@@ -1170,7 +1170,7 @@ export_config_package() {
     if [ $rules_count -eq 0 ]; then
         echo -e "${RED}没有可导出的配置数据${NC}"
         echo ""
-        read -p "按回车键返回..."
+        ui_pause "按回车键返回..."
         return 1
     fi
 
@@ -1180,10 +1180,10 @@ export_config_package() {
     echo -e "  备注权重: ${GREEN}完整保留${NC}"
     echo ""
 
-    read -p "确认导出配置包？(y/n): " confirm
+    ui_read_into "确认导出配置包？(y/n): " confirm
     if ! echo "$confirm" | grep -qE "^[Yy]$"; then
         echo -e "${BLUE}已取消导出操作${NC}"
-        read -p "按回车键返回..."
+        ui_pause "按回车键返回..."
         return
     fi
 
@@ -1240,14 +1240,14 @@ export_config_package() {
     else
         echo -e "${RED}✗ 配置包创建失败${NC}"
         rm -rf "$temp_dir"
-        read -p "按回车键返回..."
+        ui_pause "按回车键返回..."
         return 1
     fi
 
     rm -rf "$temp_dir"
 
     echo ""
-    read -p "按回车键返回..."
+    ui_pause "按回车键返回..."
 }
 
 export_config_with_view() {
@@ -1267,7 +1267,7 @@ export_config_with_view() {
     echo -e "${GREEN}1.${NC}  一键导出为压缩包 "
     echo -e "${GREEN}0.${NC} 返回菜单"
     echo ""
-    read -p "请输入选择 [0-1]: " export_choice
+    ui_read_into "请输入选择 [0-1]: " export_choice
     echo ""
 
     case $export_choice in
@@ -1278,7 +1278,7 @@ export_config_with_view() {
             ;;
         *)
             echo -e "${RED}无效选择${NC}"
-            read -p "按回车键继续..."
+            ui_pause "按回车键继续..."
             ;;
     esac
 }
@@ -1314,18 +1314,18 @@ import_config_package() {
     echo -e "${YELLOW}=== 导入配置包 ===${NC}"
     echo ""
 
-    read -p "请输入配置包的完整路径：" package_path
+    ui_read_into "请输入配置包的完整路径：" package_path
     echo ""
 
     if [ -z "$package_path" ]; then
         echo -e "${BLUE}已取消操作${NC}"
-        read -p "按回车键返回..."
+        ui_pause "按回车键返回..."
         return
     fi
 
     if [ ! -f "$package_path" ]; then
         echo -e "${RED}文件不存在: $package_path${NC}"
-        read -p "按回车键返回..."
+        ui_pause "按回车键返回..."
         return
     fi
 
@@ -1333,7 +1333,7 @@ import_config_package() {
     local config_dir=$(validate_config_package_content "$package_path")
     if [ $? -ne 0 ] || [ -z "$config_dir" ]; then
         echo -e "${RED}无效的配置包文件${NC}"
-        read -p "按回车键返回..."
+        ui_pause "按回车键返回..."
         return
     fi
 
@@ -1358,11 +1358,11 @@ import_config_package() {
     echo -e "${RED}警告: 导入操作将覆盖所有现有配置！${NC}"
     echo ""
 
-    read -p "确认导入配置包？(y/n): " confirm
+    ui_read_into "确认导入配置包？(y/n): " confirm
     if ! echo "$confirm" | grep -qE "^[Yy]$"; then
         echo -e "${BLUE}已取消导入操作${NC}"
         rm -rf "$(dirname "$config_dir")"
-        read -p "按回车键返回..."
+        ui_pause "按回车键返回..."
         return
     fi
 
@@ -1444,7 +1444,7 @@ import_config_package() {
     fi
 
     echo ""
-    read -p "按回车键返回..."
+    ui_pause "按回车键返回..."
 }
 
 get_proxy_mode_display() {
@@ -1524,13 +1524,13 @@ proxy_management_menu() {
 
         if ! list_rules_with_info "proxy"; then
             echo ""
-            read -p "按回车键返回..."
+            ui_pause "按回车键返回..."
             return
         fi
 
         echo ""
         echo "多ID使用逗号,分隔"
-        read -p "请输入要配置的规则ID（输入0切换全局状态）: " rule_input
+        ui_read_into "请输入要配置的规则ID（输入0切换全局状态）: " rule_input
         if [ -z "$rule_input" ]; then
             return
         fi
@@ -1562,7 +1562,7 @@ proxy_management_menu() {
 
             restart_realm_service true
 
-            read -p "按回车键继续..."
+            ui_pause "按回车键继续..."
             continue
         fi
 
@@ -1573,7 +1573,7 @@ proxy_management_menu() {
         echo -e "${GREEN}3.${NC} 协议v2"
         echo ""
 
-        read -p "请选择协议版本（回车默认v2） [1-3]: " version_choice
+        ui_read_into "请选择协议版本（回车默认v2） [1-3]: " version_choice
         if [ -z "$version_choice" ]; then
             version_choice="3"
         fi
@@ -1588,7 +1588,7 @@ proxy_management_menu() {
                     echo -e "${RED}无效的规则ID${NC}"
                 fi
             fi
-            read -p "按回车键继续..."
+            ui_pause "按回车键继续..."
             continue
         fi
 
@@ -1599,7 +1599,7 @@ proxy_management_menu() {
         echo -e "${GREEN}3.${NC} 双向 (send + accept)"
         echo ""
 
-        read -p "请选择方向 [1-3]: " direction_choice
+        ui_read_into "请选择方向 [1-3]: " direction_choice
         if [ -z "$direction_choice" ]; then
             continue
         fi
@@ -1613,7 +1613,7 @@ proxy_management_menu() {
                 echo -e "${RED}无效的规则ID${NC}"
             fi
         fi
-        read -p "按回车键继续..."
+        ui_pause "按回车键继续..."
     done
 }
 
@@ -1648,7 +1648,7 @@ batch_set_proxy_mode() {
     done
     echo ""
 
-    read -p "确认为以上 $valid_count 个规则设置Proxy模式？(y/n): " confirm
+    ui_read_into "确认为以上 $valid_count 个规则设置Proxy模式？(y/n): " confirm
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
         local success_count=0
         for id in "${valid_ids_array[@]}"; do
@@ -1802,7 +1802,7 @@ load_balance_management_menu() {
         if [ ! -d "$RULES_DIR" ] || [ -z "$(ls -A "$RULES_DIR"/*.conf 2>/dev/null)" ]; then
             echo -e "${YELLOW}暂无转发规则，请先创建转发规则${NC}"
             echo ""
-            read -p "按回车键返回..."
+            ui_pause "按回车键返回..."
             return
         fi
 
@@ -1949,7 +1949,7 @@ load_balance_management_menu() {
             echo -e "${YELLOW}暂无符合条件的负载均衡组${NC}"
             echo -e "${BLUE}提示: 只显示单端口有至少两台服务器的中转规则${NC}"
             echo ""
-            read -p "按回车键返回..."
+            ui_pause "按回车键返回..."
             return
         fi
 
@@ -1964,7 +1964,7 @@ load_balance_management_menu() {
         echo -e "${RED}0.${NC} 返回上级菜单"
         echo ""
 
-        read -p "请输入选择 [0-4]: " choice
+        ui_read_into "请输入选择 [0-4]: " choice
         echo ""
 
         case $choice in
@@ -1983,7 +1983,7 @@ load_balance_management_menu() {
             4)
                 # 立即测试所有目标的连通性与时延
                 probe_all_targets_latency
-                read -p "按回车键返回..." 
+                ui_pause "按回车键返回..."
                 ;;
             0)
                 # 返回上级菜单
@@ -1991,7 +1991,7 @@ load_balance_management_menu() {
                 ;;
             *)
                 echo -e "${RED}无效选择，请输入 0-4${NC}"
-                read -p "按回车键继续..."
+                ui_pause "按回车键继续..."
                 ;;
         esac
     done
@@ -2154,14 +2154,14 @@ switch_balance_mode() {
             echo -e "${YELLOW}如果您需要添加更多目标服务器：${NC}"
             echo -e "${BLUE}  请到 '转发配置管理' → '添加转发规则' 创建更多规则${NC}"
             echo ""
-            read -p "按回车键返回..."
+            ui_pause "按回车键返回..."
             return
         fi
 
         echo ""
         echo -e "${WHITE}注意: 负载均衡模式将应用到选定端口组的所有相关规则${NC}"
         echo ""
-        read -p "请输入规则编号 [1-${#rule_ports[@]}] (或按回车返回): " choice
+        ui_read_into "请输入规则编号 [1-${#rule_ports[@]}] (或按回车返回): " choice
 
         if [ -z "$choice" ]; then
             return
@@ -2170,7 +2170,7 @@ switch_balance_mode() {
         # 验证数字输入
         if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt ${#rule_ports[@]} ]; then
             echo -e "${RED}无效的规则编号${NC}"
-            read -p "按回车键继续..."
+            ui_pause "按回车键继续..."
             continue
         fi
 
@@ -2190,7 +2190,7 @@ switch_balance_mode() {
         echo -e "${GREEN}4.${NC} 主备模式 (active-standby) - 严格主备：1 主 N 备按顺序接替，主恢复后切回主"
         echo ""
 
-        read -p "请输入选择 [1-4]: " mode_choice
+        ui_read_into "请输入选择 [1-4]: " mode_choice
 
         local new_mode=""
         local mode_display=""
@@ -2213,7 +2213,7 @@ switch_balance_mode() {
                 ;;
             *)
                 echo -e "${RED}无效选择${NC}"
-                read -p "按回车键继续..."
+                ui_pause "按回车键继续..."
                 continue
                 ;;
         esac
@@ -2302,7 +2302,7 @@ switch_balance_mode() {
             echo -e "${RED}✗ 未找到相关规则文件${NC}"
         fi
 
-        read -p "按回车键继续..."
+        ui_pause "按回车键继续..."
     done
 }
 
@@ -2404,14 +2404,14 @@ weight_management_menu() {
             echo -e "${YELLOW}如果您有多目标规则但未启用负载均衡：${NC}"
             echo -e "  请先选择 '切换负载均衡模式' 启用负载均衡，然后再配置权重"
             echo ""
-            read -p "按回车键返回..."
+            ui_pause "按回车键返回..."
             return
         fi
 
         echo ""
         echo -e "${GRAY}注意: 只有多个目标服务器的规则组才需要权重配置${NC}"
         echo ""
-        read -p "请输入规则编号 [1-${#rule_ports[@]}] (或按回车返回): " selected_number
+        ui_read_into "请输入规则编号 [1-${#rule_ports[@]}] (或按回车返回): " selected_number
 
         if [ -z "$selected_number" ]; then
             break
@@ -2420,7 +2420,7 @@ weight_management_menu() {
         # 验证数字输入
         if ! [[ "$selected_number" =~ ^[0-9]+$ ]] || [ "$selected_number" -lt 1 ] || [ "$selected_number" -gt ${#rule_ports[@]} ]; then
             echo -e "${RED}无效的规则编号${NC}"
-            read -p "按回车键继续..."
+            ui_pause "按回车键继续..."
             continue
         fi
 
@@ -2478,16 +2478,16 @@ configure_port_group_weights() {
     echo -e "${BLUE}  权重 0 的目标不参与主备；主故障自动切备，主恢复自动切回${NC}"
     echo ""
 
-    read -p "权重序列: " weight_input
+    ui_read_into "权重序列: " weight_input
 
     if [ -z "$weight_input" ]; then
         echo -e "${YELLOW}未输入权重，保持原配置${NC}"
-        read -p "按回车键返回..."
+        ui_pause "按回车键返回..."
         return
     fi
 
     if ! validate_weight_input "$weight_input" "$target_count"; then
-        read -p "按回车键返回..."
+        ui_pause "按回车键返回..."
         return
     fi
 
@@ -2647,7 +2647,7 @@ preview_port_group_weight_config() {
         echo ""
     fi
 
-    read -p "确认应用此配置? [y/n]: " confirm
+    ui_read_into "确认应用此配置? [y/n]: " confirm
 
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
         # 应用权重配置到该端口的所有相关规则
@@ -2656,7 +2656,7 @@ preview_port_group_weight_config() {
         apply_port_group_weight_config "$port" "$weight_input" 1
     else
         echo -e "${YELLOW}已取消配置更改${NC}"
-        read -p "按回车键返回..."
+        ui_pause "按回车键返回..."
     fi
 }
 
@@ -2754,10 +2754,10 @@ apply_port_group_weight_config() {
                 echo -e "  ${YELLOW}· 把该端口组的 BALANCE_MODE 改成 active-standby，并开启故障转移${NC}"
                 echo -e "  ${YELLOW}· 拉起常驻健康检查服务（systemd timer，周期性探测目标端口）${NC}"
                 echo -e "  ${YELLOW}· 之后主备切换由健康检查自动完成，不需要手动干预${NC}"
-                read -p "确认切换到主备模式? [Y/n]: " mode_confirm
+                ui_read_into "确认切换到主备模式? [Y/n]: " mode_confirm
                 if [ -n "$mode_confirm" ] && ! [[ "$mode_confirm" =~ ^[Yy]$ ]]; then
                     echo -e "${YELLOW}已取消主备模式切换（权重已保存，负载均衡模式保持原样）${NC}"
-                    read -p "按回车键返回..."
+                    ui_pause "按回车键返回..."
                     return 0
                 fi
             fi
@@ -2838,7 +2838,7 @@ apply_port_group_weight_config() {
         echo -e "${RED}✗ 未找到相关规则文件${NC}"
     fi
 
-    read -p "按回车键返回..."
+    ui_pause "按回车键返回..."
 }
 
 # 写入规则文件的键值（存在则替换，不存在则追加）

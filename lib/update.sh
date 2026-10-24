@@ -319,7 +319,7 @@ safe_update_realm() {
 
     # 5) 确认
     local ans=""
-    read -p "  是否更新到 ${tag}？(y/n) [默认: n]: " ans
+    ui_read_into "  是否更新到 ${tag}？(y/n) [默认: n]: " ans
     if [[ ! "$ans" =~ ^[Yy]$ ]]; then
         echo -e "${BLUE}已取消，现有版本未改动${NC}"
         rm -rf "$staging" 2>/dev/null
@@ -529,7 +529,7 @@ safe_update_scripts() {
     fi
 
     local ans=""
-    read -p "  是否更新脚本包？(y/n) [默认: n]: " ans
+    ui_read_into "  是否更新脚本包？(y/n) [默认: n]: " ans
     if [[ ! "$ans" =~ ^[Yy]$ ]]; then
         echo -e "${BLUE}已取消，现有文件未改动${NC}"
         rm -rf "$staging" 2>/dev/null
@@ -623,6 +623,7 @@ update_status_display() {
 
 # 更新中心菜单
 update_center_menu() {
+    ui_require_tty
     while true; do
         clear
         update_status_display
@@ -636,7 +637,7 @@ update_center_menu() {
         echo ""
 
         local choice=""
-        read -p "请输入选择 [0-4]: " choice
+        ui_read_into "请输入选择 [0-4]: " choice
         echo ""
 
         case "$choice" in
@@ -645,11 +646,11 @@ update_center_menu() {
                 if [ $? -eq 0 ]; then
                     safe_update_realm
                 fi
-                read -p "按回车键返回..." 
+                ui_pause "按回车键返回..."
                 ;;
             2)
                 safe_update_realm
-                read -p "按回车键返回..."
+                ui_pause "按回车键返回..."
                 ;;
             3)
                 if safe_update_scripts; then
@@ -658,18 +659,18 @@ update_center_menu() {
                     update_lock_release
                     exit 0
                 fi
-                read -p "按回车键返回..."
+                ui_pause "按回车键返回..."
                 ;;
             4)
                 update_status_display
-                read -p "按回车键返回..."
+                ui_pause "按回车键返回..."
                 ;;
             0)
                 return
                 ;;
             *)
                 echo -e "${RED}无效选择，请输入 0-4${NC}"
-                read -p "按回车键继续..."
+                ui_pause "按回车键继续..."
                 ;;
         esac
     done

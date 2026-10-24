@@ -491,12 +491,12 @@ mptcp_handle_unsupported_state() {
     fi
 
     echo ""
-    read -p "是否尝试启用MPTCP? [y/N]: " enable_choice
+    ui_read_into "是否尝试启用MPTCP? [y/N]: " enable_choice
     if [[ "$enable_choice" =~ ^[Yy]$ ]]; then
         enable_mptcp
     fi
     echo ""
-    read -p "按回车键返回..."
+    ui_pause "按回车键返回..."
 }
 
 mptcp_check_and_persist_config() {
@@ -511,7 +511,7 @@ mptcp_check_and_persist_config() {
         else
             echo -e "${YELLOW}⚠ 系统已开启MPTCP${NC}(临时开启，重启后可能失效)"
             echo ""
-            read -p "是否保存为配置文件重启依旧生效？[y/N]: " save_config
+            ui_read_into "是否保存为配置文件重启依旧生效？[y/N]: " save_config
             if [[ "$save_config" =~ ^[Yy]$ ]]; then
                 if echo "net.mptcp.enabled=1" > "$config_file" 2>/dev/null; then
                     echo -e "${GREEN}✓ MPTCP配置已保存: $config_file${NC}"
@@ -523,7 +523,7 @@ mptcp_check_and_persist_config() {
                         echo -e "${BLUE}手动应用配置: sysctl -p $config_file${NC}"
                     fi
                     echo ""
-                    read -p "按回车键刷新状态显示..."
+                    ui_pause "按回车键刷新状态显示..."
                     return 0
                 else
                     echo -e "${RED}✗ 保存MPTCP配置失败${NC}"
@@ -573,14 +573,14 @@ mptcp_management_menu() {
 
         if ! list_rules_with_info "mptcp"; then
             echo ""
-            read -p "按回车键返回..."
+            ui_pause "按回车键返回..."
             return
         fi
 
         echo ""
         echo -e "${RED}规则ID 0: 关闭系统MPTCP，回退普通TCP模式${NC}"
         echo -e "${BLUE}输入 add: 添加MPTCP端点 | del: 删除MPTCP端点 | look: 查看MPTCP详细状态${NC}"
-        read -p "请输入要配置的规则ID(多ID使用逗号,分隔，0为关闭系统MPTCP): " rule_input
+        ui_read_into "请输入要配置的规则ID(多ID使用逗号,分隔，0为关闭系统MPTCP): " rule_input
         if [ -z "$rule_input" ]; then
             return
         fi
@@ -588,17 +588,17 @@ mptcp_management_menu() {
         case "$rule_input" in
             "add")
                 add_mptcp_endpoint_interactive
-                read -p "按回车键继续..."
+                ui_pause "按回车键继续..."
                 continue
                 ;;
             "del")
                 delete_mptcp_endpoint_interactive
-                read -p "按回车键继续..."
+                ui_pause "按回车键继续..."
                 continue
                 ;;
             "look")
                 show_mptcp_detailed_status
-                read -p "按回车键继续..."
+                ui_pause "按回车键继续..."
                 continue
                 ;;
         esac
@@ -606,11 +606,11 @@ mptcp_management_menu() {
         if [ "$rule_input" = "0" ]; then
             echo ""
             echo -e "${YELLOW}确认关闭系统MPTCP？这将影响所有MPTCP连接。${NC}"
-            read -p "继续? [y/N]: " confirm
+            ui_read_into "继续? [y/N]: " confirm
             if [[ "$confirm" =~ ^[Yy]$ ]]; then
                 set_mptcp_mode "0" ""
             fi
-            read -p "按回车键继续..."
+            ui_pause "按回车键继续..."
             continue
         fi
 
@@ -622,7 +622,7 @@ mptcp_management_menu() {
         echo -e "${GREEN}4.${NC} 双向(发送+接收)"
         echo ""
 
-        read -p "请选择MPTCP模式 [1-4]: " mode_choice
+        ui_read_into "请选择MPTCP模式 [1-4]: " mode_choice
         if [ -z "$mode_choice" ]; then
             continue
         fi
@@ -636,7 +636,7 @@ mptcp_management_menu() {
                 echo -e "${RED}无效的规则ID${NC}"
             fi
         fi
-        read -p "按回车键继续..."
+        ui_pause "按回车键继续..."
     done
 }
 
@@ -670,7 +670,7 @@ batch_set_mptcp_mode() {
     done
     echo ""
 
-    read -p "确认为以上 $valid_count 个规则设置MPTCP模式？(y/n): " confirm
+    ui_read_into "确认为以上 $valid_count 个规则设置MPTCP模式？(y/n): " confirm
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
         local success_count=0
         for id in "${valid_ids_array[@]}"; do
@@ -1067,7 +1067,7 @@ delete_mptcp_endpoint_interactive() {
     echo -e "${YELLOW}确认删除MPTCP端点:${NC}"
     echo -e "  ID: $endpoint_id"
     echo -e "  地址: $endpoint_addr"
-    read -p "继续删除? [y/N]: " confirm
+    ui_read_into "继续删除? [y/N]: " confirm
 
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
         echo -e "${YELLOW}正在删除MPTCP端点...${NC}"
@@ -1142,7 +1142,7 @@ configure_nat_server() {
 
 echo -e "${BLUE}多端口使用,逗号分隔(回车随机端口)${NC}"
 while true; do
-    read -p "请输入本地监听端口 (客户端连接的端口，nat机需使用分配的端口): " NAT_LISTEN_PORT
+    ui_read_into "请输入本地监听端口 (客户端连接的端口，nat机需使用分配的端口): " NAT_LISTEN_PORT
 
     if [[ -z "$NAT_LISTEN_PORT" ]]; then
         NAT_LISTEN_PORT=$((RANDOM % 64512 + 1024))
@@ -1202,7 +1202,7 @@ done
         echo ""
 
         while true; do
-            read -p "自定义(指定)入口监听IP/网卡接口(客户端连接IP/网卡,回车默认全部监听 ::): " listen_ip_input
+            ui_read_into "自定义(指定)入口监听IP/网卡接口(客户端连接IP/网卡,回车默认全部监听 ::): " listen_ip_input
 
             if [ -z "$listen_ip_input" ]; then
                 # 使用默认值：双栈监听
@@ -1229,7 +1229,7 @@ done
         echo ""
 
         while true; do
-            read -p "自定义(指定)出口IP/网卡接口(适用于多IP/网卡出口情况,回车默认全部监听 ::): " through_ip_input
+            ui_read_into "自定义(指定)出口IP/网卡接口(适用于多IP/网卡出口情况,回车默认全部监听 ::): " through_ip_input
 
             if [ -z "$through_ip_input" ]; then
                 NAT_THROUGH_IP="::"
@@ -1260,7 +1260,7 @@ done
     echo ""
     
     while true; do
-        read -p "出口服务器的IP地址或域名: " REMOTE_IP
+        ui_read_into "出口服务器的IP地址或域名: " REMOTE_IP
         if [ -n "$REMOTE_IP" ]; then
             if validate_ip "$REMOTE_IP" || [[ "$REMOTE_IP" =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
                 break
@@ -1273,7 +1273,7 @@ done
     done
 
     while true; do
-        read -p "出口服务器的监听端口(多端口使用,逗号分隔): " REMOTE_PORT
+        ui_read_into "出口服务器的监听端口(多端口使用,逗号分隔): " REMOTE_PORT
         if validate_ports "$REMOTE_PORT"; then
             break
         else
@@ -1306,7 +1306,7 @@ done
             echo -e "${YELLOW}确认域名和端口正确后，直接继续配置无需担心${NC}"
         fi
 
-        read -p "是否继续配置？(y/n): " continue_config
+        ui_read_into "是否继续配置？(y/n): " continue_config
         if [[ ! "$continue_config" =~ ^[Yy]$ ]]; then
             echo "配置已取消"
             exit 1
@@ -1330,7 +1330,7 @@ done
     echo ""
 
     while true; do
-        read -p "请输入选择(回车默认1) [1-6]: " transport_choice
+        ui_read_into "请输入选择(回车默认1) [1-6]: " transport_choice
         if [ -z "$transport_choice" ]; then
             transport_choice="1"
         fi
@@ -1345,14 +1345,14 @@ done
                 echo -e "${GREEN}已选择: WebSocket${NC}"
 
                 echo ""
-                read -p "请输入WebSocket Host [默认: $DEFAULT_SNI_DOMAIN]: " WS_HOST
+                ui_read_into "请输入WebSocket Host [默认: $DEFAULT_SNI_DOMAIN]: " WS_HOST
                 if [ -z "$WS_HOST" ]; then
                     WS_HOST="$DEFAULT_SNI_DOMAIN"
                 fi
                 echo -e "${GREEN}WebSocket Host设置为: $WS_HOST${NC}"
 
                 echo ""
-                read -p "请输入WebSocket路径 [默认: /ws]: " WS_PATH
+                ui_read_into "请输入WebSocket路径 [默认: /ws]: " WS_PATH
                 if [ -z "$WS_PATH" ]; then
                     WS_PATH="/ws"
                 fi
@@ -1364,7 +1364,7 @@ done
                 echo -e "${GREEN}已选择: TLS自签证书${NC}"
 
                 echo ""
-                read -p "请输入TLS服务器名称 (SNI) [默认$DEFAULT_SNI_DOMAIN]: " TLS_SERVER_NAME
+                ui_read_into "请输入TLS服务器名称 (SNI) [默认$DEFAULT_SNI_DOMAIN]: " TLS_SERVER_NAME
                 if [ -z "$TLS_SERVER_NAME" ]; then
                     TLS_SERVER_NAME="$DEFAULT_SNI_DOMAIN"
                 fi
@@ -1377,7 +1377,7 @@ done
 
                 echo ""
                 while true; do
-                    read -p "请输入证书文件路径: " TLS_CERT_PATH
+                    ui_read_into "请输入证书文件路径: " TLS_CERT_PATH
                     if [ -f "$TLS_CERT_PATH" ]; then
                         break
                     else
@@ -1386,7 +1386,7 @@ done
                 done
 
                 while true; do
-                    read -p "请输入私钥文件路径: " TLS_KEY_PATH
+                    ui_read_into "请输入私钥文件路径: " TLS_KEY_PATH
                     if [ -f "$TLS_KEY_PATH" ]; then
                         break
                     else
@@ -1394,7 +1394,7 @@ done
                     fi
                 done
 
-                read -p "请输入TLS服务器名称 (SNI): " TLS_SERVER_NAME
+                ui_read_into "请输入TLS服务器名称 (SNI): " TLS_SERVER_NAME
                 echo -e "${GREEN}TLS配置完成${NC}"
                 break
                 ;;
@@ -1403,20 +1403,20 @@ done
                 echo -e "${GREEN}已选择: TLS+WebSocket自签证书${NC}"
 
                 echo ""
-                read -p "请输入WebSocket Host [默认: $DEFAULT_SNI_DOMAIN]: " WS_HOST
+                ui_read_into "请输入WebSocket Host [默认: $DEFAULT_SNI_DOMAIN]: " WS_HOST
                 if [ -z "$WS_HOST" ]; then
                     WS_HOST="$DEFAULT_SNI_DOMAIN"
                 fi
                 echo -e "${GREEN}WebSocket Host设置为: $WS_HOST${NC}"
 
                 echo ""
-                read -p "请输入TLS服务器名称 (SNI) [默认$DEFAULT_SNI_DOMAIN]: " TLS_SERVER_NAME
+                ui_read_into "请输入TLS服务器名称 (SNI) [默认$DEFAULT_SNI_DOMAIN]: " TLS_SERVER_NAME
                 if [ -z "$TLS_SERVER_NAME" ]; then
                     TLS_SERVER_NAME="$DEFAULT_SNI_DOMAIN"
                 fi
                 echo -e "${GREEN}TLS服务器名称设置为: $TLS_SERVER_NAME${NC}"
 
-                read -p "请输入WebSocket路径 [默认: /ws]: " WS_PATH
+                ui_read_into "请输入WebSocket路径 [默认: /ws]: " WS_PATH
                 if [ -z "$WS_PATH" ]; then
                     WS_PATH="/ws"
                 fi
@@ -1428,7 +1428,7 @@ done
                 echo -e "${GREEN}已选择: TLS+WebSocket CA证书${NC}"
 
                 echo ""
-                read -p "请输入WebSocket Host [默认: $DEFAULT_SNI_DOMAIN]: " WS_HOST
+                ui_read_into "请输入WebSocket Host [默认: $DEFAULT_SNI_DOMAIN]: " WS_HOST
                 if [ -z "$WS_HOST" ]; then
                     WS_HOST="$DEFAULT_SNI_DOMAIN"
                 fi
@@ -1436,7 +1436,7 @@ done
 
                 echo ""
                 while true; do
-                    read -p "请输入证书文件路径: " TLS_CERT_PATH
+                    ui_read_into "请输入证书文件路径: " TLS_CERT_PATH
                     if [ -f "$TLS_CERT_PATH" ]; then
                         break
                     else
@@ -1445,7 +1445,7 @@ done
                 done
 
                 while true; do
-                    read -p "请输入私钥文件路径: " TLS_KEY_PATH
+                    ui_read_into "请输入私钥文件路径: " TLS_KEY_PATH
                     if [ -f "$TLS_KEY_PATH" ]; then
                         break
                     else
@@ -1453,9 +1453,9 @@ done
                     fi
                 done
 
-                read -p "请输入TLS服务器名称 (SNI): " TLS_SERVER_NAME
+                ui_read_into "请输入TLS服务器名称 (SNI): " TLS_SERVER_NAME
 
-                read -p "请输入WebSocket路径 [默认: /ws]: " WS_PATH
+                ui_read_into "请输入WebSocket路径 [默认: /ws]: " WS_PATH
                 if [ -z "$WS_PATH" ]; then
                     WS_PATH="/ws"
                 fi
@@ -1475,7 +1475,7 @@ done
 
     # 检查是否有现有备注（端口复用情况）
     if [ -n "$RULE_NOTE" ]; then
-        read -p "请输入新的备注(回车使用现有备注$RULE_NOTE): " new_note
+        ui_read_into "请输入新的备注(回车使用现有备注$RULE_NOTE): " new_note
         new_note=$(echo "$new_note" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | cut -c1-50)
         if [ -n "$new_note" ]; then
             RULE_NOTE="$new_note"
@@ -1484,7 +1484,7 @@ done
             echo -e "${GREEN}使用现有备注: $RULE_NOTE${NC}"
         fi
     else
-        read -p "请输入当前规则备注(可选，直接回车跳过): " RULE_NOTE
+        ui_read_into "请输入当前规则备注(可选，直接回车跳过): " RULE_NOTE
         # 去除前后空格并限制长度
         RULE_NOTE=$(echo "$RULE_NOTE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | cut -c1-50)
         if [ -n "$RULE_NOTE" ]; then
@@ -1520,7 +1520,7 @@ configure_exit_server() {
 
     echo -e "${BLUE}多端口使用,逗号分隔${NC}"
     while true; do
-        read -p "请输入监听端口 (等待中转服务器连接的端口，NAT VPS需使用商家分配的端口): " EXIT_LISTEN_PORT
+        ui_read_into "请输入监听端口 (等待中转服务器连接的端口，NAT VPS需使用商家分配的端口): " EXIT_LISTEN_PORT
         if validate_ports "$EXIT_LISTEN_PORT"; then
             echo -e "${GREEN}监听端口设置为: $EXIT_LISTEN_PORT${NC}"
             break
@@ -1550,7 +1550,7 @@ configure_exit_server() {
 
     # 转发目标地址配置
     while true; do
-        read -p "转发目标IP地址(默认:127.0.0.1): " input_target
+        ui_read_into "转发目标IP地址(默认:127.0.0.1): " input_target
         if [ -z "$input_target" ]; then
             input_target="127.0.0.1"
         fi
@@ -1569,7 +1569,7 @@ configure_exit_server() {
     # 转发目标端口配置
     local forward_port
     while true; do
-        read -p "转发目标业务端口(多端口使用,逗号分隔): " forward_port
+        ui_read_into "转发目标业务端口(多端口使用,逗号分隔): " forward_port
         if validate_ports "$forward_port"; then
             echo -e "${GREEN}转发端口设置为: $forward_port${NC}"
             break
@@ -1628,7 +1628,7 @@ configure_exit_server() {
             echo -e "${YELLOW}DDNS域名无法进行连通性测试${NC}"
         fi
 
-        read -p "是否继续配置？(y/n): " continue_config
+        ui_read_into "是否继续配置？(y/n): " continue_config
         if [[ ! "$continue_config" =~ ^[Yy]$ ]]; then
             echo "配置已取消"
             exit 1
@@ -1648,7 +1648,7 @@ configure_exit_server() {
     echo ""
 
     while true; do
-        read -p "请输入选择(回车默认1) [1-6]: " transport_choice
+        ui_read_into "请输入选择(回车默认1) [1-6]: " transport_choice
         if [ -z "$transport_choice" ]; then
             transport_choice="1"
         fi
@@ -1663,14 +1663,14 @@ configure_exit_server() {
                 echo -e "${GREEN}已选择: WebSocket${NC}"
 
                 echo ""
-                read -p "请输入WebSocket Host [默认: $DEFAULT_SNI_DOMAIN]: " WS_HOST
+                ui_read_into "请输入WebSocket Host [默认: $DEFAULT_SNI_DOMAIN]: " WS_HOST
                 if [ -z "$WS_HOST" ]; then
                     WS_HOST="$DEFAULT_SNI_DOMAIN"
                 fi
                 echo -e "${GREEN}WebSocket Host设置为: $WS_HOST${NC}"
 
                 echo ""
-                read -p "请输入WebSocket路径 [默认: /ws]: " WS_PATH
+                ui_read_into "请输入WebSocket路径 [默认: /ws]: " WS_PATH
                 if [ -z "$WS_PATH" ]; then
                     WS_PATH="/ws"
                 fi
@@ -1682,7 +1682,7 @@ configure_exit_server() {
                 echo -e "${GREEN}已选择: TLS自签证书${NC}"
 
                 echo ""
-                read -p "请输入TLS服务器名称 (SNI) [默认$DEFAULT_SNI_DOMAIN]: " TLS_SERVER_NAME
+                ui_read_into "请输入TLS服务器名称 (SNI) [默认$DEFAULT_SNI_DOMAIN]: " TLS_SERVER_NAME
                 if [ -z "$TLS_SERVER_NAME" ]; then
                     TLS_SERVER_NAME="$DEFAULT_SNI_DOMAIN"
                 fi
@@ -1694,7 +1694,7 @@ configure_exit_server() {
                 echo -e "${GREEN}已选择: TLS自签证书${NC}"
 
                 echo ""
-                read -p "请输入TLS服务器名称 (SNI) [默认$DEFAULT_SNI_DOMAIN]: " TLS_SERVER_NAME
+                ui_read_into "请输入TLS服务器名称 (SNI) [默认$DEFAULT_SNI_DOMAIN]: " TLS_SERVER_NAME
                 if [ -z "$TLS_SERVER_NAME" ]; then
                     TLS_SERVER_NAME="$DEFAULT_SNI_DOMAIN"
                 fi
@@ -1707,7 +1707,7 @@ configure_exit_server() {
 
                 echo ""
                 while true; do
-                    read -p "请输入证书文件路径: " TLS_CERT_PATH
+                    ui_read_into "请输入证书文件路径: " TLS_CERT_PATH
                     if [ -f "$TLS_CERT_PATH" ]; then
                         break
                     else
@@ -1716,7 +1716,7 @@ configure_exit_server() {
                 done
 
                 while true; do
-                    read -p "请输入私钥文件路径: " TLS_KEY_PATH
+                    ui_read_into "请输入私钥文件路径: " TLS_KEY_PATH
                     if [ -f "$TLS_KEY_PATH" ]; then
                         break
                     else
@@ -1724,7 +1724,7 @@ configure_exit_server() {
                     fi
                 done
 
-                read -p "请输入TLS服务器名称 (SNI): " TLS_SERVER_NAME
+                ui_read_into "请输入TLS服务器名称 (SNI): " TLS_SERVER_NAME
                 echo -e "${GREEN}TLS配置完成${NC}"
                 break
                 ;;
@@ -1733,20 +1733,20 @@ configure_exit_server() {
                 echo -e "${GREEN}已选择: TLS+WebSocket自签证书${NC}"
 
                 echo ""
-                read -p "请输入WebSocket Host [默认: $DEFAULT_SNI_DOMAIN]: " WS_HOST
+                ui_read_into "请输入WebSocket Host [默认: $DEFAULT_SNI_DOMAIN]: " WS_HOST
                 if [ -z "$WS_HOST" ]; then
                     WS_HOST="$DEFAULT_SNI_DOMAIN"
                 fi
                 echo -e "${GREEN}WebSocket Host设置为: $WS_HOST${NC}"
 
                 echo ""
-                read -p "请输入TLS服务器名称 (SNI) [默认$DEFAULT_SNI_DOMAIN]: " TLS_SERVER_NAME
+                ui_read_into "请输入TLS服务器名称 (SNI) [默认$DEFAULT_SNI_DOMAIN]: " TLS_SERVER_NAME
                 if [ -z "$TLS_SERVER_NAME" ]; then
                     TLS_SERVER_NAME="$DEFAULT_SNI_DOMAIN"
                 fi
                 echo -e "${GREEN}TLS服务器名称设置为: $TLS_SERVER_NAME${NC}"
 
-                read -p "请输入WebSocket路径 [默认: /ws]: " WS_PATH
+                ui_read_into "请输入WebSocket路径 [默认: /ws]: " WS_PATH
                 if [ -z "$WS_PATH" ]; then
                     WS_PATH="/ws"
                 fi
@@ -1758,7 +1758,7 @@ configure_exit_server() {
                 echo -e "${GREEN}已选择: TLS+WebSocket CA证书${NC}"
 
                 echo ""
-                read -p "请输入WebSocket Host [默认: $DEFAULT_SNI_DOMAIN]: " WS_HOST
+                ui_read_into "请输入WebSocket Host [默认: $DEFAULT_SNI_DOMAIN]: " WS_HOST
                 if [ -z "$WS_HOST" ]; then
                     WS_HOST="$DEFAULT_SNI_DOMAIN"
                 fi
@@ -1766,7 +1766,7 @@ configure_exit_server() {
 
                 echo ""
                 while true; do
-                    read -p "请输入证书文件路径: " TLS_CERT_PATH
+                    ui_read_into "请输入证书文件路径: " TLS_CERT_PATH
                     if [ -f "$TLS_CERT_PATH" ]; then
                         break
                     else
@@ -1775,7 +1775,7 @@ configure_exit_server() {
                 done
 
                 while true; do
-                    read -p "请输入私钥文件路径: " TLS_KEY_PATH
+                    ui_read_into "请输入私钥文件路径: " TLS_KEY_PATH
                     if [ -f "$TLS_KEY_PATH" ]; then
                         break
                     else
@@ -1783,9 +1783,9 @@ configure_exit_server() {
                     fi
                 done
 
-                read -p "请输入TLS服务器名称 (SNI): " TLS_SERVER_NAME
+                ui_read_into "请输入TLS服务器名称 (SNI): " TLS_SERVER_NAME
 
-                read -p "请输入WebSocket路径 [默认: /ws]: " WS_PATH
+                ui_read_into "请输入WebSocket路径 [默认: /ws]: " WS_PATH
                 if [ -z "$WS_PATH" ]; then
                     WS_PATH="/ws"
                 fi
@@ -1801,7 +1801,7 @@ configure_exit_server() {
     echo ""
     echo -e "${BLUE}=== 规则备注配置 ===${NC}"
 
-    read -p "请输入当前规则备注(可选，直接回车跳过): " RULE_NOTE
+    ui_read_into "请输入当前规则备注(可选，直接回车跳过): " RULE_NOTE
     # 去除前后空格并限制长度
     RULE_NOTE=$(echo "$RULE_NOTE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | cut -c1-50)
     if [ -n "$RULE_NOTE" ]; then
