@@ -218,19 +218,31 @@ update_backup_file() {
 # 从备份恢复（恢复到原始绝对路径）
 # 返回值：0 = 全部恢复成功；非 0 = 有文件没恢复成功（并逐个打印原因）
 #
-# 注意：cp 的错误**不能**吞掉 —— 覆盖正在运行的二进制会报
-# "Text file busy"（ETXTBSY），静默失败会让人以为已经回滚成功，
-# 实际还跑着坏版本。
+# 两个坑，都必须处理：
+# 1) cp 的错误**不能**吞掉 —— 静默失败会让人以为已经回滚成功，实际还跑着坏版本。
+# 2) **不能直接 cp 覆盖目标文件**：正在运行的二进制会被内核挡住
+#    （ETXTBSY / "Text file busy"）。本机实测 realm 被健康检查每秒拉起，
+#    systemctl stop 只能按住 2 秒，所以自动回滚很容易撞上。
+#    正确做法：先拷到目标同目录的临时文件，再用 mv 覆盖 ——
+#    mv 改的是目录项（unlink + link），不受 ETXTBSY 限制。
 update_restore_backup() {
     local dir="$1"
     [ -d "$dir" ] || return 1
-    local f rel err failed=0
+    local f rel tmp err failed=0
     while IFS= read -r f; do
         rel="${f#$dir/}"
-        err=$(cp -p "$f" "/${rel}" 2>&1) || {
+        tmp="/${rel}.restore.$$"
+        if err=$(cp -p "$f" "$tmp" 2>&1); then
+            if ! err=$(mv -f "$tmp" "/${rel}" 2>&1); then
+                failed=$((failed + 1))
+                echo -e "${RED}  ✗ 恢复失败: /${rel} —— ${err}${NC}" >&2
+                rm -f "$tmp" 2>/dev/null
+            fi
+        else
             failed=$((failed + 1))
             echo -e "${RED}  ✗ 恢复失败: /${rel} —— ${err}${NC}" >&2
-        }
+            rm -f "$tmp" 2>/dev/null
+        fi
     done < <(find "$dir" -type f 2>/dev/null)
     if [ "$failed" -ne 0 ]; then
         echo -e "${RED}  ✗ 有 ${failed} 个文件没能恢复${NC}" >&2
