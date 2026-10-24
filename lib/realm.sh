@@ -340,7 +340,19 @@ generate_endpoints_from_rules() {
     #     → 保持原主不切备（该切不切的静默失效）。
     #   认不出归属（规则已删）时**当无记录**：让健康检查重新探测生成精确键，
     #     比留一份会跨端口污染的宽键安全。
+    # ★ 读端的状态索引：键 = (RULE_ID, 目标地址) 组合键 —— 与写端
+    #   （lib/health.sh 的 target_key="${RULE_ID}|${target_endpoint}"）同口径。
+    #   为什么不能只按目标地址建键：同一个后端被两条规则共用时，状态文件里
+    #   就有**两行同目标**（各属一条规则），只按地址建键 ⇒ 后读的行覆盖先读的
+    #   ⇒ 两条规则读到**同一个**状态 ⇒ 双向误切：
+    #     · 真实故障被另一条规则的 healthy 掩盖 ⇒ **该切不切**；
+    #     · 健康目标被另一条规则的 failed 拖着切 ⇒ **不该切却切**。
+    #   （两行 status 可以稳定不同：写端的 status 是「累计失败达到**该规则自己的**
+    #   FAILURE_THRESHOLD 才变 failed」⇒ 两条规则阈值不同 ⇒ 两行本来就不同。）
     declare -A health_status
+    # 端口组 → 目标 → **拥有该目标的规则**（读状态时用它拼组合键）
+    #   键 = "<LISTEN_PORT>|<目标地址>"（bash 没有嵌套关联数组，用扁平键）
+    declare -A port_target_rule
     local health_status_file="${HEALTH_STATUS_FILE}"
 
     # 规则 ID → 远端端口（给旧格式的 TARGET 补端口用）
@@ -372,10 +384,10 @@ generate_endpoints_from_rules() {
                 #   让健康检查下一轮重新探测、生成精确键；比留宽键安全。
                 local _row_port="${rule_remote_port[$_row_rule_id]:-}"
                 if [ -n "$_row_port" ]; then
-                    health_status["${_row_target}:${_row_port}"]="$_row_status"
+                    health_status["${_row_rule_id}|${_row_target}:${_row_port}"]="$_row_status"
                 fi
             else
-                health_status["$_row_target"]="$_row_status"
+                health_status["${_row_rule_id}|${_row_target}"]="$_row_status"
             fi
         done < "$health_status_file"
     fi
@@ -464,6 +476,17 @@ generate_endpoints_from_rules() {
                                 port_groups[$port_key]="${port_groups[$port_key]:-},$target"
                             fi
                         fi
+                        # ★ 记录「这个目标在本端口组里归哪条规则」——读状态时用它拼组合键。
+                        #   端口组的目标列表是**跨规则合并**的（同一个目标只留一份），
+                        #   但状态文件里**每条规则各自有一行**（写端按 RULE_ID|目标 各写一行）。
+                        #   ⇒ 归属必须唯一确定：否则读端会把 A 规则的状态算到 B 规则头上
+                        #     （同后端被两条规则共用时 ⇒ 两行塌成一行 ⇒ 双向误切）。
+                        #   口径：**先声明者为准**（与端口组目标列表的合并口径一致：
+                        #   端口组的权重与顺序都按合并后的列表算，归属跟着同一个顺序走）。
+                        local _own_key="${port_key}|${target}"
+                        if [ -z "${port_target_rule[$_own_key]:-}" ]; then
+                            port_target_rule[$_own_key]="$RULE_ID"
+                        fi
                     done
                 fi
 
@@ -537,9 +560,18 @@ generate_endpoints_from_rules() {
                 # 按优先级找第一个健康目标作为主
                 local primary_target=""
                 for _t in "${priority_targets[@]}"; do
-                    # ★ 按 host:port 查状态：同 host 不同端口互不影响
+                    # ★ 按 **(归属规则, 目标地址) 组合键**查状态：
+                    #   · 同 host 不同端口互不影响；
+                    #   · 同后端被两条规则共用时，各看各的那一行（**不塌缩**）
+                    #     —— 塌缩会让「真挂了的不切」「健康的被拖着切」两个方向都误切。
                     #   查不到 = 无记录 = 视为健康（由健康检查重新探测生成精确键）
-                    local _st="${health_status[$_t]:-}"
+                    local _own_key="${port_key}|${_t}"
+                    local _own_rule="${port_target_rule[$_own_key]:-}"
+                    local _st=""
+                    if [ -n "$_own_rule" ]; then
+                        local _st_key="${_own_rule}|${_t}"
+                        _st="${health_status[$_st_key]:-}"
+                    fi
                     if [ "$_st" != "failed" ]; then
                         primary_target="$_t"
                         break
@@ -589,9 +621,15 @@ generate_endpoints_from_rules() {
                 # 记录健康节点的索引位置
                 for i in "${!all_targets[@]}"; do
                     local target="${all_targets[i]}"
-                    # ★ 按 host:port 查状态：同 host 不同端口互不影响
+                    # ★ 按 **(归属规则, 目标地址) 组合键**查状态（口径同上）
                     #   查不到 = 无记录 = 视为健康（由健康检查重新探测生成精确键）
-                    local node_status="${health_status[$target]:-}"
+                    local _own_key="${port_key}|${target}"
+                    local _own_rule="${port_target_rule[$_own_key]:-}"
+                    local node_status=""
+                    if [ -n "$_own_rule" ]; then
+                        local _st_key="${_own_rule}|${target}"
+                        node_status="${health_status[$_st_key]:-}"
+                    fi
 
                     if [ "$node_status" != "failed" ]; then
                         if [ -n "$filtered_targets" ]; then
