@@ -269,34 +269,40 @@ check "恢复成功时返回 0" "$?" "0"
 # K2: 正在被执行的二进制不能被 cp 直接覆盖（ETXTBSY），
 #     但「临时文件 + mv 覆盖」不受影响 —— 这正是回滚必须用 mv 的原因。
 #     本机实测：realm 被健康检查每秒拉起，systemctl stop 只按得住 2 秒。
-BUSY="$SANDBOX/busy.sh"
-printf '#!/bin/bash\nsleep 3\n' > "$BUSY"
-chmod +x "$BUSY"
-"$BUSY" >/dev/null 2>&1 &
-BUSY_PID=$!
-sleep 1
-# 注意：ETXTBSY 出现在「**写**到正在被执行的文件」时，
-#       从它读出去（cp busy busy.copy）不会触发 —— 探测必须往它身上写。
-printf 'x' > "$SANDBOX/busy.src"
-if cp -p "$SANDBOX/busy.src" "$BUSY" 2>/dev/null; then
-    CP_BUSY=ok
+#
+#     两个前提，踩过坑：
+#     1) ETXTBSY 出现在「**写**到正在被执行的文件」时；从它读出去不会触发。
+#     2) 必须用**真二进制**：shell 脚本是被解释器读文件的，不占执行锁，
+#        拿脚本去试永远测不出 ETXTBSY。realm 是二进制，照它的情形来。
+BUSY="$SANDBOX/busy.bin"
+SLEEP_BIN="$(command -v sleep 2>/dev/null || true)"
+if [ -n "$SLEEP_BIN" ] && cp -f "$SLEEP_BIN" "$BUSY" 2>/dev/null && chmod +x "$BUSY" 2>/dev/null; then
+    "$BUSY" 5 >/dev/null 2>&1 &
+    BUSY_PID=$!
+    sleep 1
+    printf 'x' > "$SANDBOX/busy.src"
+    if cp -f "$SANDBOX/busy.src" "$BUSY" 2>/dev/null; then
+        CP_BUSY=ok
+    else
+        CP_BUSY=fail
+    fi
+    if [ "$CP_BUSY" = "fail" ]; then
+        # 本机支持 ETXTBSY：直接覆盖会失败，但 mv 覆盖式恢复必须成功
+        BAK2="$SANDBOX/backup/busy-bak"
+        rel="tmp/$(basename "$SANDBOX")/busy.bin"
+        mkdir -p "$BAK2/$(dirname "$rel")"
+        printf '#!/bin/bash\necho restored\n' > "$BAK2/$rel"
+        out=$(update_restore_backup "$BAK2" 2>&1); rc=$?
+        check "ETXTBSY 环境下恢复仍然成功" "$rc" "0"
+        check "恢复后的文件内容正确" "$(grep -c 'restored' "$BUSY" 2>/dev/null)" "1"
+    else
+        echo "  [SKIP] 本机不支持 ETXTBSY（无法写正在执行的二进制），跳过该用例"
+    fi
+    kill "$BUSY_PID" 2>/dev/null
+    wait "$BUSY_PID" 2>/dev/null
 else
-    CP_BUSY=fail
+    echo "  [SKIP] 找不到可执行的二进制来造 ETXTBSY 现场，跳过该用例"
 fi
-if [ "$CP_BUSY" = "fail" ]; then
-    # 本机支持 ETXTBSY：直接覆盖会失败，但 mv 覆盖式恢复必须成功
-    BAK2="$SANDBOX/backup/busy-bak"
-    rel="tmp/$(basename "$SANDBOX")/busy.sh"
-    mkdir -p "$BAK2/$(dirname "$rel")"
-    printf '#!/bin/bash\necho restored\n' > "$BAK2/$rel"
-    out=$(update_restore_backup "$BAK2" 2>&1); rc=$?
-    check "ETXTBSY 环境下恢复仍然成功" "$rc" "0"
-    check "恢复后的文件内容正确" "$(grep -c 'restored' "$BUSY" 2>/dev/null)" "1"
-else
-    echo "  [SKIP] 本机不支持 ETXTBSY（无法写正在执行的文件），跳过该用例"
-fi
-kill "$BUSY_PID" 2>/dev/null
-wait "$BUSY_PID" 2>/dev/null
 rm -f "$SANDBOX/busy.src"
 
 echo "=============================================="
