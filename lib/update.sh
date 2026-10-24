@@ -49,8 +49,12 @@ trap update_tmp_cleanup EXIT
 UPDATE_KEEP_BACKUPS="${UPDATE_KEEP_BACKUPS:-5}"
 
 # 脚本包文件清单（xwPF.sh 单独处理）
-UPDATE_LIB_FILES=("core.sh" "health.sh" "rules.sh" "server.sh" "realm.sh" "failover.sh" "ui.sh" "update.sh")
-UPDATE_CMD_FILES=("xwpf-failover.py" "xwpf-failover.service")
+# ★ 不含 failover.sh：「进程级主备池 + 独立守护进程」那一整套已下线
+#   （lib/failover.sh + cmd/xwpf-failover.* 都不再存在）。
+#   继续在清单里 → 下载必然失败 → 整个脚本包更新被卡死。
+UPDATE_LIB_FILES=("core.sh" "health.sh" "rules.sh" "server.sh" "realm.sh" "ui.sh" "update.sh")
+# cmd/ 下的守护源文件随主备池一起下线 → 现在没有要更新的 cmd 文件
+UPDATE_CMD_FILES=()
 
 # ============================================================
 # 基础工具
@@ -591,6 +595,22 @@ safe_update_scripts() {
         rm -rf "$staging" 2>/dev/null
         update_lock_release
         return 1
+    fi
+
+    # 7) 装/升级后重新生成健康探测端产物（唯一真源 = **新版** lib/health.sh）
+    #    ★ 不重新生成 = 机器上跑的还是旧产物 = 探测端**静默失效**：
+    #      日志照样每 4 秒打「[INFO] 健康检查完成」、退出码 0，
+    #      但状态文件 LAST_CHECK 停在几小时前 → 权重 10,0 主备永远不切。
+    #    不重启 timer：unit 是 Type=oneshot + ExecStart=<路径>，产物换掉后下个 tick 自然生效。
+    #    失败不中断升级：只打印醒目错误（装/升级主流程不该被这一步带崩）。
+    #    ★ 用子 shell 且重新 source 新版 health.sh：
+    #      当前进程里跑的还是**旧版** health.sh（脚本包刚换掉，进程没重启），
+    #      直接调用等于拿旧版真源重新生成旧产物 = 白做。
+    if ! ( . "${LIB_DIR}/health.sh" && health_migrate_connection_timeout && health_check_script_regenerate ); then
+        echo -e "${RED}✗ 重新生成健康检查脚本失败：/etc/realm/health/health_check.sh 仍是旧产物${NC}"
+        echo -e "${RED}  权重 10,0 主备的切换会静默失效（探测端不再更新状态）${NC}"
+    else
+        echo -e "${GREEN}  ✓ 已按新版本重新生成健康检查脚本${NC}"
     fi
 
     rm -rf "$staging" 2>/dev/null

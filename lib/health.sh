@@ -120,10 +120,15 @@ validate_positive_int() {
 # 连通性探测（TCP 握手，不是 ping）
 # 优先 netcat（需支持 -z 探测模式；busybox nc 不支持），
 # 没有 nc（或 nc 不支持 -z）时回退 bash 内置 /dev/tcp
+#
+# ★ 超时预算 10 秒（**健康探测端**口径）：
+#   真机实测正常目标 100-2274ms，3 秒预算只剩 24% 余量；
+#   死端口墙钟 3057-3397ms 直接超预算 → 探测端误判「不可达」→ 主备误切。
+#   交互式现场探测（菜单里的「立即测试所有目标时延」）是另一套口径，不走这里。
 check_connectivity() {
     local target="$1"
     local port="$2"
-    local timeout="${3:-3}"
+    local timeout="${3:-10}"
 
     # 方式1: netcat（需支持 -z 探测模式；busybox nc 不支持，不能用）
     if command -v nc >/dev/null 2>&1; then
@@ -178,7 +183,7 @@ PROBE_LATENCY_MS=""
 probe_with_latency() {
     local target="$1"
     local port="$2"
-    local timeout="${3:-3}"
+    local timeout="${3:-10}"
     local t0="" t1="" rc=0
 
     t0=$(now_us) || t0=""
@@ -216,6 +221,48 @@ get_health_status_record() {
 
     [ -n "$line" ] || return 1
     echo "$line"
+}
+
+# 在旧状态文件里按 TARGET 找一行（跨轮继承用）
+#
+# ★ 匹配键是「目标地址」，**不是 RULE_ID**：
+#   规则 ID 会被复用（删掉一条规则后，下一条规则可能拿到同一个 ID），
+#   按 RULE_ID 继承会把老规则的 failed / 失败计数算到新规则头上
+#   → 新鲜健康的目标一上来就显示「故障」，甚至被当成故障。
+#   按目标地址继承则不会串：目标地址不同 → 认不出旧行 → 当成没有记录。
+#
+# 口径：
+#   ① 新格式行（TARGET = host:port）：整段相等才算命中（不靠子串，
+#      否则 "10.0.0.1" 会命中 "110.0.0.1"）。
+#   ② 旧格式行（TARGET 只有 host，没有端口）：仍然认出来并参与继承
+#      —— 老文件里那种行不能当成「没有记录」，否则目标会被当成健康
+#      → 故障转移静默失效。
+health_status_find_row() {
+    local status_file="$1"
+    local endpoint="$2"
+    local host="$3"
+    local legacy_row="" _rid _field2 _rest
+
+    [ -f "$status_file" ] || return 1
+
+    while IFS='|' read -r _rid _field2 _rest || [ -n "${_field2:-}" ]; do
+        case "$_rid" in
+            '#'*) continue ;;
+        esac
+        [ -z "${_field2:-}" ] && continue
+        if [ "$_field2" = "$endpoint" ]; then
+            printf '%s|%s|%s\n' "$_rid" "$_field2" "$_rest"
+            return 0
+        fi
+        # 旧格式行：TARGET 只有 host → 留作兜底（本轮没命中精确键时才用）
+        if [ -z "$legacy_row" ] && [ "$_field2" = "$host" ]; then
+            legacy_row="${_rid}|${_field2}|${_rest}"
+        fi
+    done < "$status_file"
+
+    [ -n "$legacy_row" ] || return 1
+    printf '%s\n' "$legacy_row"
+    return 0
 }
 
 # 把时延历史（逗号分隔的样本）算成平均毫秒数
@@ -262,14 +309,16 @@ get_port_failover_params() {
             local interval=$(validate_positive_int "${HEALTH_CHECK_INTERVAL:-4}" 4)
             local failure_threshold=$(validate_positive_int "${FAILURE_THRESHOLD:-2}" 2)
             local success_threshold=$(validate_positive_int "${SUCCESS_THRESHOLD:-2}" 2)
-            local connection_timeout=$(validate_positive_int "${CONNECTION_TIMEOUT:-3}" 3)
+            local connection_timeout=$(validate_positive_int "${CONNECTION_TIMEOUT:-10}" 10)
             local recovery_cooldown=$(validate_positive_int "${RECOVERY_COOLDOWN:-120}" 120)
             echo "${interval}|${failure_threshold}|${success_threshold}|${connection_timeout}|${recovery_cooldown}"
             return 0
         fi
     done
 
-    echo "4|2|2|3|120"
+    # 兜底值：interval|failure|success|timeout|cooldown
+    # ★ timeout 默认 10 秒（探测端预算口径，与 CONNECTION_TIMEOUT 的默认值一致）
+    echo "4|2|2|10|120"
 }
 
 get_effective_health_check_interval() {
@@ -287,6 +336,38 @@ get_effective_health_check_interval() {
     done
 
     echo "${min_interval:-4}"
+}
+
+# 把规则里**显式写死**的探测超时 3 秒抬到 10 秒
+#
+# ★ 行为变更（装/升级时生效）：
+#   老机器的规则文件里写死的是 CONNECTION_TIMEOUT="3"（老默认值）。
+#   真机实测正常目标最慢 2274ms，3 秒预算只剩 24% 余量；
+#   死端口墙钟 3057-3397ms 直接超预算 → 探测端误判「不可达」→ 主备误切。
+#   不抬的话老机器的「权重 10,0 主备」切换一直不可靠。
+#
+# 只抬「恰好是 3」的值：用户自己改过的其它值（1/2/4/5...）一律不动。
+# 每次调用都跑，幂等（已经是 10 的行不会被再次改写）。
+health_migrate_connection_timeout() {
+    local rules_dir="${1:-${RULES_DIR:-/etc/realm/rules}}"
+    local rule_file
+    local changed=0
+
+    [ -d "$rules_dir" ] || return 0
+
+    for rule_file in "$rules_dir"/rule-*.conf; do
+        [ -f "$rule_file" ] || continue
+        if grep -q '^CONNECTION_TIMEOUT="3"$' "$rule_file" 2>/dev/null; then
+            sed -i 's/^CONNECTION_TIMEOUT="3"$/CONNECTION_TIMEOUT="10"/' "$rule_file" 2>/dev/null && changed=1
+        elif grep -q '^CONNECTION_TIMEOUT=3$' "$rule_file" 2>/dev/null; then
+            sed -i 's/^CONNECTION_TIMEOUT=3$/CONNECTION_TIMEOUT="10"/' "$rule_file" 2>/dev/null && changed=1
+        fi
+    done
+
+    if [ "$changed" = "1" ]; then
+        echo -e "${YELLOW}  已把规则里写死的探测超时从 3 秒抬到 10 秒（探测端预算）${NC}"
+    fi
+    return 0
 }
 
 # 生成健康检查脚本（独立可执行，systemd 直接调用）
@@ -346,16 +427,23 @@ HEADER_EOF
         health_emit_function now_us
         health_emit_function probe_with_latency
         health_emit_function get_health_status_record
+        health_emit_function health_status_find_row
         health_emit_function latency_avg_ms
         health_emit_function format_latency_display
         # ↑↑↑ 抽取结束 ↑↑↑
 
         cat << 'BODY_EOF'
-# 初始化健康状态文件
+# 初始化健康状态文件（文件不存在时先建空壳；内容由下面的原子重建写）
 if [ ! -f "$HEALTH_STATUS_FILE" ]; then
-    echo "# Realm健康状态文件" > "$HEALTH_STATUS_FILE"
-    echo "# 格式: RULE_ID|TARGET|STATUS|FAIL_COUNT|SUCCESS_COUNT|LAST_CHECK|FAILURE_START_TIME|LATENCY_MS|LATENCY_HISTORY" >> "$HEALTH_STATUS_FILE"
+    printf '# Realm健康状态文件\n' > "$HEALTH_STATUS_FILE"
 fi
+
+# ★ 本轮状态重建：先快照旧文件 → 逐个目标算新行 → 最后整份原子覆盖
+#   顺序不能反：先覆盖后读会把旧状态读丢 → 跨轮继承（失败计数 / 故障起始时间）就断了。
+_health_status_old="${HEALTH_STATUS_FILE}.old.$$"
+_health_status_new="${HEALTH_STATUS_FILE}.new.$$"
+cp -f "$HEALTH_STATUS_FILE" "$_health_status_old" 2>/dev/null || : > "$_health_status_old"
+: > "$_health_status_new"
 
 # 检查所有启用故障转移的规则
 config_changed=false
@@ -384,25 +472,23 @@ for rule_file in "${RULES_DIR}"/rule-*.conf; do
         #   同一个 host 上的不同端口是**不同目标**，状态互不覆盖。
         target_endpoint="${target}:${REMOTE_PORT}"
         target_key="${RULE_ID}|${target_endpoint}"
-        # 旧格式（TARGET 只有 host）的记录：升级后仍然要认。
-        # 不认的话，老文件里的 failed 会被当成「没有记录」→ 目标被当成健康
-        # → 故障转移静默失效（看起来一切正常，实际不再切备）。
-        legacy_key="${RULE_ID}|${target}"
 
-        # 获取当前状态（新格式优先；没有再按旧格式找）
-        # ★ 这两处 grep 必须用 BRE（不带 -E）：BRE 里 `|` 是字面量、`^` 只在模式开头是锚点，
-        #   所以 "^${key}|" 匹配的是「以 key| 开头的那一行」。
-        #   改成 grep -E 会变成 alternation（"以 RULE_ID 开头" 或 "含 host:port"）→ 会误删别人的行。
-        status_line=$(grep "^${target_key}|" "$HEALTH_STATUS_FILE" 2>/dev/null)
-        if [ -z "$status_line" ]; then
-            status_line=$(grep "^${legacy_key}|" "$HEALTH_STATUS_FILE" 2>/dev/null)
-        fi
+        # 取上一轮的状态（跨轮继承）：按**目标地址**匹配，不按 RULE_ID 匹配。
+        #   规则 ID 会被复用（删掉一条规则后，下一条规则可能拿到同一个 ID），
+        #   按 RULE_ID 继承会把老规则的 failed / 失败计数算到新规则头上
+        #   → 新鲜健康的目标一上来就显示「故障」。
+        #   旧格式行（TARGET 只有 host）仍然认出来并参与继承。
+        status_line=$(health_status_find_row "$_health_status_old" "$target_endpoint" "$target")
         if [ -n "$status_line" ]; then
             IFS='|' read -r _ _ status fail_count success_count last_check failure_start_time latency_ms latency_hist <<< "$status_line"
-            # 兼容旧格式（没有failure_start_time字段）
+            # 兼容旧格式行：字段更少（没有 failure_start_time / latency 两列）
             if [ -z "$failure_start_time" ]; then
                 failure_start_time="$last_check"
             fi
+            # 计数必须是整数：老文件被写坏时不能把整轮检查带崩
+            case "$fail_count" in ''|*[!0-9]*) fail_count=0 ;; esac
+            case "$success_count" in ''|*[!0-9]*) success_count=0 ;; esac
+            case "$failure_start_time" in ''|*[!0-9]*) failure_start_time=0 ;; esac
         else
             status="healthy"
             fail_count=0
@@ -414,7 +500,7 @@ for rule_file in "${RULES_DIR}"/rule-*.conf; do
         fi
 
         # 执行健康检查
-        if probe_with_latency "$target" "$REMOTE_PORT" "${CONNECTION_TIMEOUT:-3}"; then
+        if probe_with_latency "$target" "$REMOTE_PORT" "${CONNECTION_TIMEOUT:-10}"; then
             # 检查成功
             success_count=$((success_count + 1))
             fail_count=0
@@ -458,15 +544,21 @@ for rule_file in "${RULES_DIR}"/rule-*.conf; do
             latency_ms=""
         fi
 
-        # 更新状态文件（包含故障开始时间与时延）
-        # 同一 host 的旧格式行一起清掉：旧行留着会被读成「同一个目标的另一条记录」
-        # ★ 同样是 BRE（不带 -E）：`|` 是字面量、`^` 是行首锚点；
-        #   换成 grep -E 就成了 alternation → 会把别的规则的行一起删掉。
-        grep -v -e "^${target_key}|" -e "^${legacy_key}|" "$HEALTH_STATUS_FILE" > "$HEALTH_STATUS_FILE.tmp" 2>/dev/null || true
-        echo "${target_key}|${status}|${fail_count}|${success_count}|${current_time}|${failure_start_time}|${latency_ms}|${latency_hist}" >> "$HEALTH_STATUS_FILE.tmp"
-        mv "$HEALTH_STATUS_FILE.tmp" "$HEALTH_STATUS_FILE"
+        # 本轮新行先写进临时文件（循环结束后才整份覆盖）
+        #   ★ 不再逐个目标改写状态文件：那样会留下「已被删掉的规则」的残留行
+        #   （残留行会被当成「还在监控」）→ 整份重建，残留行自然消失。
+        echo "${target_key}|${status}|${fail_count}|${success_count}|${current_time}|${failure_start_time}|${latency_ms}|${latency_hist}" >> "$_health_status_new"
     done
 done
+
+# 原子重建状态文件：只保留当前这一轮监控的规则行
+#   （规则被删 → 它的残留行一并消失；否则残留行会被当成「还在监控」）
+{
+    echo "# Realm健康状态文件"
+    echo "# 格式: RULE_ID|TARGET|STATUS|FAIL_COUNT|SUCCESS_COUNT|LAST_CHECK|FAILURE_START_TIME|LATENCY_MS|LATENCY_HISTORY"
+    cat "$_health_status_new" 2>/dev/null
+} > "${HEALTH_STATUS_FILE}.tmp.$$" 2>/dev/null && mv -f "${HEALTH_STATUS_FILE}.tmp.$$" "$HEALTH_STATUS_FILE" 2>/dev/null
+rm -f "$_health_status_old" "$_health_status_new" 2>/dev/null
 
 # 如果配置有变化，调用xwPF.sh重启接口
 if [ "$config_changed" = true ]; then
@@ -483,13 +575,23 @@ BODY_EOF
     } | tr -d '\r'
 }
 
-start_health_check_service() {
-    local health_dir="/etc/realm/health"
-    local health_script="/etc/realm/health/health_check.sh"
-    local health_timer="/etc/systemd/system/realm-health-check.timer"
-    local health_service="/etc/systemd/system/realm-health-check.service"
+# 重新生成健康检查脚本（**只生成**，不碰 systemd）
+#
+# ★ 唯一真源 = 本文件（lib/health.sh）。
+#   装/升级必须调用它，否则机器上跑的是旧产物 = 探测端**静默失效**：
+#   日志照样每 4 秒打「[INFO] 健康检查完成」、退出码 0，
+#   但状态文件 LAST_CHECK 停在几小时前 → 权重 10,0 主备永远不切。
+#
+# 只做三件事：写脚本 + chmod +x + 函数自检。
+#   不写 unit/timer、不 daemon-reload、不 enable/start ——
+#   升级不该把没在跑的定时器拉起来；unit 是 Type=oneshot + ExecStart=<路径>，
+#   产物换掉后下个 tick 自然生效。
+health_check_script_regenerate() {
+    local health_script="${1:-/etc/realm/health/health_check.sh}"
+    local health_dir tmp_script _missing
 
-    local effective_interval="${1:-$(get_effective_health_check_interval)}"
+    health_dir=$(dirname "$health_script")
+    tmp_script="${health_script}.tmp.$$"
 
     # 创建健康检查目录
     if ! mkdir -p "$health_dir"; then
@@ -498,9 +600,16 @@ start_health_check_service() {
     fi
 
     # 生成健康检查脚本（函数实现从本文件抽取）
-    if ! health_check_script_body > "$health_script"; then
+    # 原子落盘：先写临时文件再 mv —— systemd 读到半截脚本会直接失败
+    rm -f "$tmp_script"
+    if ! health_check_script_body > "$tmp_script" || [ ! -s "$tmp_script" ]; then
         echo -e "${RED}✗ 生成健康检查脚本失败: ${health_script}${NC}" >&2
-        rm -f "$health_script"
+        rm -f "$tmp_script"
+        return 1
+    fi
+    if ! mv -f "$tmp_script" "$health_script"; then
+        echo -e "${RED}✗ 写入健康检查脚本失败: ${health_script}${NC}" >&2
+        rm -f "$tmp_script"
         return 1
     fi
     chmod +x "$health_script" || {
@@ -509,12 +618,41 @@ start_health_check_service() {
     }
 
     # 必要函数自检：抽取失败时不要装一个跑不起来的探测端
-    local _missing=""
+    _missing=""
     grep -q '^read_rule_file() {' "$health_script" || _missing="read_rule_file"
     grep -q '^check_connectivity() {' "$health_script" || _missing="${_missing} check_connectivity"
+    # 尾部标记：生成物被截断时（抽取中途失败）这里能抓到
+    grep -q '健康检查完成' "$health_script" || _missing="${_missing} <脚本尾部>"
     if [ -n "$_missing" ]; then
         echo -e "${RED}✗ 生成的健康检查脚本缺少函数: ${_missing}${NC}" >&2
         rm -f "$health_script"
+        return 1
+    fi
+
+    return 0
+}
+
+start_health_check_service() {
+    local health_dir="/etc/realm/health"
+    local health_script="/etc/realm/health/health_check.sh"
+    local health_timer="/etc/systemd/system/realm-health-check.timer"
+    local health_service="/etc/systemd/system/realm-health-check.service"
+
+    local effective_interval="${1:-$(get_effective_health_check_interval)}"
+
+    # 创建健康检查目录（目录由 health_check_script_regenerate 负责建）
+    if ! mkdir -p "$health_dir"; then
+        echo -e "${RED}✗ 创建健康检查目录失败: ${health_dir}${NC}" >&2
+        return 1
+    fi
+
+    # 探测超时预算：规则里写死的 3 秒抬到 10 秒
+    # （探测端刚装上/刚启用时就要是对的预算，否则第一轮探测就按 3 秒判 → 主备误切）
+    health_migrate_connection_timeout || true
+
+    # 生成健康检查脚本（**生成逻辑只有这一份**：唯一真源 = 本文件）
+    # 装/升级路径走的是同一个函数（health_check_script_regenerate）
+    if ! health_check_script_regenerate "$health_script"; then
         return 1
     fi
 
