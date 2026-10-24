@@ -58,6 +58,103 @@ check_connectivity() {
     return 1
 }
 
+# 取当前时间（微秒）
+# 优先 bash 5 的 EPOCHREALTIME（不 fork，更快）；回退 date +%s%N
+# （GNU coreutils 支持；busybox date 不支持 %N，会返回字面量 N，此时判定为不可用）
+now_us() {
+    if [ -n "${EPOCHREALTIME:-}" ]; then
+        local t="${EPOCHREALTIME}"
+        t="${t/[.,]/}"
+        case "$t" in
+            ''|*[!0-9]*) return 1 ;;
+        esac
+        echo "$t"
+        return 0
+    fi
+
+    local t
+    t=$(date +%s%N 2>/dev/null)
+    case "$t" in
+        ''|*N*) return 1 ;;
+    esac
+    echo "$t"
+    return 0
+}
+
+# 连通性探测 + 耗时（毫秒）
+# 耗时写进全局 PROBE_LATENCY_MS（取不到时间戳就留空）
+# 返回值语义与 check_connectivity 相同：0 通 / 1 不通
+PROBE_LATENCY_MS=""
+probe_with_latency() {
+    local target="$1"
+    local port="$2"
+    local timeout="${3:-3}"
+    local t0="" t1="" rc=0
+
+    t0=$(now_us) || t0=""
+    if check_connectivity "$target" "$port" "$timeout"; then
+        rc=0
+    else
+        rc=1
+    fi
+    t1=$(now_us) || t1=""
+
+    PROBE_LATENCY_MS=""
+    if [ -n "$t0" ] && [ -n "$t1" ] && [ "$t1" -ge "$t0" ]; then
+        PROBE_LATENCY_MS=$(( (t1 - t0) / 1000 ))
+    fi
+    return $rc
+}
+
+# 读取目标在健康状态文件里的整行记录
+# 输出格式与状态文件一致（字段以 | 分隔），取不到返回 1
+get_health_status_record() {
+    local host="$1"
+    local status_file="${HEALTH_STATUS_FILE}"
+    local line=""
+
+    [ -f "$status_file" ] || return 1
+    line=$(grep -F "|${host}|" "$status_file" 2>/dev/null | head -1)
+    [ -n "$line" ] || return 1
+    echo "$line"
+}
+
+# 把时延历史（逗号分隔的样本）算成平均毫秒数
+latency_avg_ms() {
+    local hist="$1"
+    [ -n "$hist" ] || return 1
+
+    local sum=0 n=0 v
+    local IFS=','
+    for v in $hist; do
+        case "$v" in
+            ''|*[!0-9]*) continue ;;
+        esac
+        sum=$((sum + v))
+        n=$((n + 1))
+    done
+    [ "$n" -gt 0 ] || return 1
+    echo $((sum / n))
+}
+
+# 格式化时延展示：最近一次 + 最近若干次平均
+format_latency_display() {
+    local latency_ms="$1"
+    local hist="$2"
+
+    if [ -z "$latency_ms" ]; then
+        echo "-"
+        return 0
+    fi
+
+    local avg
+    if avg=$(latency_avg_ms "$hist"); then
+        echo "${latency_ms}ms (均 ${avg}ms)"
+    else
+        echo "${latency_ms}ms"
+    fi
+}
+
 get_port_failover_params() {
     local port="$1"
 
@@ -168,6 +265,103 @@ check_connectivity() {
     return 1
 }
 
+# 取当前时间（微秒）
+# 优先 bash 5 的 EPOCHREALTIME（不 fork，更快）；回退 date +%s%N
+# （GNU coreutils 支持；busybox date 不支持 %N，会返回字面量 N，此时判定为不可用）
+now_us() {
+    if [ -n "${EPOCHREALTIME:-}" ]; then
+        local t="${EPOCHREALTIME}"
+        t="${t/[.,]/}"
+        case "$t" in
+            ''|*[!0-9]*) return 1 ;;
+        esac
+        echo "$t"
+        return 0
+    fi
+
+    local t
+    t=$(date +%s%N 2>/dev/null)
+    case "$t" in
+        ''|*N*) return 1 ;;
+    esac
+    echo "$t"
+    return 0
+}
+
+# 连通性探测 + 耗时（毫秒）
+# 耗时写进全局 PROBE_LATENCY_MS（取不到时间戳就留空）
+# 返回值语义与 check_connectivity 相同：0 通 / 1 不通
+PROBE_LATENCY_MS=""
+probe_with_latency() {
+    local target="$1"
+    local port="$2"
+    local timeout="${3:-3}"
+    local t0="" t1="" rc=0
+
+    t0=$(now_us) || t0=""
+    if check_connectivity "$target" "$port" "$timeout"; then
+        rc=0
+    else
+        rc=1
+    fi
+    t1=$(now_us) || t1=""
+
+    PROBE_LATENCY_MS=""
+    if [ -n "$t0" ] && [ -n "$t1" ] && [ "$t1" -ge "$t0" ]; then
+        PROBE_LATENCY_MS=$(( (t1 - t0) / 1000 ))
+    fi
+    return $rc
+}
+
+# 读取目标在健康状态文件里的整行记录
+# 输出格式与状态文件一致（字段以 | 分隔），取不到返回 1
+get_health_status_record() {
+    local host="$1"
+    local status_file="${HEALTH_STATUS_FILE}"
+    local line=""
+
+    [ -f "$status_file" ] || return 1
+    line=$(grep -F "|${host}|" "$status_file" 2>/dev/null | head -1)
+    [ -n "$line" ] || return 1
+    echo "$line"
+}
+
+# 把时延历史（逗号分隔的样本）算成平均毫秒数
+latency_avg_ms() {
+    local hist="$1"
+    [ -n "$hist" ] || return 1
+
+    local sum=0 n=0 v
+    local IFS=','
+    for v in $hist; do
+        case "$v" in
+            ''|*[!0-9]*) continue ;;
+        esac
+        sum=$((sum + v))
+        n=$((n + 1))
+    done
+    [ "$n" -gt 0 ] || return 1
+    echo $((sum / n))
+}
+
+# 格式化时延展示：最近一次 + 最近若干次平均
+format_latency_display() {
+    local latency_ms="$1"
+    local hist="$2"
+
+    if [ -z "$latency_ms" ]; then
+        echo "-"
+        return 0
+    fi
+
+    local avg
+    if avg=$(latency_avg_ms "$hist"); then
+        echo "${latency_ms}ms (均 ${avg}ms)"
+    else
+        echo "${latency_ms}ms"
+    fi
+}
+
 # 健康检查脚本专用的读取规则文件函数
 read_rule_file_for_health_check() {
     local rule_file="$1"
@@ -191,7 +385,7 @@ read_rule_file_for_health_check() {
 # 初始化健康状态文件
 if [ ! -f "$HEALTH_STATUS_FILE" ]; then
     echo "# Realm健康状态文件" > "$HEALTH_STATUS_FILE"
-    echo "# 格式: RULE_ID|TARGET|STATUS|FAIL_COUNT|SUCCESS_COUNT|LAST_CHECK|FAILURE_START_TIME" >> "$HEALTH_STATUS_FILE"
+    echo "# 格式: RULE_ID|TARGET|STATUS|FAIL_COUNT|SUCCESS_COUNT|LAST_CHECK|FAILURE_START_TIME|LATENCY_MS|LATENCY_HISTORY" >> "$HEALTH_STATUS_FILE"
 fi
 
 # 检查所有启用故障转移的规则
@@ -221,7 +415,7 @@ for rule_file in "${RULES_DIR}"/rule-*.conf; do
         # 获取当前状态
         status_line=$(grep "^${target_key}|" "$HEALTH_STATUS_FILE" 2>/dev/null)
         if [ -n "$status_line" ]; then
-            IFS='|' read -r _ _ status fail_count success_count last_check failure_start_time <<< "$status_line"
+            IFS='|' read -r _ _ status fail_count success_count last_check failure_start_time latency_ms latency_hist <<< "$status_line"
             # 兼容旧格式（没有failure_start_time字段）
             if [ -z "$failure_start_time" ]; then
                 failure_start_time="$last_check"
@@ -232,10 +426,12 @@ for rule_file in "${RULES_DIR}"/rule-*.conf; do
             success_count=2
             last_check=0
             failure_start_time=0
+            latency_ms=""
+            latency_hist=""
         fi
 
         # 执行健康检查
-        if check_connectivity "$target" "$REMOTE_PORT" "${CONNECTION_TIMEOUT:-3}"; then
+        if probe_with_latency "$target" "$REMOTE_PORT" "${CONNECTION_TIMEOUT:-3}"; then
             # 检查成功
             success_count=$((success_count + 1))
             fail_count=0
@@ -265,9 +461,23 @@ for rule_file in "${RULES_DIR}"/rule-*.conf; do
             fi
         fi
 
-        # 更新状态文件（包含故障开始时间）
+        # 时延历史：保留最近 5 次样本（用于算平均值，避免单次抖动误导）
+        if [ -n "$PROBE_LATENCY_MS" ]; then
+            latency_ms="$PROBE_LATENCY_MS"
+            _lat_hist=()
+            IFS=',' read -ra _lat_hist <<< "$latency_hist"
+            _lat_hist+=("$latency_ms")
+            if [ "${#_lat_hist[@]}" -gt 5 ]; then
+                _lat_hist=("${_lat_hist[@]: -5}")
+            fi
+            latency_hist=$(IFS=','; echo "${_lat_hist[*]}")
+        else
+            latency_ms=""
+        fi
+
+        # 更新状态文件（包含故障开始时间与时延）
         grep -v "^${target_key}|" "$HEALTH_STATUS_FILE" > "$HEALTH_STATUS_FILE.tmp" 2>/dev/null || true
-        echo "${target_key}|${status}|${fail_count}|${success_count}|${current_time}|${failure_start_time}" >> "$HEALTH_STATUS_FILE.tmp"
+        echo "${target_key}|${status}|${fail_count}|${success_count}|${current_time}|${failure_start_time}|${latency_ms}|${latency_hist}" >> "$HEALTH_STATUS_FILE.tmp"
         mv "$HEALTH_STATUS_FILE.tmp" "$HEALTH_STATUS_FILE"
     done
 done

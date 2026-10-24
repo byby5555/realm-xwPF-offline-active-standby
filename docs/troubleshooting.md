@@ -262,8 +262,8 @@ cat /etc/realm/health/health_status.conf
 bash /etc/realm/xwFailover.sh status
 ```
 
-格式：`RULE_ID|TARGET|STATUS|FAIL_COUNT|SUCCESS_COUNT|LAST_CHECK|FAILURE_START_TIME`
-（`lib/health.sh` 的 `health_check_script_body`）。
+格式：`RULE_ID|TARGET|STATUS|FAIL_COUNT|SUCCESS_COUNT|LAST_CHECK|FAILURE_START_TIME|LATENCY_MS|LATENCY_HISTORY`
+（`lib/health.sh` 的 `health_check_script_body`）。最后两个字段是时延（毫秒）与最近 5 次时延样本。
 
 ---
 
