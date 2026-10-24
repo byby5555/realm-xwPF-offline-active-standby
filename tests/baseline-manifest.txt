@@ -1,14 +1,14 @@
 # 被测产物基线快照（冻结点机制）
 repo        : /c/Users/liwend/.minimax-agent-cn/projects/realm-xwPF-offline-active-standby
-BASE_SHA    : 805dc5ef92b9c2296e953220538274ae4cf22f00
-BASE_SHA 全 : 805dc5ef92b9c2296e953220538274ae4cf22f00
-BASE 标题   : Sat Oct 24 15:26:30 2026 +0800 test(台架): 第 7 轮收尾 —— 跟随健康状态 TARGET 口径变更（host:port）
-harness     : v2.5.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport)
-time        : 2026-10-24 15:33:25 +0800
-sandbox     : /tmp/xwpf-sbx.IxKuyf
+BASE_SHA    : 1f98d4472f61c13c705378ffbdf89041502af94a
+BASE_SHA 全 : 1f98d4472f61c13c705378ffbdf89041502af94a
+BASE 标题   : Sat Oct 24 16:04:06 2026 +0800 docs(审稿): 第 3 轮崩溃循环复核报告入库（N2 修复方向 + 定量更正）
+harness     : v2.6.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key)
+time        : 2026-10-24 16:04:44 +0800
+sandbox     : /tmp/xwpf-sbx.nlMRp1
 
 --- 当前工作区 HEAD（仅供对照，不作为被测产物）---
-head        : 805dc5ef92b9c2296e953220538274ae4cf22f00
+head        : 1f98d4472f61c13c705378ffbdf89041502af94a
 
 --- git status --porcelain（跑批时刻的工作区状态）---
 
@@ -40,6 +40,7 @@ ab37971ee9b2f05b9eb0de199228275ccb34baff5ae55d223c3a22f141516918  port-traffic-d
 4b7ed0d6ce53636da0a4072893a3894b2664d768b83593183d338ef97e778c2d  reports/real-machine-acceptance.md
 be882c6b4d91bd812bc90fdde0fc6624417b87b7fb30536a7623870bf523a858  reports/round1-baseline-review.md
 5a5986b40f8b741fb74420822f71e2c8408ff5ee678a2e75f994b85dc62f9956  reports/round2-review.md
+dd0f8d4ed768f98e6ee7fa26aa3e3bc583649b1ed0da8e88779fec3af5ef426a  reports/round3-crashloop-review.md
 7d8d826412842746c2e1562d4891cba413ab9e13f8e0cb132fddf1ab50b760eb  speedtest.sh
 ff5b7eae8692c6f37a30b4b2e51b95f36aff5b9c209eb080443ec48d748b60c6  tests/BASELINE-round1.md
 fda683c526ae711bb954f9ae8cdae450704b91fe57b95cdf19952f92634cfde5  tests/BASELINE-round2.md
@@ -47,7 +48,7 @@ fda683c526ae711bb954f9ae8cdae450704b91fe57b95cdf19952f92634cfde5  tests/BASELINE
 64528ffc9236189c75b107db9e391fa8836b81e03668f751227c8e7c0e9fca95  tests/BASELINE-round4.md
 b604059b7ba859641aaa15f70c39fec1557163af3d62b45b0a50cce51aefcc8f  tests/BASELINE-round5.md
 854261f9edff00b5cd8a47f3beddc7f1c8be5f443566e38eb939164c27e37c01  tests/BASELINE-round6.md
-ac036968e2e09c0ccda011bb93d576d6252b036331f5a854a9fba44a06b3f9ba  tests/BASELINE-round7.md
+b30c362d843d59b49f3265221c4bb3b43007b769af7dc759a3f69828887cdb3b  tests/BASELINE-round7.md
 246a120ea5e21047cc8a23176109c990c8bb06f0df24487a7609c4928e6caad6  tests/README.md
 2042361880ca1d2d6460fb98b2f44023f3e64e700d86c16f812d29e1eabaf988  tests/TEST-HARNESS.md
 dda838f2fe10fca98e88020697b877582fe2c0980c067a3669717b4872c5002e  tests/cases/00_common.sh
@@ -65,7 +66,7 @@ a2149eb33af2239d88acacee16d739c681c6df536feed63e1647cc604a308788  tests/cases/10
 12985c17da26af1f348f1997a5d0c6c7f61e5d7a543126fbcc25877996cdbd77  tests/cases/12_health_target_scope.sh
 2e52e1a92f6edea7f487e72b879dbdd20369d0cf0a3541b04418a2d528c75141  tests/lib/harness.sh
 b8946df65e1900e342ee42683bfb9372722c1e157e326b55ffccc635634490ca  tests/lib/sandbox.sh
-df9a340cbfa9cf7732cd28b999198aaaf1e83fbe746f5b6b363f2accf9a1837e  tests/run_tests.sh
+650074de5af9cb6fed23d0a00da4cd7f78565060293ea38dce8355659b073c1f  tests/run_tests.sh
 7cd44123187c9521f6b9fdf84160c1ff1d70e153756936aa2a085e13093fe072  tests/shims/jq_impl.py
 1d6de139b630373bcaec8f47073ecd2e7faae576068b18599bc87f62baf858cf  tests/test_active_standby.sh
 9390ec654caa0cafef9b8d65f55743bf8aa627eb48a544caeebb7c11bce31e4d  tests/test_connectivity.sh
