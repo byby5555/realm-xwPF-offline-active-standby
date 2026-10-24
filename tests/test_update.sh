@@ -281,10 +281,15 @@ if [ -n "$SLEEP_BIN" ] && cp -f "$SLEEP_BIN" "$BUSY" 2>/dev/null && chmod +x "$B
     BUSY_PID=$!
     sleep 1
     printf 'x' > "$SANDBOX/busy.src"
-    if cp -f "$SANDBOX/busy.src" "$BUSY" 2>/dev/null; then
+    # 注意：不能用 cp -f —— -f 会在打不开目标时先删掉目标再重试，
+    #       ETXTBSY 会被它掩盖掉。要用不带 -f 的 cp 才能看到真实错误。
+    cp_err=$(cp "$SANDBOX/busy.src" "$BUSY" 2>&1)
+    if [ -z "$cp_err" ]; then
         CP_BUSY=ok
-    else
+    elif echo "$cp_err" | grep -q "Text file busy"; then
         CP_BUSY=fail
+    else
+        CP_BUSY=other
     fi
     if [ "$CP_BUSY" = "fail" ]; then
         # 本机支持 ETXTBSY：直接覆盖会失败，但 mv 覆盖式恢复必须成功
@@ -296,7 +301,7 @@ if [ -n "$SLEEP_BIN" ] && cp -f "$SLEEP_BIN" "$BUSY" 2>/dev/null && chmod +x "$B
         check "ETXTBSY 环境下恢复仍然成功" "$rc" "0"
         check "恢复后的文件内容正确" "$(grep -c 'restored' "$BUSY" 2>/dev/null)" "1"
     else
-        echo "  [SKIP] 本机不支持 ETXTBSY（无法写正在执行的二进制），跳过该用例"
+        echo "  [SKIP] 本机不产生 ETXTBSY（cp 报错: ${cp_err:-无}），跳过该用例"
     fi
     kill "$BUSY_PID" 2>/dev/null
     wait "$BUSY_PID" 2>/dev/null
