@@ -104,7 +104,7 @@ curl -fsSL https://v6.gh-proxy.org/https://raw.githubusercontent.com/byby5555/re
 | 2 | `_bootstrap`：拉取脚本文件 | `xwPF.sh` 的 `_bootstrap` |
 | 3 | `_load_libs`：source 全部模块 | `xwPF.sh` 的 `_load_libs` |
 | 4 | `smart_install`（带 `_SKIP_SCRIPT_UPDATE=1`，**不再询问**是否更新脚本） | `lib/realm.sh` 的 `smart_install` |
-| 5 | 清理老机器上遗留的「主备池守护」残留（unit / drop-in 目录 / 二进制 / 版本指纹；池配置留档不删） | `xwPF.sh` 的主入口 install 分支 |
+| 5 | 清理老机器上遗留的「主备池守护」残留（unit / drop-in 目录 / 二进制 / 版本指纹；池配置留档不删） | `xwPF.sh` 的主入口 install 分支（清理逻辑在 `lib/ui.sh` 里的老机器残留清理段） |
 
 > **第 5 步为什么不能省**：产品已不再安装那个进程级主备池守护进程，但**老机器上还留着它**
 > —— service 可能还在跑（占着监听端口），unit / drop-in / 二进制也都在。
@@ -286,15 +286,17 @@ pf
 
 ### 阶段一：Realm 服务与配置（`lib/ui.sh` 的 `uninstall_realm_stage_one`）
 
+> 阶段一**之前**还有第 0 步：清理老机器上遗留的「主备池守护」残留
+> （清单见下方「老机器残留清理」）—— 不先清，卸完机上还留着一个占端口的僵尸守护。
+
 1. 停止并禁用 realm 服务
 2. 若 `/etc/realm/xwFailover.sh` 存在 → 执行 `xwFailover.sh stop`，停掉健康检查 timer 与 service，
    并删掉 `realm-health-check.{service,timer}` 与 `health_check.sh`
-3. 停用并清理老机器上遗留的「主备池守护」残留（清单见下方「老机器残留清理」）
-4. `pkill` 掉残留的 `realm` 进程
-5. 删除：`/usr/local/bin/realm`、`/etc/realm`（含 `rules/`、`health/`）、`/etc/systemd/system/realm.service`、
+3. `pkill` 掉残留的 `realm` 进程
+4. 删除：`/usr/local/bin/realm`、`/etc/realm`（含 `rules/`、`health/`）、`/etc/systemd/system/realm.service`、
    `/etc/init.d/realm`、`/etc/systemd/system/realm-web.service`
-6. 按名字清理 `/var/log`、`/tmp`、`/var/tmp` 下的 realm 残留文件
-7. 删除 `/etc/sysctl.d/90-enable-MPTCP.conf` 并执行 `ip mptcp endpoint flush`
+5. 按名字清理 `/var/log`、`/tmp`、`/var/tmp` 下的 realm 残留文件
+6. 删除 `/etc/sysctl.d/90-enable-MPTCP.conf` 并执行 `ip mptcp endpoint flush`
 
 ### 阶段二：脚本文件（`lib/ui.sh` 的 `uninstall_script_files`）
 
@@ -310,7 +312,8 @@ pf
 
 产品已不再安装「进程级主备池」守护进程（`xwpf-failover`），但**老机器上还留着它**：
 service 可能还在跑（占着监听端口），unit / drop-in / 二进制也都在。
-升级（`install`）与卸载两条路径都会自动清理下列残留：
+升级（`install`）与卸载（菜单 `8. 卸载服务`）两条路径都会自动清理下列残留
+（清理逻辑在 `lib/ui.sh` 里的老机器残留清理段，`xwPF.sh` 的安装 / 升级路径也调它）：
 
 | 残留对象 | 路径 | 处理 |
 |----------|------|------|
