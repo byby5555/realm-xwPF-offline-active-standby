@@ -200,42 +200,19 @@ generate_rule_id() {
     echo $((max_id + 1))
 }
 
-# 运行白名单：read_rule_file 解析时仅允许这些 KEY 被赋值
-_READ_RULE_ALLOWED_KEYS='RULE_ID RULE_ROLE RULE_NAME SECURITY_LEVEL LISTEN_PORT LISTEN_IP THROUGH_IP REMOTE_HOST REMOTE_PORT FORWARD_TARGET TLS_SERVER_NAME TLS_CERT_PATH TLS_KEY_PATH WS_PATH WS_HOST RULE_NOTE ENABLED CREATED_TIME BALANCE_MODE TARGET_STATES WEIGHTS FAILOVER_ENABLED HEALTH_CHECK_INTERVAL FAILURE_THRESHOLD SUCCESS_THRESHOLD CONNECTION_TIMEOUT RECOVERY_COOLDOWN MPTCP_MODE PROXY_MODE'
-
-read_rule_file() {
-    local rule_file="$1"
-    local _line _k _v
-    if [ ! -f "$rule_file" ]; then
-        return 1
+# read_rule_file 的唯一实现位于 lib/health.sh（白名单逐行解析，全程不用 source 规则文件）。
+# 本文件被单独 source 时（只加载 rules.sh 的脚本 / 测试），把唯一实现所在文件一并加载，
+# 免得出现「找不到 read_rule_file」这种含糊报错。
+if ! declare -F read_rule_file >/dev/null 2>&1; then
+    _REALM_RULES_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+    if [ -f "${_REALM_RULES_LIB_DIR}/health.sh" ]; then
+        # shellcheck disable=SC1091
+        . "${_REALM_RULES_LIB_DIR}/health.sh"
+    else
+        echo "错误: 缺少 lib/health.sh（read_rule_file 的唯一实现所在），请先执行 pf install 更新脚本" >&2
     fi
-
-    # 安全解析：line-by-line 读，剥双引号/单引号，KEY 必须落在白名单。
-    # 绝不使用 source / eval，文件内的 $(cmd)、反引号、换行注入全部不再被执行。
-    while IFS= read -r _line || [ -n "$_line" ]; do
-        [[ -z "$_line" ]] && continue
-        [[ "$_line" =~ ^[[:space:]]*# ]] && continue
-
-        if [[ "$_line" =~ ^[[:space:]]*([A-Z_][A-Z0-9_]*)=(.*)$ ]]; then
-            _k="${BASH_REMATCH[1]}"
-            _v="${BASH_REMATCH[2]}"
-            # 剥外层双引号
-            [[ "$_v" =~ ^\"(.*)\"$ ]] && _v="${BASH_REMATCH[1]}"
-            # 剥外层单引号
-            [[ "$_v" =~ ^\'(.*)\'$ ]] && _v="${BASH_REMATCH[1]}"
-
-            # 白名单校验：只对已知允许的 KEY 进行赋值
-            if [[ " $_READ_RULE_ALLOWED_KEYS " == *" $_k "* ]]; then
-                printf -v "$_k" '%s' "$_v"
-            fi
-        fi
-    done < "$rule_file"
-
-    RULE_NOTE="${RULE_NOTE:-}"
-    MPTCP_MODE="${MPTCP_MODE:-off}"
-    PROXY_MODE="${PROXY_MODE:-off}"
-    return 0
-}
+    unset _REALM_RULES_LIB_DIR
+fi
 
 get_balance_info_display() {
     local remote_host="$1"
@@ -2232,6 +2209,20 @@ switch_balance_mode() {
                 if read_rule_file "$rule_file" && [ "$RULE_ROLE" = "1" ] && [ "$LISTEN_PORT" = "$selected_port" ]; then
                     sed -i "s/^BALANCE_MODE=.*/BALANCE_MODE=\"$new_mode\"/" "$rule_file"
 
+                    # 同步「切出主备后要回到的模式」：
+                    # 切进主备 → 记下原来的模式；切到别的模式 → 记住现在这个模式。
+                    # 这样之后自动切回时能还回用户真正想要的模式，而不是写死 roundrobin。
+                    if [ "$new_mode" = "active-standby" ]; then
+                        local _prev_mode="${current_balance_mode:-roundrobin}"
+                        case "$_prev_mode" in
+                            roundrobin|iphash) ;;
+                            *) _prev_mode="roundrobin" ;;
+                        esac
+                        _rule_set_field "$rule_file" "PREV_BALANCE_MODE" "$_prev_mode"
+                    else
+                        _rule_set_field "$rule_file" "PREV_BALANCE_MODE" "$new_mode"
+                    fi
+
                     # 切出 active-standby 时重置 WEIGHTS / TARGET_STATES
                     if [ "$reset_stale_weights" = true ]; then
                         if [ "$new_mode" = "off" ]; then
@@ -2608,6 +2599,7 @@ preview_port_group_weight_config() {
         echo -e "  ${BLUE}· 权重 > 0 的目标为主，权重 = 0 的目标为备${NC}"
         echo -e "  ${BLUE}· 自动开启故障转移与健康检查：主故障自动切到备，主恢复后切回主${NC}"
         echo -e "  ${BLUE}· 健康检查探测方式: TCP 连接探测 (目标端口)，不是 ping${NC}"
+        echo -e "  ${YELLOW}· 会拉起常驻健康检查服务（systemd timer，周期性探测目标端口，直到用故障转移菜单关闭）${NC}"
         echo ""
     fi
 
@@ -2615,7 +2607,9 @@ preview_port_group_weight_config() {
 
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
         # 应用权重配置到该端口的所有相关规则
-        apply_port_group_weight_config "$port" "$weight_input"
+        # 第三个参数 1 = 本次已经确认过（预览里已写明会拉起常驻健康检查），
+        # apply_port_group_weight_config 里不再重复询问一次。
+        apply_port_group_weight_config "$port" "$weight_input" 1
     else
         echo -e "${YELLOW}已取消配置更改${NC}"
         read -p "按回车键返回..."
@@ -2687,6 +2681,26 @@ apply_port_group_weight_config() {
         if weights_contain_zero "$weight_input"; then
             echo -e "${BLUE}检测到权重 0，自动切换为主备模式 (active-standby)...${NC}"
 
+            # 二次确认（M8）：「只改权重」与「改模式 + 拉常驻 timer」不是一回事，
+            # 后者会改写规则、开启故障转移并拉起常驻健康检查服务，必须让用户明确知情。
+            # 调用方已经确认过（第三个参数 1）时不再重复询问。
+            if [ "${3:-}" != "1" ]; then
+                echo -e "${YELLOW}注意：切到主备模式会同时做三件事：${NC}"
+                echo -e "  ${YELLOW}· 把该端口组的 BALANCE_MODE 改成 active-standby，并开启故障转移${NC}"
+                echo -e "  ${YELLOW}· 拉起常驻健康检查服务（systemd timer，周期性探测目标端口）${NC}"
+                echo -e "  ${YELLOW}· 之后主备切换由健康检查自动完成，不需要手动干预${NC}"
+                read -p "确认切换到主备模式? [Y/n]: " mode_confirm
+                if [ -n "$mode_confirm" ] && ! [[ "$mode_confirm" =~ ^[Yy]$ ]]; then
+                    echo -e "${YELLOW}已取消主备模式切换（权重已保存，负载均衡模式保持原样）${NC}"
+                    read -p "按回车键返回..."
+                    return 0
+                fi
+            fi
+
+            # 先记下当前的模式 / 故障转移开关 / TARGET_STATES：
+            # 健康检查（探测端）起不来时必须原样回滚。
+            _capture_port_mode_state "$port"
+
             if auto_enable_active_standby "$port"; then
                 echo -e "${GREEN}✓ 已进入主备模式，故障转移已开启${NC}"
 
@@ -2694,7 +2708,11 @@ apply_port_group_weight_config() {
                 if ensure_health_check_service; then
                     echo -e "${GREEN}✓ 健康检查服务已启动 (TCP 端口探测)${NC}"
                 else
-                    echo -e "${YELLOW}! 健康检查服务未启动，主备不会自动切换，请检查网络或手动执行 pf 故障转移菜单${NC}"
+                    # 探测端没起来 = 主备不会自动切换。
+                    # 这时必须回滚主备开关，不能留下「配置显示主备、实际不切换」的半吊子状态。
+                    echo -e "${RED}✗ 健康检查服务启动失败，主备不会自动切换${NC}"
+                    _restore_port_mode_state
+                    echo -e "${YELLOW}  已回滚该端口组的 BALANCE_MODE / FAILOVER_ENABLED / TARGET_STATES${NC}"
                 fi
             else
                 echo -e "${RED}✗ 主备模式启用失败${NC}"
@@ -2712,11 +2730,30 @@ apply_port_group_weight_config() {
             done
 
             if [ "$current_balance_mode" = "active-standby" ]; then
-                echo -e "${BLUE}权重全部大于 0，自动切回轮询模式 (roundrobin)...${NC}"
+                # 切回用户原来选的负载均衡模式（iphash / roundrobin），不写死 roundrobin：
+                # 进主备时把原模式记在 PREV_BALANCE_MODE 里，这里原样还回去。
+                local restore_mode="roundrobin"
                 for mode_rule_file in "${RULES_DIR}"/rule-*.conf; do
                     if [ -f "$mode_rule_file" ]; then
                         if read_rule_file "$mode_rule_file" && [ "$RULE_ROLE" = "1" ] && [ "$LISTEN_PORT" = "$port" ]; then
-                            sed -i "s/^BALANCE_MODE=.*/BALANCE_MODE=\"roundrobin\"/" "$mode_rule_file"
+                            if [ -n "${PREV_BALANCE_MODE:-}" ]; then
+                                restore_mode="$PREV_BALANCE_MODE"
+                            fi
+                            break
+                        fi
+                    fi
+                done
+                case "$restore_mode" in
+                    roundrobin|iphash) ;;
+                    *) restore_mode="roundrobin" ;;
+                esac
+
+                echo -e "${BLUE}权重全部大于 0，自动切回${restore_mode}模式...${NC}"
+                for mode_rule_file in "${RULES_DIR}"/rule-*.conf; do
+                    if [ -f "$mode_rule_file" ]; then
+                        if read_rule_file "$mode_rule_file" && [ "$RULE_ROLE" = "1" ] && [ "$LISTEN_PORT" = "$port" ]; then
+                            _rule_set_field "$mode_rule_file" "BALANCE_MODE" "$restore_mode"
+                            _rule_set_field "$mode_rule_file" "PREV_BALANCE_MODE" "$restore_mode"
                             sed -i "s|^TARGET_STATES=.*|TARGET_STATES=\"\"|" "$mode_rule_file"
                         fi
                     fi
@@ -2737,6 +2774,53 @@ apply_port_group_weight_config() {
     fi
 
     read -p "按回车键返回..."
+}
+
+# 写入规则文件的键值（存在则替换，不存在则追加）
+_rule_set_field() {
+    local rule_file="$1"
+    local key="$2"
+    local value="$3"
+
+    if grep -q "^${key}=" "$rule_file"; then
+        sed -i "s|^${key}=.*|${key}=\"${value}\"|" "$rule_file"
+    else
+        echo "${key}=\"${value}\"" >> "$rule_file"
+    fi
+}
+
+# 端口组模式状态快照（用于失败回滚）
+_REALM_PORT_STATE_FILES=()
+_REALM_PORT_STATE_VALUES=()
+
+_capture_port_mode_state() {
+    local port="$1"
+    local rule_file
+
+    _REALM_PORT_STATE_FILES=()
+    _REALM_PORT_STATE_VALUES=()
+
+    for rule_file in "${RULES_DIR}"/rule-*.conf; do
+        if [ -f "$rule_file" ] && read_rule_file "$rule_file" && [ "$RULE_ROLE" = "1" ] && [ "$LISTEN_PORT" = "$port" ]; then
+            _REALM_PORT_STATE_FILES+=("$rule_file")
+            _REALM_PORT_STATE_VALUES+=("${BALANCE_MODE:-off}|${FAILOVER_ENABLED:-false}|${TARGET_STATES:-}")
+        fi
+    done
+}
+
+_restore_port_mode_state() {
+    local i
+    for ((i = 0; i < ${#_REALM_PORT_STATE_FILES[@]}; i++)); do
+        local rule_file="${_REALM_PORT_STATE_FILES[$i]}"
+        local value="${_REALM_PORT_STATE_VALUES[$i]}"
+        local mode="${value%%|*}"
+        local rest="${value#*|}"
+        local failover="${rest%%|*}"
+        local target_states="${rest#*|}"
+        _rule_set_field "$rule_file" "BALANCE_MODE" "$mode"
+        _rule_set_field "$rule_file" "FAILOVER_ENABLED" "$failover"
+        _rule_set_field "$rule_file" "TARGET_STATES" "$target_states"
+    done
 }
 
 # 规则文件字段：不存在时才写入默认值（不覆盖用户已有配置）
@@ -2763,11 +2847,31 @@ auto_enable_active_standby() {
     for rule_file in "${RULES_DIR}"/rule-*.conf; do
         if [ -f "$rule_file" ]; then
             if read_rule_file "$rule_file" && [ "$RULE_ROLE" = "1" ] && [ "$LISTEN_PORT" = "$port" ]; then
+                # 记住切出主备后要回到的模式（M7）：
+                # 用户原来可能选的是 iphash，写死 roundrobin 会把用户的选择抹掉。
+                if [ "${BALANCE_MODE:-off}" != "active-standby" ]; then
+                    local prev_mode="${BALANCE_MODE:-off}"
+                    case "$prev_mode" in
+                        roundrobin|iphash) ;;
+                        *) prev_mode="roundrobin" ;;
+                    esac
+                    _rule_set_field "$rule_file" "PREV_BALANCE_MODE" "$prev_mode"
+                fi
+
                 # 负载均衡模式 → 主备模式
                 if grep -q "^BALANCE_MODE=" "$rule_file"; then
                     sed -i "s/^BALANCE_MODE=.*/BALANCE_MODE=\"active-standby\"/" "$rule_file"
                 else
                     echo "BALANCE_MODE=\"active-standby\"" >> "$rule_file"
+                fi
+
+                # 清空 TARGET_STATES（M2）：
+                # 主备模式下 lib/realm.sh 用 TARGET_STATES 覆盖 REMOTE_HOST，
+                # 留着剔除模式留下的陈旧结果会让备机静默丢掉流量。
+                if grep -q "^TARGET_STATES=" "$rule_file"; then
+                    sed -i "s|^TARGET_STATES=.*|TARGET_STATES=\"\"|" "$rule_file"
+                else
+                    echo "TARGET_STATES=\"\"" >> "$rule_file"
                 fi
 
                 # 开启故障转移（主备路由的开关）
@@ -2795,10 +2899,22 @@ auto_enable_active_standby() {
 # 确保健康检查服务已安装并运行
 # 健康检查（探测端）在 lib/health.sh 里，实现与故障转移脚本共用，
 # 这里直接调用即可，不需要下载任何脚本
+#
+# 失败时必须让用户看到真实原因（不再 >/dev/null 2>&1 把一切吞掉）：
+# 主备模式没有探测端就等于「永远不会自动切换」，
+# 静默失败会让人以为已经切过去了，实际却在默默丢流量。
 ensure_health_check_service() {
-    if ! command -v start_health_check_service >/dev/null 2>&1; then
+    if ! declare -F start_health_check_service >/dev/null 2>&1; then
+        echo -e "${RED}✗ 未找到 start_health_check_service（lib/health.sh 未加载）${NC}" >&2
         return 1
     fi
 
-    start_health_check_service "$(get_effective_health_check_interval)" >/dev/null 2>&1
+    local interval=""
+    interval="$(get_effective_health_check_interval 2>/dev/null)" || interval="4"
+
+    local out=""
+    local rc=0
+    out="$(start_health_check_service "$interval" 2>&1)" || rc=$?
+    [ -n "$out" ] && echo "$out"
+    return $rc
 }

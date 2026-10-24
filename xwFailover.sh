@@ -61,34 +61,10 @@ check_root() {
 
 # 连通性检查
 
-# 读取规则文件
-read_rule_file() {
-    local rule_file="$1"
-    if [ -f "$rule_file" ]; then
-        source "$rule_file"
-        return 0
-    fi
-    return 1
-}
-
-# 健康检查专用的读取规则文件函数
-read_rule_file_for_health_check() {
-    local rule_file="$1"
-    if [ ! -f "$rule_file" ]; then
-        return 1
-    fi
-
-    # 清空所有变量
-    unset RULE_ID RULE_NAME RULE_ROLE LISTEN_PORT LISTEN_IP THROUGH_IP REMOTE_HOST REMOTE_PORT
-    unset FORWARD_TARGET SECURITY_LEVEL
-    unset TLS_SERVER_NAME TLS_CERT_PATH TLS_KEY_PATH WS_PATH WS_HOST
-    unset ENABLED BALANCE_MODE FAILOVER_ENABLED HEALTH_CHECK_INTERVAL
-    unset FAILURE_THRESHOLD SUCCESS_THRESHOLD CONNECTION_TIMEOUT RECOVERY_COOLDOWN
-    unset TARGET_STATES WEIGHTS CREATED_TIME
-
-    source "$rule_file"
-    return 0
-}
+# 读取规则文件：read_rule_file 由 lib/health.sh 提供（白名单逐行解析）。
+# 这里**不再**自己实现一份 ——
+# 旧实现用 source "$rule_file" 解析规则文件，规则文件里的 $(...) 会被执行；
+# 而生成的 health_check.sh 是以 root 跑的，等于开了一个 root 提权面。
 
 # 查找文件路径
 find_file_path() {
@@ -309,6 +285,19 @@ toggle_failover_mode() {
                     # 主备模式：同时将该端口下所有规则的 BALANCE_MODE 设为 active-standby
                     # （保证 generate_endpoints_from_rules 走主备分支，按健康状态翻转权重）
                     if [ "$new_status" = "true" ] && [ "$failover_type" = "active-standby" ]; then
+                        # 记住原来的负载均衡模式，切出主备时原样还回去
+                        if [ "${BALANCE_MODE:-off}" != "active-standby" ]; then
+                            local prev_mode="${BALANCE_MODE:-off}"
+                            case "$prev_mode" in
+                                roundrobin|iphash) ;;
+                                *) prev_mode="roundrobin" ;;
+                            esac
+                            if grep -q "^PREV_BALANCE_MODE=" "$rule_file"; then
+                                sed -i "s|^PREV_BALANCE_MODE=.*|PREV_BALANCE_MODE=\"$prev_mode\"|" "$rule_file"
+                            else
+                                echo "PREV_BALANCE_MODE=\"$prev_mode\"" >> "$rule_file"
+                            fi
+                        fi
                         if grep -q "^BALANCE_MODE=" "$rule_file"; then
                             sed -i "s/^BALANCE_MODE=.*/BALANCE_MODE=\"active-standby\"/" "$rule_file"
                         else

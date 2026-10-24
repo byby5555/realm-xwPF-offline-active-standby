@@ -102,11 +102,24 @@ for fam, addr in [(socket.AF_INET, ('0.0.0.0', $port)),
 }
 
 # === TCP-reachability probe ===
+# 连通性探测的唯一实现在 lib/health.sh 的 check_connectivity
+# （netcat 优先；缺 nc 时回退 bash 内置 /dev/tcp）。
+# 这里只做参数拆分 + 转发，不再另写一份探测逻辑。
+# lib/failover.sh 被单独 source 时自动把唯一实现所在文件加载进来。
+if ! declare -F check_connectivity >/dev/null 2>&1; then
+    _REALM_FAILOVER_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+    if [ -f "${_REALM_FAILOVER_LIB_DIR}/health.sh" ]; then
+        # shellcheck disable=SC1091
+        . "${_REALM_FAILOVER_LIB_DIR}/health.sh"
+    fi
+    unset _REALM_FAILOVER_LIB_DIR
+fi
+
 failover_probe_reachable() {
     local raw="$1"
     local host="${raw%:*}"
     local port="${raw##*:}"
-    timeout 3 bash -c "</dev/tcp/${host}/${port}" 2>/dev/null
+    check_connectivity "$host" "$port" 3
 }
 
 # === Normalize listen addr ===
