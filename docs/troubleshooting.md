@@ -15,7 +15,7 @@
 | 所有目标都被判成故障 | [§3](#3-所有目标都被判成故障) |
 | 下载 404 / 脚本拉不下来 | [§4](#4-下载-404--脚本拉不下来) |
 | 去哪看日志 | [§5](#5-日志在哪) |
-| 主备不切换 / 切错了 | [§6](#6-主备不切换或切错目标) |
+| 权重主备不切换 / 切错了 | [§6](#6-规则级权重主备不切换或切错目标) |
 | 权重不生效 / 报错 | [§7](#7-权重不生效或报错) |
 | 端口冲突 | [§8](#8-端口冲突) |
 | 权限 / root 相关 | [§9](#9-权限相关) |
@@ -191,7 +191,6 @@ https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-active-standby/mai
 | 文件 | 下载 URL | 源码位置 |
 |------|----------|----------|
 | `xwPF.sh` + `lib/*.sh` | `.../main/xwPF.sh`、`.../main/lib/<f>` | `xwPF.sh` 的 `REPO_RAW_URL`、`xwPF.sh` 的 `_bootstrap` |
-| `cmd/*` | `.../main/cmd/<f>` | `xwPF.sh` 的 `_bootstrap` |
 | `xwFailover.sh` | `.../main/xwFailover.sh` | `lib/ui.sh` 的 `download_failover_script` |
 | `speedtest.sh` | `.../main/speedtest.sh` | `lib/ui.sh` 的 `download_speedtest_script` |
 | `port-traffic-dog.sh` | `.../main/port-traffic-dog.sh` | `lib/ui.sh` 的 `port_traffic_dog_menu` |
@@ -219,10 +218,6 @@ curl -fsSL https://v6.gh-proxy.org/https://raw.githubusercontent.com/byby5555/re
 | 失败对象 | 后果 | 源码位置 |
 |----------|------|----------|
 | `xwPF.sh` 或任一 `lib/*.sh` | `_bootstrap` 返回 1 → **整个安装中止** | `xwPF.sh` 的 `_bootstrap` |
-| `cmd/*` | **不阻断安装**，只是打印黄色警告 | `xwPF.sh` 的 `_bootstrap` |
-
-`cmd/` 下载失败会在安装守护进程时由 `failover_install_files` 从 GitHub raw 兜底
-（`lib/failover.sh` 的 `failover_install_files`）；离线环境下则保留本地已有文件（`lib/failover.sh` 的 `failover_install_files`）。
 
 ### 4.4 下载不完整 / 文件损坏
 
@@ -248,10 +243,9 @@ rm -f /usr/local/bin/xwPF.sh /usr/local/bin/lib/*.sh
 | realm（OpenRC） | `tail -f /var/log/messages` | `lib/realm.sh` 的 `svc_logs` |
 | 健康检查 | `journalctl -u realm-health-check.service -f` | `lib/health.sh` 的 `start_health_check_service` |
 | 健康检查（按 tag） | `journalctl -t realm-health -f` | `lib/health.sh` 的 `start_health_check_service` |
-| xwpf-failover 守护 | `journalctl -fu xwpf-failover` | `lib/failover.sh` 的 `failover_log_follow` |
 
-菜单里也能直接看：`pf` → `5. 查看日志`（realm，实时）、`9. 主备 active/passive` 菜单里的
-日志选项（守护进程）。
+菜单里也能直接看：`pf` → `5. 查看日志`（realm，实时）。
+健康检查的日志看上面两行（`realm-health-check.service` / `realm-health` tag）。
 
 ### 健康状态不是日志
 
@@ -268,7 +262,12 @@ bash /etc/realm/xwFailover.sh status
 
 ---
 
-## 6. 主备不切换或切错目标
+## 6. 规则级权重主备不切换或切错目标
+
+> 本节讲的「主备」= **规则级权重主备**：同一个端口组内的多个目标之间，
+> 靠健康检查翻转权重来切换（主故障切备、主恢复切回）。
+> 它**不是**已下线的「进程级主备池」（另一个进程自己持有监听口转发的那一套）——
+> 后者已随 2026-10-24 的删除整块下线。
 
 ### 6.1 健康检查服务根本没在跑
 
@@ -367,54 +366,6 @@ grep -H 'BALANCE_MODE\|FAILOVER_ENABLED' /etc/realm/rules/rule-*.conf
 > 存活而关闭的探针端口。当前实现的探测对象是规则里的 `REMOTE_HOST:REMOTE_PORT`，
 > 不支持自定义探测端口。
 
-### 6.8 主备池不切换 —— 先看池是不是「旧格式」
-
-这是**主备 active/passive 守护进程**（`xwpf-failover`）的问题，与上面的
-端口组主备不是同一套机制。
-
-池的目标写成 `<转发口>|<探测口>`：
-
-| 目标串 | 转发打哪 | 探测打哪 |
-|--------|----------|----------|
-| `127.0.0.1:10443\|1.2.3.4:443` | 回环口 | **真实后端** ✅ |
-| `127.0.0.1:10443`（老池，没有 `|`） | 回环口 | 回环口 ⚠️ |
-
-老池（目标里**没有 `|`**）探测打的是 realm 回环口 —— realm 进程活着就一直
-算健康 → **后端真挂了也不切换**。
-
-排查三步：
-
-```bash
-# 1) 看池里的目标串：有没有 '|'
-cat /etc/xwpf/failover.json
-
-# 2) 看守护进程日志：老格式会被点名
-journalctl -u xwpf-failover -n 50 | grep '旧格式'
-
-# 3) 看状态页：当前主 / 探测目标 / 连续失败数 / 上次切换时间
-pf → 主备池管理
-```
-
-**处置**：老池删掉重建一次（菜单里删池 + 建新池）→ 新池自动带双地址 →
-转发仍走 realm 回环（TLS 与 per-rule 日志不丢），探测改打真实后端。
-
-### 6.9 守护进程一直 failed / 起不来（systemd 限流）
-
-崩溃循环被 systemd 限流后，unit 会停在 `failed`，systemd 不会自己再拉起。
-
-```bash
-systemctl show xwpf-failover -p Result -p NRestarts
-# Result=exit-code   NRestarts=3   ← 反复崩过，systemd 停手了
-
-# 先修根因（端口被占 / 配置缺失），再清计数
-systemctl reset-failed xwpf-failover
-systemctl start xwpf-failover
-```
-
-产品侧已经在两处自动清了计数：`pf install` / 升级成功之后、建池成功之后
-（`lib/failover.sh` 的 `failover_reset_failed_state`）——
-**故障已被处理才清**；没处理的故障仍然留在 `failed` 状态里等人来看。
-
 ---
 
 ## 7. 权重不生效或报错
@@ -477,28 +428,22 @@ ss -tulnp | grep ":8080 "
 端口合法性由 `is_valid_port` / `validate_port` 校验：1-65535
 （`lib/core.sh` 的 `is_valid_port`、`lib/core.sh` 的 `check_port_usage`）。
 
-### 8.1 主备池的 listen 端口：写配置之前就拦下来
+### 8.1 误报「端口已被占用」—— 协议族在本机不可用
 
-`lib/failover.sh` 的 `failover_require_listen_port_free` 在写 `failover.json`
-**之前**先试绑 listen 端口（`failover_check_port_listening`），三种结果三句话：
+> ⛔ **已废弃**：本节记录的是**已下线的「进程级主备池」**建池前的 listen 端口预检
+> （试绑 `0.0.0.0` 与 `::` 判断端口是否空闲）。该功能随主备池整块删除而移除，
+> 这里只保留结论，供排查时参考。
 
-| 探测结果 | 提示 | 后续 |
-|----------|------|------|
-| 端口空闲 | — | 正常写配置 |
-| 确认被占用 | 「端口 X 已被占用 (listen address already in use)」+ 占用者 + 处置建议 | **拒绝写配置** |
-| 无法判定 | 「无法确认端口 X 是否空闲」+ 具体原因 | **拒绝写配置** |
-
-「无法判定」不等于「被占用」—— 查不到占用者却下结论，比直接报错更误导运维。
-
-### 8.2 误报「端口已被占用」—— 协议族在本机不可用
-
-试绑会依次试 `0.0.0.0` 与 `::`。**某个协议族在本机不可用**（IPv6-only 主机上
-`bind(("0.0.0.0", port))` 报 `EADDRNOTAVAIL`；内核禁用 IPv6 时 `socket()` 直接失败）
-**不代表端口被占用** —— 这种情况会被跳过，继续试另一个族。
+**某个协议族在本机不可用 ≠ 端口被占用**：IPv6-only 主机上
+`bind(("0.0.0.0", port))` 报 `EADDRNOTAVAIL`、内核禁用 IPv6 时 `socket()` 直接失败 ——
+这两种都是「这个族用不了」，不是「端口有人占了」。
 
 > 旧版本把这类错误一律报成「端口被占用」→ 在 IPv6-only 主机上会**拒绝建池**，
-> 而且给出的理由完全不对。现在的表现：能试出另一个族可用就正常建池，
-> 两个族都不可用则报「无法确认端口是否空闲」。
+> 而且给出的理由完全不对。
+
+现在建规则时的端口占用检查走 `ss -tulnp`（`lib/core.sh` 的 `check_port_usage`），
+不靠试绑：判「被占用」时先看占用进程是不是 realm 本身
+（realm 占用会提示「支持单端口中转多服务端配置」并允许继续），其它进程则要你确认才继续。
 
 ---
 
@@ -527,7 +472,6 @@ grep -E '^SCRIPT_VERSION|^REALM_VERSION' /usr/local/bin/lib/core.sh
 echo "=== 服务状态 ==="
 systemctl status realm --no-pager -l
 systemctl status realm-health-check.timer --no-pager -l
-systemctl status xwpf-failover --no-pager -l
 
 echo "=== 规则 ==="
 cat /etc/realm/rules/rule-*.conf

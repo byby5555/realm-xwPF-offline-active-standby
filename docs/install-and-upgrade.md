@@ -34,7 +34,7 @@ curl  wget  tar  grep  cut  bc  jq  openssl  python3
 ### 1.3 `nc` 不在自动安装清单里 —— 可选，但建议装
 
 - `lib/core.sh` 的 `REQUIRED_TOOLS` 里**没有** `nc`。
-- 健康检查（故障转移 / 主备自动切换）做的是 **TCP 端口探测**，
+- 健康检查（故障转移 / 权重主备自动切换）做的是 **TCP 端口探测**，
   优先用 `nc -z -w`；**没有 `nc`（或 `nc` 不支持 `-z`，如 busybox）会自动回退到
   `bash /dev/tcp` + `timeout`**，不再把全部目标误判成故障。
 - 唯一仍会导致全判故障的情况：系统里**既没有 `nc` 也没有 `timeout`**（`timeout` 属 coreutils，基本都有）。
@@ -104,42 +104,33 @@ curl -fsSL https://v6.gh-proxy.org/https://raw.githubusercontent.com/byby5555/re
 | 2 | `_bootstrap`：拉取脚本文件 | `xwPF.sh` 的 `_bootstrap` |
 | 3 | `_load_libs`：source 全部模块 | `xwPF.sh` 的 `_load_libs` |
 | 4 | `smart_install`（带 `_SKIP_SCRIPT_UPDATE=1`，**不再询问**是否更新脚本） | `lib/realm.sh` 的 `smart_install` |
-| 5 | `failover_install_check`：安装/升级 `xwpf-failover` 守护进程 | `lib/failover.sh` 的 `failover_install_check` |
-| 6 | **只装不启**：守护已安装但**不启动**。启动入口是「主备池管理 → 启停守护」 | `xwPF.sh` 的主入口 install 分支 |
-| 7 | 写崩溃循环防护 drop-in `/etc/systemd/system/xwpf-failover.service.d/10-crash-loop-guard.conf`（每次 install / 升级都重写同一路径）+ `daemon-reload` | `lib/failover.sh` 的 `failover_write_crash_loop_guard` |
+| 5 | 清理老机器上遗留的「主备池守护」残留（unit / drop-in 目录 / 二进制 / 版本指纹；池配置留档不删） | `xwPF.sh` 的主入口 install 分支 |
 
-> **为什么 install 不再 `systemctl enable --now`**：`/etc/xwpf/failover.json` 只有「建立主备池」才会生成。装完就启 → 守护读不到配置 → `sys.exit(1)` → `Restart=always` 每 `RestartSec` 拉一次 → 崩溃循环（根因链见 `reports/round3-crashloop-review.md`）。菜单文案一直写的是「先建池，再启守护」，现在安装流程与它对齐了。
+> **第 5 步为什么不能省**：产品已不再安装那个进程级主备池守护进程，但**老机器上还留着它**
+> —— service 可能还在跑（占着监听端口），unit / drop-in / 二进制也都在。
+> 不清 = 留下一个没人管、但还在占端口的僵尸守护。残留清单见 §5。
 
 `_bootstrap` 下载的文件清单（`xwPF.sh` 的 `_bootstrap`）：
 
 - `xwPF.sh` → `/usr/local/bin/xwPF.sh`
-- `lib/{core,rules,server,realm,failover,ui}.sh` → `/usr/local/bin/lib/`（加载顺序见 `xwPF.sh` 的 `LIB_FILES`）
-- `cmd/{xwpf-failover.py,xwpf-failover.service}` → `/usr/local/bin/cmd/`
+- `lib/{core,health,rules,server,realm,update,ui}.sh` → `/usr/local/bin/lib/`（加载顺序见 `xwPF.sh` 的 `LIB_FILES`）
 - 创建软链 `/usr/local/bin/pf` → `/usr/local/bin/xwPF.sh`（`xwPF.sh` 的 `_bootstrap`）
 
 下载是**原子化**的（`xwPF.sh` 的 `_download`）：先下到 `.tmp.$$`，校验非空，再 `mv -f` 覆盖目标。
 **故意不使用 `curl -C -` / `wget -c`** —— 断点续传只校验 HTTP Range 起点，不校验本地内容，
 远端变长时会把新版本追加到旧内容后面，产出「大小正常但内容损坏」的文件。
 
-`cmd/` 下载失败**不阻断安装**（`xwPF.sh` 的 `_bootstrap`），安装守护进程时 `failover_install_files`
-会再从 GitHub raw 兜底（`lib/failover.sh` 的 `failover_install_files`）。
-
 ### 2.2 安装后落盘清单
 
 | 路径 | 说明 | 源码位置 |
 |------|------|----------|
 | `/usr/local/bin/xwPF.sh` | 主入口 | `xwPF.sh` 的 `INSTALL_DIR` |
-| `/usr/local/bin/lib/*.sh` | 6 个模块 | `xwPF.sh` 的 `LIB_DIR` |
-| `/usr/local/bin/cmd/` | 守护进程源文件副本 | `xwPF.sh` 的 `_bootstrap` |
+| `/usr/local/bin/lib/*.sh` | 7 个模块 | `xwPF.sh` 的 `LIB_DIR` |
 | `/usr/local/bin/pf` | 快捷命令（软链） | `xwPF.sh` 的 `SHORTCUT_PATH` |
 | `/usr/local/bin/realm` | realm 主程序 | `lib/core.sh` 的 `REALM_PATH` |
 | `/etc/realm/config.json` | realm 工作配置 | `lib/core.sh` 的 `CONFIG_PATH` |
 | `/etc/realm/rules/` | 转发规则目录 | `lib/core.sh` 的 `RULES_DIR` |
 | `/etc/systemd/system/realm.service` | realm systemd unit | `lib/core.sh` 的 `SYSTEMD_PATH`、`lib/realm.sh` 的 `depend` |
-| `/usr/local/bin/xwpf-failover` | 主备守护进程（0755） | `lib/failover.sh` 的 `XWPF_FAILOVER_BIN`、`lib/failover.sh` 的 `failover_install_files` |
-| `/etc/systemd/system/xwpf-failover.service` | 守护进程 unit（0644） | `lib/failover.sh` 的 `XWPF_FAILOVER_UNIT`、`lib/failover.sh` 的 `failover_install_files` |
-| `/usr/local/bin/.xwpf-failover-version` | 已装版本指纹（用于判断要不要重装） | `lib/failover.sh` 的 `XWPF_FAILOVER_VERSION_FILE` |
-| `/etc/xwpf/` | 守护进程配置目录 | `lib/failover.sh` 的 `XWPF_FAILOVER_CONF_DIR` |
 
 **按需下载**（用到才拉，不占安装体积）：
 
@@ -159,7 +150,7 @@ curl -fsSL https://v6.gh-proxy.org/https://raw.githubusercontent.com/byby5555/re
 # 1. 脚本与模块就位
 ls -l /usr/local/bin/xwPF.sh /usr/local/bin/pf
 ls -1 /usr/local/bin/lib/
-# 期望：core.sh rules.sh server.sh realm.sh failover.sh ui.sh
+# 期望：core.sh health.sh rules.sh server.sh realm.sh update.sh ui.sh
 
 # 2. realm 可执行
 /usr/local/bin/realm --version
@@ -167,10 +158,7 @@ ls -1 /usr/local/bin/lib/
 # 3. 服务已注册并运行
 systemctl status realm --no-pager -l
 
-# 4. 主备守护进程在跑
-systemctl status xwpf-failover --no-pager -l
-
-# 5. 进入菜单
+# 4. 进入菜单
 pf
 ```
 
@@ -182,7 +170,6 @@ pf
 
 - 主脚本：`https://github.com/byby5555/realm-xwPF-offline-active-standby/raw/main/xwPF.sh`
 - 模块目录：`https://github.com/byby5555/realm-xwPF-offline-active-standby/tree/main/lib`
-- 守护进程目录：`https://github.com/byby5555/realm-xwPF-offline-active-standby/tree/main/cmd`
 - realm 主程序：见 §1.4 的架构表（`zhboner/realm` release）
 
 ### 3.2 放置到目标服务器
@@ -192,20 +179,15 @@ pf
 ├── xwPF.sh                ← 主脚本
 ├── lib/                   ← 必须创建
 │   ├── core.sh
+│   ├── health.sh
 │   ├── rules.sh
 │   ├── server.sh
 │   ├── realm.sh
-│   ├── failover.sh
+│   ├── update.sh
 │   └── ui.sh
-└── cmd/                   ← 主备守护文件（离线安装必须手动放置）
-    ├── xwpf-failover.py
-    └── xwpf-failover.service
 
 ~/realm-xxx.tar.gz         ← realm 压缩包放任意位置
 ```
-
-> `cmd/` 这两个文件**离线时必须手动放**。`lib/failover.sh` 的 `failover_install_check`：拿不到 `cmd/xwpf-failover.py`
-> 源文件时会提示「未找到 cmd/xwpf-failover.py 源文件, 跳过版本比对」并保持现状不重装。
 
 ### 3.3 执行离线安装
 
@@ -283,42 +265,13 @@ pf
 curl -fsSL https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-active-standby/main/xwPF.sh | sudo bash -s install
 ```
 
-### 4.2 升级守护进程
-
-`xwPF.sh install` 的最后一步就是 `failover_install_check`（`lib/failover.sh` 的 `failover_install_check`）：
-
-- 已安装且版本指纹一致 → 跳过
-- 版本指纹不一致（fork 更新了 `cmd/xwpf-failover.py`）→ 重新下载并 `install -m 0755` / `install -m 0644`
-
-版本指纹是文件内容哈希（`lib/failover.sh` 的 `failover_file_fingerprint`），记录在 `/usr/local/bin/.xwpf-failover-version`。
-
-### 4.3 升级后必做
+### 4.2 升级后必做
 
 ```bash
 systemctl daemon-reload
 systemctl restart realm
-systemctl restart xwpf-failover
 pf --restart-service   # 重新生成 /etc/realm/config.json 并重启 realm
 ```
-
-### 4.4 限流后 unit 停在 failed —— 什么时候要 `reset-failed`
-
-崩溃循环（端口被占、配置缺失）被 systemd 限流打停后，unit 会停在 `failed`，
-systemd **不会自己再拉起**，光 `systemctl start` 也没用 —— 必须先清计数：
-
-```bash
-systemctl show xwpf-failover -p Result -p NRestarts   # 先看是不是限流停手
-systemctl reset-failed xwpf-failover                   # 清计数
-systemctl start xwpf-failover                          # 再拉起
-journalctl -fu xwpf-failover                           # 看还起不起来了
-```
-
-**先修根因再 reset-failed** —— 端口没释放就 reset-failed，起来还会再撞限流。
-
-产品侧已经在两处替你清了：`pf install` / 升级成功之后、建池成功之后
-（`lib/failover.sh` 的 `failover_reset_failed_state`）。
-没被处理的故障仍然留在 `failed` 状态里等人来看 —— **该清的自动清，
-不该清的留着**。
 
 ---
 
@@ -336,28 +289,48 @@ pf
 1. 停止并禁用 realm 服务
 2. 若 `/etc/realm/xwFailover.sh` 存在 → 执行 `xwFailover.sh stop`，停掉健康检查 timer 与 service，
    并删掉 `realm-health-check.{service,timer}` 与 `health_check.sh`
-3. 停用 `xwpf-failover` 守护（`systemctl disable --now`）
-4. `pkill` 掉残留的 `realm` / `xwpf-failover` 进程
+3. 停用并清理老机器上遗留的「主备池守护」残留（清单见下方「老机器残留清理」）
+4. `pkill` 掉残留的 `realm` 进程
 5. 删除：`/usr/local/bin/realm`、`/etc/realm`（含 `rules/`、`health/`）、`/etc/systemd/system/realm.service`、
    `/etc/init.d/realm`、`/etc/systemd/system/realm-web.service`
 6. 按名字清理 `/var/log`、`/tmp`、`/var/tmp` 下的 realm 残留文件
-7. 删除 `/lib/systemd/system/xwpf-failover.service`、`/etc/systemd/system/xwpf-failover.service`、
-   `/etc/xwpf/failover.json`
-8. 删除 `/etc/sysctl.d/90-enable-MPTCP.conf` 并执行 `ip mptcp endpoint flush`
+7. 删除 `/etc/sysctl.d/90-enable-MPTCP.conf` 并执行 `ip mptcp endpoint flush`
 
 ### 阶段二：脚本文件（`lib/ui.sh` 的 `uninstall_script_files`）
 
 - `/usr/local/bin/xwPF.sh`
 - `/usr/local/bin/lib/`（整目录）
-- `/usr/local/bin/cmd/`（整目录）
+- `/usr/local/bin/cmd/`（整目录；老机器上可能还留着已下线的守护进程源文件副本）
 - `pf` 快捷方式：扫描 `/usr/local/bin`、`/usr/bin`、`/bin`、`/opt/bin`、`/root/bin`，
   删除内容含 `xwPF` 的同名文件或软链
 
 > 阶段二可以单独取消 —— 取消后脚本仍在，`pf` 还能继续用。
 
+### 老机器残留清理（主备池守护）
+
+产品已不再安装「进程级主备池」守护进程（`xwpf-failover`），但**老机器上还留着它**：
+service 可能还在跑（占着监听端口），unit / drop-in / 二进制也都在。
+升级（`install`）与卸载两条路径都会自动清理下列残留：
+
+| 残留对象 | 路径 | 处理 |
+|----------|------|------|
+| 守护 unit | `/etc/systemd/system/xwpf-failover.service`、`/lib/systemd/system/xwpf-failover.service` | 删除 |
+| 守护 drop-in 目录 | `/etc/systemd/system/xwpf-failover.service.d/` | **整目录删除**（含历史人工文件） |
+| 守护二进制 | `/usr/local/bin/xwpf-failover` | 删除 |
+| 守护源文件副本 | `/usr/local/bin/cmd/` | 删除 |
+| 版本指纹文件 | `/usr/local/bin/.xwpf-failover-version` | 删除 |
+| 正在跑的守护进程 | `xwpf-failover` 进程 | **先 stop + disable，再删文件**（否则 systemd 会把它拉回来） |
+| 池配置 / 状态文件 | `/etc/xwpf/` 下的 `failover.json`、`failover-state.json` | **留档不删**（改名保留），用户可自己回查 |
+
+> ⚠️ **顺序**：先停服务 → 再删文件 → 最后 `systemctl daemon-reload`。
+> ⚠️ **占用的监听端口**：守护进程删掉后，真机上 `18443` / `18444` 这类端口就不再有监听 ——
+> **必须先把流量迁到保留路径**（同端口多目标 + 权重 `10,0`），否则转发会直接断。
+> 守护删掉之后**没有「建池」入口**能把它重建回来。
+
 ### 手工兜底（菜单不可用时）
 
 ```bash
+# 下面几行 xwpf-failover 相关的是「已下线的主备池守护」在老机器上的残留清理
 systemctl stop realm xwpf-failover realm-health-check.timer 2>/dev/null
 systemctl disable realm xwpf-failover realm-health-check.timer 2>/dev/null
 rm -f /etc/systemd/system/realm.service \
@@ -424,6 +397,6 @@ pf
 
 ## 8. 相关文档
 
-- [端口组与权重](port-groups-and-weights.md) —— 配多个出口、权重、主备写法
+- [端口组与权重](port-groups-and-weights.md) —— 配多个出口、权重、权重主备写法
 - [健康检查与故障转移](health-check-and-failover.md) —— 自动切换的参数与链路
 - [故障排查手册](troubleshooting.md) —— 装不上、切不动、日志在哪
