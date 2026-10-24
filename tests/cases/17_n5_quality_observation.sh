@@ -751,3 +751,94 @@ case_T108_quality_window_configurable() {
     h_log "腿 D 生效窗口 = ${w:-（读不到）}"
     h_check_eq "20" "$w" "非法值 PROBE_QUALITY_WINDOW=\"abc\" ⇒ 回退到默认 20（不中断探测端）"
 }
+
+# ══════════════════════════════════════════════════════════════
+# T109 · 质量窗口「一轮探测只记一次采样」（不重复探测）
+# ══════════════════════════════════════════════════════════════
+# ★ 为什么要有这一条（Chief 审 N5 落树时发现的缺陷）：
+#   N5 第一版在采样块里**又探测了一次**（probe_with_latency 调两遍）：
+#     ① 真机探测次数**翻倍** —— 死目标每轮多等一个超时预算 ⇒ 轮次耗时翻倍；
+#     ② 采样口径与本轮 status 判定来自**不同的探测结果** ——
+#        抖动目标上会出现「状态 healthy 但采样记成失败」（或反之）
+#        ⇒ 指标跟它要解释的那个切换决策对不上。
+#   ⇒ 产品改成**复用本轮那一次探测**的结果（_q_probe_fail）。
+#   本条把「一轮 = 一个样本」钉成不变式，并配负向对照证明这条断言有判别力。
+#
+# ★ 观测面：质量指标文件的 SAMPLE_SEQ（逗号分隔的成败位）长度
+#   = 窗口内已累积的样本数 ⇒ 连跑 3 轮应是 3（重复探测的实现会是 6）。
+#
+# ★ 负向对照形态：**注入式退化**（历史上没有「修复前实现」可取 —— N5 是新功能，
+#   这条退化等价于 N5 第一版那版「一轮记两次」的实现），并带**退化生效自检**：
+#   注入改不动 ⇒ 直接判红（否则负向对照静默失效、腿 A 变成恒真断言）。
+case_T109_quality_one_sample_per_cycle() {
+    h_case_begin "T109" "N5 阶段 1：质量窗口一轮探测只记一次采样（不重复探测）" \
+        "沙箱 rules（含两条启用故障转移的规则）+ 冻结态生成的 health_check.sh" \
+        "连跑 3 轮真实探测 → 读质量指标文件 SAMPLE_SEQ 的长度" \
+        "3 轮 = 3 个样本（重复探测会是 6 个）；注入「一轮记两次」的坏实现 ⇒ 同一断言必须判红"
+
+    local rules="$SBX_ROOT/realm/rules"
+    local health="$SBX_ROOT/realm/health/health_status.conf"
+    local qm="$SBX_ROOT/var.lib.realm/quality_metrics.conf"
+    local hc="$SBX_ROOT/health_check.sh"
+    local hc_bad="$SBX_ROOT/health_check_bad_t109.sh"
+
+    # 读某个目标已累积的采样数（SAMPLE_SEQ 的个数）
+    _t109_samples() {
+        awk -F'|' '$1 == "127.0.0.1:18101" && $2 == "1" { n=split($3, a, ","); print n; exit }' "$qm" 2>/dev/null
+    }
+
+    # 生成冻结态探测脚本（好版本）
+    rm -f "$hc"
+    _run_in_sandbox '
+        source "$1/lib/health.sh" >/dev/null 2>&1
+        health_check_script_body
+    ' > "$hc" 2>/dev/null
+    h_check_file "$hc" "生成的 health_check.sh"
+
+    # ── 腿 A：好版本 —— 连跑 3 轮 ⇒ 采样数 = 3 ─────────────────────
+    _n5_prepare "$rules" "$health"
+    _n5_check_rule_ids "$rules" "T109 腿 A"
+    rm -f "$qm"
+    local r
+    for r in 1 2 3; do
+        bash "$hc" >/dev/null 2>&1
+    done
+    local n
+    n=$(_t109_samples)
+    h_log "腿 A：3 轮后采样数 = ${n:-（读不到）}"
+    h_check_eq "3" "$n" "连跑 3 轮探测 ⇒ 质量窗口里 3 个样本（一轮探测只记一次；重复探测会变成 6 个）"
+
+    # ── 负向对照：注入「一轮记两次采样」的退化 ⇒ 同一断言必须判红 ──
+    #    注入点锚在采样调用那一行；改不动 ⇒ 由下面的「退化生效自检」判红。
+    awk '
+        /^[[:space:]]*_q_new=\$\(push_quality_sample/ && !done {
+            print
+            line = $0
+            gsub(/"[^"]*_q_seq[^"]*"/, "\"${_q_new%%|*}\"", line)
+            gsub(/"[^"]*_q_lat[^"]*"/, "\"${_q_new#*|}\"", line)
+            print line
+            done = 1
+            next
+        }
+        { print }
+    ' "$hc" > "$hc_bad"
+    h_check_file "$hc_bad" "缺陷版 health_check.sh（注入式退化：一轮记两次采样）"
+
+    local n_calls_good n_calls_bad
+    n_calls_good=$(grep -c '^[[:space:]]*_q_new=\$(push_quality_sample' "$hc" 2>/dev/null || true)
+    n_calls_bad=$(grep -c '^[[:space:]]*_q_new=\$(push_quality_sample' "$hc_bad" 2>/dev/null || true)
+    n_calls_good=${n_calls_good:-0}
+    n_calls_bad=${n_calls_bad:-0}
+    h_check_eq "$((n_calls_good + 1))" "$n_calls_bad" \
+        "缺陷版确实多出一次采样调用（退化生效自检；没生效 ⇒ 负向对照失效、腿 A 恒真）"
+
+    # 坏版本连跑 3 轮 ⇒ 采样数 = 6 ⇒ 腿 A 的「=3」断言在缺陷版上会判红
+    rm -f "$qm"
+    for r in 1 2 3; do
+        bash "$hc_bad" >/dev/null 2>&1
+    done
+    local n_bad
+    n_bad=$(_t109_samples)
+    h_log "坏实现：3 轮后采样数 = ${n_bad:-（读不到）}"
+    h_check_eq "6" "$n_bad" "坏实现（一轮记两次）3 轮 ⇒ 6 个样本 ⇒ 腿 A 的「=3」断言有判别力（非恒真）"
+}

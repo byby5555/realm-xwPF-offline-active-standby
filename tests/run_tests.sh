@@ -356,6 +356,10 @@ CASES=(
     #   ★ Chief 拍板补的断言：键写在白名单/模板/文档里 ≠ 值真被读到
     #     （N5 第一版去 grep 一个从未被赋值的变量 ⇒ 永远回落默认 ⇒ 缺陷静默过去）。
     "T108:case_T108_quality_window_configurable"
+    # 质量窗口「一轮探测只记一次采样」（T109 · cases/17_n5_quality_observation.sh）
+    #   ★ Chief 审 N5 落树时发现的缺陷：采样块里又探测了一遍 ⇒ 探测次数翻倍，
+    #     且采样口径可能与本轮 status 判定来自不同的探测结果（指标与切换决策对不上）。
+    "T109:case_T109_quality_one_sample_per_cycle"
     # 主备切换可靠性九组（T68~T76 · cases/18_failover_switch_reliability.sh）
     "T68:case_T68_enter_active_standby"
     "T69:case_T69_switch_away_on_failure"
@@ -413,7 +417,10 @@ REG_UNREG=0
 REG_DUP=0
 
 defined_case_fns() {
-    declare -F | awk '{print $3}' | grep -E '^case_T[0-9]{2}_' | sort
+    # ★ 编号位数放宽到 2~3 位：T100 起（T108/T109 …）也是合法用例号 ——
+    #   写死两位数 ⇒ 三位数的用例函数**查不出来** ⇒ 「实现了但没登记」这条护栏
+    #   对三位数编号**静默失效** ⇒ 漏登记时没人拦（= 零覆盖的假绿）。
+    declare -F | awk '{print $3}' | grep -E '^case_T[0-9]{2,3}_' | sort
 }
 
 registration_check() {

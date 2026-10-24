@@ -732,6 +732,11 @@ for rule_file in "${RULES_DIR}"/rule-*.conf; do
         fi
 
         # 执行健康检查
+        #   ★ 本轮探测结果留一份给 N5 质量窗口采样用（_q_probe_fail）：
+        #     质量窗口**复用这一次探测**的结果，**不重复探测** ——
+        #     重复探测 = 真机探测次数翻倍（负载翻倍），
+        #     且采样口径可能与本轮 status 判定来自不同的探测结果（两者不一致）。
+        _q_probe_fail=0
         if probe_with_latency "$target" "$REMOTE_PORT" "${CONNECTION_TIMEOUT:-10}"; then
             # 检查成功
             success_count=$((success_count + 1))
@@ -750,6 +755,7 @@ for rule_file in "${RULES_DIR}"/rule-*.conf; do
             fi
         else
             # 检查失败
+            _q_probe_fail=1
             fail_count=$((fail_count + 1))
             success_count=0
 
@@ -804,11 +810,11 @@ for rule_file in "${RULES_DIR}"/rule-*.conf; do
             _q_lat=""
         fi
 
-        if probe_with_latency "$target" "$REMOTE_PORT" "${CONNECTION_TIMEOUT:-10}"; then
-            _q_is_fail=0
-        else
-            _q_is_fail=1
-        fi
+        #   ★ 复用**本轮那一次**探测的结果（不重复探测）：
+        #     重复探测 ⇒ 真机探测次数翻倍（负载翻倍），
+        #     且采样口径可能与本轮 status 判定来自不同的探测结果（不一致）。
+        #     ⇒ 采样 = 驱动切换的那一次探测（同一口径）。
+        _q_is_fail=$_q_probe_fail
         _q_new=$(push_quality_sample "$_q_seq" "$_q_lat" "$_q_is_fail" "${PROBE_LATENCY_MS:-0}" "$_q_win")
         _q_new_seq="${_q_new%%|*}"
         _q_new_lat="${_q_new#*|}"

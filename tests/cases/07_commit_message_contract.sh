@@ -169,7 +169,10 @@ _cm_frozen_case_count() {
     local sha="$1" raw n
     raw=$(cd "$SBX_REPO" && git show "$sha:tests/run_tests.sh" 2>/dev/null)
     [ -z "$raw" ] && { printf ''; return 0; }
-    n=$(printf '%s\n' "$raw" | grep -cE '^[[:space:]]*"T[0-9]{2}:case_')
+    # ★ 编号位数放宽到 2~3 位（T100 起合法）：写死两位数 ⇒ 三位数用例（T108/T109 …）
+    #   **不计入** ⇒ 本计数与 `--list` 条数、汇总行「总计 N 条」三数对不上
+    #   ⇒ 提交信息里声明的 N 会被判红（而且是假的红：真实条数没错，是本计数漏了）。
+    n=$(printf '%s\n' "$raw" | grep -cE '^[[:space:]]*"T[0-9]{2,3}:case_')
     printf '%s' "$n"
 }
 
