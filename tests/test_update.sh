@@ -249,6 +249,42 @@ check "已是最新时提示跳过" "$(echo "$out" | grep -c '已是最新')" "1
 check "已是最新时没有再次下载" "$(echo "$out" | grep -c '下载:')" "0"
 
 echo "=============================================="
+echo "K. 回滚健壮性：恢复失败必须被报出来"
+echo "=============================================="
+# 旧实现把 cp 的错误静默吞掉了 —— 用户以为回滚成功了，实际还跑着坏版本。
+# 而且覆盖**正在运行**的二进制会报 "Text file busy"（ETXTBSY），
+# 这正是自动回滚路径上必须先停服务的原因。
+BADBAK="$SANDBOX/backup/bad-restore"
+mkdir -p "$BADBAK/tmp/nonexistent_dir_xyz"
+printf 'x' > "$BADBAK/tmp/nonexistent_dir_xyz/realm"
+out=$(update_restore_backup "$BADBAK" 2>&1); rc=$?
+echo "$out" | head -2 | sed 's/^/    /'
+check "恢复失败时返回非 0" "$([ "$rc" -ne 0 ] && echo yes || echo no)" "yes"
+check "恢复失败时打印了原因" "$(echo "$out" | grep -c '恢复失败')" "1"
+mkdir -p "$SANDBOX/restore_ok"
+printf 'hello' > "$SANDBOX/restore_ok/probe.txt"
+update_restore_backup "$SANDBOX/restore_ok" >/dev/null 2>&1
+check "恢复成功时返回 0" "$?" "0"
+
+echo "=============================================="
+echo "L. 自动回滚：新版本起不来 → 停服务 → 恢复旧版本 → 再拉起"
+echo "=============================================="
+make_installed
+make_fake_tarball "v9.9.9" "$SANDBOX/fake/realm.tar.gz"
+FAKE_TAG="v9.9.9"
+FAKE_DIGEST=$(sha256sum "$SANDBOX/fake/realm.tar.gz" | awk '{print $1}')
+touch "$SANDBOX/realm_running"          # 服务本来在跑
+OLD_BIN=$(cat "$REALM_PATH")
+# 让 svc_start 失败（不创建标记）→ 触发「新版本启动失败」分支
+svc_start() { return 1; }
+out=$(printf 'y\n' | safe_update_realm 2>&1); rc=$?
+echo "$out" | grep -E '启动失败|回滚' | head -2 | sed 's/^/    /'
+check "新版本起不来时返回非 0" "$([ "$rc" -ne 0 ] && echo yes || echo no)" "yes"
+check "旧版本已被恢复" "$(cat "$REALM_PATH")" "$OLD_BIN"
+check "日志里有自动回滚" "$(echo "$out" | grep -c '自动回滚')" "1"
+svc_start() { touch "$SANDBOX/realm_running"; }
+
+echo "=============================================="
 echo "结果: PASS=$PASS FAIL=$FAIL"
 echo "=============================================="
 rm -rf "$SANDBOX"

@@ -216,14 +216,26 @@ update_backup_file() {
 }
 
 # 从备份恢复（恢复到原始绝对路径）
+# 返回值：0 = 全部恢复成功；非 0 = 有文件没恢复成功（并逐个打印原因）
+#
+# 注意：cp 的错误**不能**吞掉 —— 覆盖正在运行的二进制会报
+# "Text file busy"（ETXTBSY），静默失败会让人以为已经回滚成功，
+# 实际还跑着坏版本。
 update_restore_backup() {
     local dir="$1"
     [ -d "$dir" ] || return 1
-    local f rel
+    local f rel err failed=0
     while IFS= read -r f; do
         rel="${f#$dir/}"
-        cp -p "$f" "/${rel}" 2>/dev/null
+        err=$(cp -p "$f" "/${rel}" 2>&1) || {
+            failed=$((failed + 1))
+            echo -e "${RED}  ✗ 恢复失败: /${rel} —— ${err}${NC}" >&2
+        }
     done < <(find "$dir" -type f 2>/dev/null)
+    if [ "$failed" -ne 0 ]; then
+        echo -e "${RED}  ✗ 有 ${failed} 个文件没能恢复${NC}" >&2
+        return 1
+    fi
     return 0
 }
 
@@ -400,7 +412,9 @@ safe_update_realm() {
     # 11) 替换
     if ! mv -f "${staging}/realm" "$REALM_PATH" 2>/dev/null; then
         echo -e "${RED}✗ 替换失败${NC}"
-        update_restore_backup "$backup"
+        if ! update_restore_backup "$backup"; then
+            echo -e "${RED}  ✗ 自动恢复不完整，请手工从 ${backup} 恢复${NC}"
+        fi
         [ "$service_was_running" = true ] && svc_start >/dev/null 2>&1
         rm -rf "$staging" 2>/dev/null
         update_lock_release
@@ -414,7 +428,11 @@ safe_update_realm() {
         sleep 1
         if ! svc_is_active; then
             echo -e "${RED}✗ 新版本启动失败，自动回滚到旧版本${NC}"
-            update_restore_backup "$backup"
+            # 先停服务：正在运行的二进制不能被直接覆盖（ETXTBSY / Text file busy）
+            svc_stop >/dev/null 2>&1
+            if ! update_restore_backup "$backup"; then
+                echo -e "${RED}  ✗ 自动恢复不完整，请手工从 ${backup} 恢复${NC}"
+            fi
             chmod +x "$REALM_PATH" 2>/dev/null
             svc_start >/dev/null 2>&1
             rm -rf "$staging" 2>/dev/null
@@ -532,7 +550,9 @@ safe_update_scripts() {
     # 6) 验证
     if ! "${INSTALL_DIR}/xwPF.sh" --help >/dev/null 2>&1; then
         echo -e "${RED}✗ 新脚本自检失败，自动回滚到旧脚本${NC}"
-        update_restore_backup "$backup"
+        if ! update_restore_backup "$backup"; then
+            echo -e "${RED}  ✗ 自动恢复不完整，请手工从 ${backup} 恢复${NC}"
+        fi
         chmod +x "${INSTALL_DIR}/xwPF.sh" 2>/dev/null
         rm -rf "$staging" 2>/dev/null
         update_lock_release
