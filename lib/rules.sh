@@ -1915,7 +1915,8 @@ load_balance_management_menu() {
 
                         if [ -f "$health_status_file" ]; then
                             # ★ 按 host:port 取记录：同 host 不同端口各自独立；
-                            #   旧格式（TARGET 只有 host）由 get_health_status_record 兜底
+                            #   旧格式（TARGET 只有 host）的老行查不到就当无记录 ——
+                            #   不按裸 host 兜底（那会显示成同 host 另一个端口的状态）
                             local health_record=$(get_health_status_record "$target")
                             if [ -n "$health_record" ]; then
                                 IFS='|' read -r _ _ _ _ _ _ _ lat_ms lat_hist <<< "$health_record"
