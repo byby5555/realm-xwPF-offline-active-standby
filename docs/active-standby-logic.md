@@ -115,7 +115,7 @@
 | `lib/realm.sh` | `generate_endpoints_from_rules` | 故障转移过滤主备分支：保留所有目标 + 翻转 0/1 权重；并把 `active-standby` 映射为 `roundrobin` 输出给 realm |
 | `xwFailover.sh` | `toggle_failover_mode` | 开启故障转移时选择剔除 / 主备模式（提示条件含"主备"） |
 | `lib/health.sh` | `check_connectivity` | 健康检查的 TCP 探测（`nc` 优先，`bash /dev/tcp` 回退） |
-| `lib/health.sh` | `health_check_script_body` | 生成独立的 `health_check.sh`（内含一份同源的探测副本，改动需两处同步） |
+| `lib/health.sh` | `health_check_script_body` | 生成独立的 `health_check.sh`（探测实现由 `lib/health.sh` 的 `health_emit_function` 原样抽取注入，与真源逐字一致，无需手工同步） |
 | `lib/health.sh` | `start_health_check_service` | 生成 `realm-health-check.service` / `.timer` 并启停 |
 | `lib/health.sh` | `stop_health_check_service` | 停止并清理健康检查服务 |
 
