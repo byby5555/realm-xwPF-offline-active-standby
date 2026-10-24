@@ -24,6 +24,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # 台架版本：台架自身的改动会让旧报告的结论打折，改了台架就 bump
+# v2.6.0：第 7 轮收尾（续）—— 跟随产品 N1-R1（去掉裸 host 宽键兜底）
+#         · T51 展示端断言改成「旧格式记录查不到就当无记录、不跨端口污染」
+#           —— 旧口径「按裸 host 兜底命中」会把同 host 另一个端口的记录显示成这条目标的
+#         · T52 认不出归属时改成「当无记录」→ 那条老记录不让任何目标被判故障
+#         · T52 补上 N1 真正触发的形态：同一端口组内、同 host 不同端口
+#           （旧格式与新格式的产出必须逐项一致 —— 兼容不是「不报错」，是「结果相同」）
 # v2.5.0：第 7 轮收尾 —— 跟随产品口径变更（健康状态 TARGET 改 host:port）
 #         · T51 状态记录定位改成**格式无关**（host / host:port 都能定位）
 #           —— 记录定位写死旧格式 → 产品改口径就整组用例替产品背锅
@@ -39,7 +45,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #         · tests/test_update.sh、tests/test_latency.sh 改薄封装（消除第二入口）
 #         · jq 桩扩能力：数组下标路径、-e 退出码语义、JSON 对象字面量；
 #           并把 `..` 这类「会被静默误解」的语法显式判为不支持
-HARNESS_VERSION="v2.5.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport)"
+HARNESS_VERSION="v2.6.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key)"
 
 # shellcheck source=lib/harness.sh
 . "$SCRIPT_DIR/lib/harness.sh"
