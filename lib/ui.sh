@@ -33,132 +33,6 @@ import_realm_config() {
 }
 
 
-# === 主备状态展示（读守护进程写的状态文件） ===
-# ★ 写端只有一处：cmd/xwpf-failover.py 的 StateStore
-#   读端只有这一处：本函数
-#   两边字段同名：active_forward / active_probe / fail_streak / last_switch_at / last_probe
-#   —— 写状态与读状态同属一条路径链，避免字段口径错配。
-ui_show_failover_state() {
-    local state_file="${XWPF_FAILOVER_STATE_FILE:-/etc/xwpf/failover-state.json}"
-    if [ ! -f "$state_file" ]; then
-        echo -e "  ${GRAY}(暂无状态文件: ${state_file} —— 守护进程还没写过状态)${NC}"
-        return 0
-    fi
-    XWPF_FP_STATE="$state_file" python3 <<'PY'
-import json, os
-path = os.environ.get("XWPF_FP_STATE", "")
-try:
-    with open(path) as f:
-        data = json.load(f) or {}
-except Exception as e:
-    print("  (状态文件读失败: %s)" % e)
-    raise SystemExit(0)
-pools = data.get("pools") or {}
-if not pools:
-    print("  (状态文件里还没有池状态 —— 守护进程可能刚启动，还没跑完第一轮探测)")
-    raise SystemExit(0)
-KIND = {
-    "": "ok",
-    "refused": "refused(服务没监听, 线路是好的)",
-    "timeout": "timeout(包丢了, 链路有问题)",
-    "dns": "dns(域名解析失败)",
-    "error": "error(其它)",
-}
-def label(i):
-    return "主" if i == 0 else "备%d" % i
-for name, st in pools.items():
-    mode = "direct 直连" if st.get("direct") else "realm 回环"
-    role = st.get("active_role", "primary")
-    print("  池 %s [%s]  当前主: %s" % (name, mode, role))
-    print("      转发目标: %s" % (st.get("active_forward") or "-"))
-    print("      探测目标: %s" % (st.get("active_probe") or "-"))
-    if st.get("active_legacy"):
-        print("      旧格式(无 '|'): 探测与转发同址 -> 真实后端故障不会触发切换 (重建该池可拿到双地址)")
-    fs = st.get("fail_streak") or []
-    ss = st.get("succ_streak") or []
-    print("      连续失败数: %s" % "  ".join("%s=%s" % (label(i), v) for i, v in enumerate(fs)))
-    print("      连续成功数: %s" % "  ".join("%s=%s" % (label(i), v) for i, v in enumerate(ss)))
-    sw = st.get("last_switch_at") or ""
-    print("      上次切换时间: %s" % (sw if sw else "(从未切换)"))
-    for p in (st.get("last_probe") or []):
-        if not p:
-            continue
-        kind = p.get("err_kind", "")
-        print("      最近探测 %s -> %s %sms" % (
-            p.get("target", "-"),
-            KIND.get(kind, kind),
-            p.get("elapsed_ms", "-")))
-PY
-}
-
-
-# === Top-of-menu active/passive failover summary ===
-# Shown in the top-level rules menu so user can see running pools
-# without drilling into the 3rd-level failover_proxy_menu.
-ui_show_top_failover() {
-    local conf="${XWPF_FAILOVER_CONF:-/etc/xwpf/failover.json}"
-    [ -f "$conf" ] || return 0
-
-    local daemon_dot daemon_label
-    if systemctl is-active xwpf-failover >/dev/null 2>&1; then
-        daemon_dot="${GREEN}●${NC}"
-        daemon_label="运行中"
-    else
-        daemon_dot="${RED}●${NC}"
-        daemon_label="已停止"
-    fi
-
-    local raw n
-    raw=$(XWPF_TOP_FP_CONF="$conf" XWPF_TOP_FP_STATE="${XWPF_FAILOVER_STATE_FILE:-/etc/xwpf/failover-state.json}" python3 -c '
-import json, os
-conf = os.environ.get("XWPF_TOP_FP_CONF", "/etc/xwpf/failover.json")
-state_path = os.environ.get("XWPF_TOP_FP_STATE", "")
-try:
-    with open(conf) as f:
-        pools = json.load(f) or []
-except Exception:
-    pools = []
-if not isinstance(pools, list):
-    pools = []
-try:
-    with open(state_path) as f:
-        st_pools = (json.load(f) or {}).get("pools") or {}
-except Exception:
-    st_pools = {}
-for i, p in enumerate(pools, 1):
-    name = p.get("name", "?")
-    listen = p.get("listen", "?")
-    primary = p.get("primary", "?")
-    direct = " [direct]" if p.get("direct") else ""
-    backups = p.get("backups", []) or []
-    parts = ["{i}. [{name}]{direct}  {listen} -> {primary}".format(i=i, name=name, direct=direct, listen=listen, primary=primary)]
-    if backups:
-        bk_short = ", ".join(backups[:2])
-        if len(backups) > 2:
-            bk_short += ", +" + str(len(backups) - 2)
-        parts.append("备: " + bk_short)
-    st = st_pools.get(name)
-    if isinstance(st, dict):
-        role = st.get("active_role", "primary")
-        cur = "主" if role == "primary" else role
-        parts.append("当前主=" + cur)
-        if st.get("active_legacy"):
-            parts.append("旧格式")
-    print(" | ".join(parts))
-print("__COUNT__{}__".format(len(pools)))
-')
-    n=$(printf '%s' "$raw" | grep -oE '__COUNT__[0-9]+__' | tail -1 | grep -oE '[0-9]+')
-    n="${n:-0}"
-    if [ "$n" = "0" ]; then
-        echo -e "${GRAY}主备 active/passive 池: $daemon_dot $daemon_label (无池)${NC}"
-    else
-        echo -e "${YELLOW}主备 active/passive 池 ($n 个, daemon $daemon_dot $daemon_label):${NC}"
-        printf '%s\n' "$raw" | grep -v '^__COUNT__' | while IFS= read -r line; do
-            echo -e "  • $line"
-        done
-    fi
-}
-
 rules_management_menu() {
     while true; do
         sleep 0.2
@@ -275,7 +149,6 @@ rules_management_menu() {
             echo -e "配置模式: ${BLUE}暂无配置${NC}"
         fi
 
-        ui_show_top_failover
         echo ""
 
         echo "请选择操作:"
@@ -287,11 +160,11 @@ rules_management_menu() {
         echo -e "${BLUE}6.${NC} 负载均衡管理"
         echo -e "${YELLOW}7.${NC} 开启/关闭 MPTCP"
         echo -e "${GREEN}8.${NC} 开启/关闭 Proxy Protocol"
-        echo -e "${YELLOW}9.${NC} 主备 active/passive (进程级故障转移)"
+        echo -e "${GRAY}提示: 主备 / 负载均衡 走「6. 负载均衡管理 → 权重配置管理」 权重 ${GREEN}10,0${NC} = 主备(主故障自动切备), ${GREEN}5,5${NC} = 负载均衡(按比例分流)${NC}"
         echo -e "${GREEN}0.${NC} 返回主菜单"
         echo ""
 
-        ui_read_into "请输入选择 [0-9]: " choice
+        ui_read_into "请输入选择 [0-8]: " choice
         echo ""
 
         case $choice in
@@ -396,14 +269,11 @@ rules_management_menu() {
             8)
                 proxy_management_menu
                 ;;
-            9)
-                failover_proxy_menu
-                ;;
             0)
                 break
                 ;;
             *)
-                echo -e "${RED}无效选择，请输入 0-9${NC}"
+                echo -e "${RED}无效选择，请输入 0-8${NC}"
                 ui_pause "按回车键继续..."
                 ;;
         esac
@@ -448,12 +318,7 @@ uninstall_realm_stage_one() {
         bash "/etc/realm/xwFailover.sh" stop >/dev/null 2>&1
     fi
 
-    # 停止 xwpf-failover 守护（active/passive 主备池）
-    if systemctl is-active xwpf-failover >/dev/null 2>&1; then
-        systemctl disable --now xwpf-failover >/dev/null 2>&1
-    fi
     pgrep "realm" >/dev/null 2>&1 && { pkill -f "realm"; sleep 2; pkill -9 -f "realm" 2>/dev/null; }
-    pgrep "xwpf-failover" >/dev/null 2>&1 && { pkill -9 -f "xwpf-failover"; sleep 1; }
 
     # 清理文件
     cleanup_files_by_paths "$REALM_PATH" "$CONFIG_DIR" "$SYSTEMD_PATH" "/etc/realm"
@@ -461,12 +326,6 @@ uninstall_realm_stage_one() {
     [ -f "/etc/systemd/system/realm-web.service" ] && rm -f "/etc/systemd/system/realm-web.service"
         cleanup_files_by_pattern "realm" "/var/log /tmp /var/tmp"
 
-    # 清理 xwpf-failover systemd unit 和配置
-    [ -f "/lib/systemd/system/xwpf-failover.service" ] && rm -f "/lib/systemd/system/xwpf-failover.service"
-    [ -f "/etc/systemd/system/xwpf-failover.service" ] && rm -f "/etc/systemd/system/xwpf-failover.service"
-    # drop-in 目录随 unit 一起清掉（含历史上人工创建的 10-crash-loop-guard.conf）
-    [ -d "/etc/systemd/system/xwpf-failover.service.d" ] && rm -rf "/etc/systemd/system/xwpf-failover.service.d"
-    [ -f "/etc/xwpf/failover.json" ] && rm -f "/etc/xwpf/failover.json"
 
     # 清理系统配置
     [ -f "/etc/sysctl.d/90-enable-MPTCP.conf" ] && rm -f "/etc/sysctl.d/90-enable-MPTCP.conf"
@@ -480,7 +339,6 @@ uninstall_script_files() {
     rm -f "$INSTALL_DIR/xwPF.sh"
     [ -d "$LIB_DIR" ] && rm -rf "$LIB_DIR"
 
-    # 清理 xwpf-failover daemon 文件（cmd/ 子目录）
     [ -d "$INSTALL_DIR/cmd" ] && rm -rf "$INSTALL_DIR/cmd"
 
     # 清理 pf 快捷命令（symlink 或 wrapper）
@@ -661,8 +519,6 @@ show_brief_status() {
         echo -e "转发规则: ${YELLOW}暂无${NC} (可通过 '转发配置管理' 添加)"
     fi
 
-    # 主备 active/passive 池 — 在顶层 pf 入口就显示，不要再下钻
-    ui_show_top_failover
 
     echo ""
 }
@@ -807,175 +663,6 @@ failover_management_menu() {
     done
 }
 
-# 主备 active/passive 故障转移菜单（新版，xwpf-failover 守护）
-failover_proxy_menu() {
-    while true; do
-        sleep 0.2
-        ui_clear
-        echo -e "${YELLOW}=== 主备 active/passive 高可用 ===${NC}"
-        echo ""
-        echo -e "  ${BLUE}说明:${NC} 基于独立守护进程配合 realm 回环监听，"
-        echo -e "        实现真正的进程级主备热切换（不等负载均衡池）。"
-        echo ""
-        echo -e "  ${GREEN}提示:${NC} 只想在**同一个端口**上做「主备 / 负载均衡」切换？走更简单的路径："
-        echo -e "        ${GREEN}转发配置管理 → 负载均衡管理 → 权重配置管理${NC}"
-        echo -e "        权重填 ${GREEN}10,0${NC} → 自动进主备（主故障自动切备、主恢复自动切回）"
-        echo -e "        权重填 ${GREEN}5,5${NC} → 回到普通负载均衡（按比例分流）"
-        echo ""
-
-        # 守护状态（含 failed / 限流可见 —— is-active 看不出这两种）
-        failover_service_status_lines
-        echo ""
-
-        # 当前池列表
-        echo -e "${GREEN}当前主备池:${NC}"
-        failover_pool_list
-        echo ""
-
-        # 守护进程写的运行状态（当前主 / 探测目标 / 转发目标 / 连续失败数 / 上次切换时间）
-        echo -e "${GREEN}运行状态:${NC}"
-        ui_show_failover_state
-        echo ""
-
-        echo "请选择操作:"
-        echo -e "${GREEN}1.${NC} 创建新主备池 (公开端口 + 主后端 + N 备后端)"
-        echo -e "${RED}2.${NC} 删除主备池 (按编号)"
-        echo -e "${RED}3.${NC} 清空所有主备池"
-        echo -e "${YELLOW}4.${NC} 安装并启动守护服务"
-        echo -e "${YELLOW}5.${NC} 重启守护服务"
-        echo -e "${YELLOW}6.${NC} 停止守护服务"
-        echo -e "${BLUE}7.${NC} 查看日志 (tail -n 50)"
-        echo -e "${BLUE}8.${NC} 实时跟踪日志 (Ctrl+C 退出)"
-        echo -e "${GREEN}0.${NC} 返回上级菜单"
-        echo ""
-
-        ui_read_into "请输入选择 [0-8]: " sub
-        echo ""
-
-        case "$sub" in
-            1)
-                echo -e "${BLUE}创建主备池:${NC}"
-                echo ""
-                echo -e "  ${GREEN}1.${NC} 直连 (${GREEN}推荐${NC}) —— 守护进程直连真实后端, 不经过 realm"
-                echo -e "  ${BLUE}2.${NC} 经 realm 回环 (旧模式) —— 流量先到 realm 再转发"
-                echo ""
-                local mode name listen primary backups yesno
-                ui_read_into "  选择模式 [1]: " mode
-                case "$mode" in
-                    2) mode="legacy" ;;
-                    *) mode="direct" ;;
-                esac
-                ui_read_into "  池名称 (例如 poolA, 区分大小写): " name
-                [ -z "$name" ] && { echo -e "${RED}名称不能为空${NC}"; ui_pause "按回车继续..."; continue; }
-                ui_read_into "  公开监听端口 (例如 443 或 0.0.0.0:443): " listen
-                [ -z "$listen" ] && { echo -e "${RED}监听端口不能为空${NC}"; ui_pause "按回车继续..."; continue; }
-                ui_read_into "  主后端 (例如 1.2.3.4:443): " primary
-                [ -z "$primary" ] && { echo -e "${RED}主后端不能为空${NC}"; ui_pause "按回车继续..."; continue; }
-                ui_read_into "  备后端 (逗号分隔, 例如 5.6.7.8:443,9.10.11.12:443; 留空表示无备): " backups
-                echo ""
-                if [ "$mode" = "direct" ]; then
-                    failover_pool_create_direct "$name" "$listen" "$primary" "$backups"
-                    local pool_rc=$?
-                    if [ "$pool_rc" -ne 0 ]; then
-                        echo -e "${RED}创建失败, 未写入任何配置${NC}"
-                    else
-                        echo ""
-                        echo -e "${YELLOW}提示: 直连模式不依赖 realm —— 守护进程启动时读一次配置, 需重启守护才会生效${NC}"
-                        if ui_read_default "是否立即重启守护服务? [y/N]: " yesno && [[ "$yesno" =~ ^[Yy]$ ]]; then
-                            failover_service_restart
-                        fi
-                    fi
-                else
-                    echo -e "${YELLOW}注意: 旧模式经 realm 回环转发 —— 守护进程「转发打回环口、探测打真实后端」(真实后端故障才会切)${NC}"
-                    failover_pool_create "$name" "$listen" "$primary" "$backups"
-                    echo ""
-                    echo -e "${YELLOW}提示: 重启 realm 让新生成的回环规则生效${NC}"
-                    if ui_read_default "是否立即重启 realm? [y/N]: " yesno && [[ "$yesno" =~ ^[Yy]$ ]]; then
-                        service_restart
-                    fi
-                fi
-                ui_pause "按回车继续..."
-                ;;
-            2)
-                failover_pool_list
-                echo ""
-                local pidx
-                ui_read_into "  输入要删除的池编号: " pidx
-                if [[ "$pidx" =~ ^[0-9]+$ ]]; then
-                    failover_pool_delete "$pidx"
-                    echo ""
-                    echo -e "${YELLOW}提示: 重启 realm 移除失效规则${NC}"
-                    if ui_read_default "是否立即重启 realm? [y/N]: " yesno && [[ "$yesno" =~ ^[Yy]$ ]]; then
-                        service_restart
-                    fi
-                else
-                    echo -e "${RED}无效编号${NC}"
-                fi
-                ui_pause "按回车继续..."
-                ;;
-            3)
-                echo -e "${RED}即将清空所有主备池并删除关联规则文件${NC}"
-                if ui_read_default "  确认? [y/N]: " yesno && [[ "$yesno" =~ ^[Yy]$ ]]; then
-                    # Delete each pool sequentially to clean up rules
-                    local n
-                    n=$(python3 -c 'import json; print(len(json.load(open("'"${XWPF_FAILOVER_CONF}"'")) or []))' 2>/dev/null || echo 0)
-                    while [ "$n" -gt 0 ]; do
-                        failover_pool_delete 1 >/dev/null 2>&1 || break
-                        n=$((n-1))
-                    done
-                    failover_pool_delete_all
-                    echo -e "${YELLOW}提示: 重启 realm 清空所有回环规则${NC}"
-                    if ui_read_default "是否立即重启 realm? [y/N]: " yesno && [[ "$yesno" =~ ^[Yy]$ ]]; then
-                        service_restart
-                    fi
-                fi
-                ui_pause "按回车继续..."
-                ;;
-            4)
-                if failover_install_check && failover_service_enable; then
-                    echo -e "${GREEN}✓ 守护已启用并启动${NC}"
-                else
-                    echo -e "${RED}✗ 守护安装或启动失败${NC}"
-                    ui_pause "按回车继续..."
-                    return 1
-                fi
-                echo ""
-                echo -e "${YELLOW}提示: 重启 realm 让所有 loopback 监听生效${NC}"
-                if ui_read_default "是否立即重启 realm? [y/N]: " yesno && [[ "$yesno" =~ ^[Yy]$ ]]; then
-                    service_restart
-                fi
-                ui_pause "按回车继续..."
-                ;;
-            5)
-                failover_service_restart
-                echo -e "${GREEN}守护已重启${NC}"
-                ui_pause "按回车继续..."
-                ;;
-            6)
-                failover_service_stop
-                echo -e "${YELLOW}守护已停止${NC}"
-                echo -e "${RED}警告: 主备池已停保护，连接将由 realm 直通 loopback 但失去故障切换能力${NC}"
-                ui_pause "按回车继续..."
-                ;;
-            7)
-                echo -e "${BLUE}=== ${XWPF_FAILOVER_SERVICE} (tail -n 50) ===${NC}"
-                failover_log_tail
-                ui_pause "按回车继续..."
-                ;;
-            8)
-                echo -e "${BLUE}=== journalctl -fu ${XWPF_FAILOVER_SERVICE} (Ctrl+C 退出) ===${NC}"
-                failover_log_follow
-                ;;
-            0)
-                return
-                ;;
-            *)
-                echo -e "${RED}无效选择，请输入 0-8${NC}"
-                ui_pause "按回车继续..."
-                ;;
-        esac
-    done
-}
 
 # 端口流量狗
 port_traffic_dog_menu() {
