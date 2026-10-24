@@ -282,6 +282,18 @@ case_T113_fail_latency_in_stats_and_display() {
     h_check_contains "$disp" "成功时延均值 10ms" "展示串含成功样本时延均值"
     h_check_contains "$disp" "失败时延 均 2750ms 最大 3000ms" "展示串含**失败样本**的时延分布（均值 + 最大值）"
 
+    # ── 接线检查：菜单那一列**确实**用的是这个展示函数 ────────────
+    #   ★ 查的不是「字符串长什么样」，是「谁在拼这个串」：
+    #     · lib/rules.sh 的展示块必须调 quality_window_display
+    #       （否则指标照写、但菜单上看不到 = 口径只落了一半）；
+    #     · 拼串的地方只有 lib/health.sh 一处（rules.sh 里不该再有第二处拼接）。
+    local rules_src="$SBX_SRC/lib/rules.sh"
+    h_check_file "$rules_src" "冻结态 lib/rules.sh"
+    h_check_file_has "$rules_src" 'quality_window_display "$target" "$_own_rule"' \
+        "接线：菜单的展示块确实调 quality_window_display（指标写了但没人看得到 = 口径只落一半）"
+    h_check_eq "0" "$(grep -c '窗口: 失败率' "$rules_src" 2>/dev/null || true)" \
+        "展示串只在 lib/health.sh 一处拼（rules.sh 里没有第二处拼接 ⇒ 两处不会漂）"
+
     # ── 负向对照：注入式退化（读窗口时不取失败时延列）────────────
     local lib_bad="$SBX_ROOT/lib_health_nofaillat.sh"
     sed 's|\$3 "|" \$4 "|" \$6|\$3 "|" \$4 "|" ""|' "$SBX_RUN/lib/health.sh" > "$lib_bad" 2>/dev/null
