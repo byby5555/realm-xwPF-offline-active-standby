@@ -47,6 +47,19 @@ get_active_rules_count() {
     echo "$count"
 }
 
+# 判断「(RULE_ID, 目标)」这一对是否已经被认领（临时文件里已写过同键的行）
+#   ★ 用 awk 做**字段级**比较，不能用 grep -F 的子串匹配：
+#     "1|X|" 是 "11|X|" 的子串 ⇒ 会把另一条规则误判成「已认领」，
+#     结果就是「明明还有规则能认领，却把这一行丢掉」= 状态丢失 = 该切不切。
+_sync_status_pair_claimed() {
+    local _f="$1" _rid="$2" _tgt="$3"
+    [ -f "$_f" ] || return 1
+    awk -F'|' -v r="$_rid" -v t="$_tgt" '
+        $1 == r && $2 == t { found = 1; exit }
+        END { exit (found ? 0 : 1) }
+    ' "$_f" 2>/dev/null
+}
+
 # 规则重排序后同步更新健康监控记录，保持数据一致性
 sync_health_status_ids() {
     local health_status_file="${HEALTH_STATUS_FILE}"
@@ -63,7 +76,20 @@ sync_health_status_ids() {
         [[ -z "$old_rule_id" ]] && continue
         [[ -z "$target" ]] && continue
 
+        # ── 认领：一行状态只能被**一条**规则认领 ──────────────────────
+        #   为什么必须「一对一」：
+        #     两条规则共用同一后端（host:port）时，状态文件里就有**两行**同目标
+        #     （写端按 (RULE_ID, 目标) 一行一行写，见 lib/health.sh 的 health_check_script_body）。
+        #     老实现「按目标地址找到第一条匹配规则就 break」⇒ **两行都被同一条规则认领**
+        #     ⇒ 迁移后状态文件里出现两行相同的 (RULE_ID, TARGET)
+        #     ⇒ 一条规则的状态重复、另一条规则的行**丢失**（状态归零 = 该切不切）。
+        #   认领顺序：
+        #     ① 「RULE_ID == 行首 old_rule_id」的候选优先（保住「这行本来是谁的」）
+        #     ② 退到「还没认领过这个目标」的候选规则（文件顺序 = RULE_ID 升序）
+        #     ③ 都没有 ⇒ 这行不写（目标的规则已经没了 = 陈旧行，随整份重建一起消失）
         local new_rule_id=""
+        local _cand_ids=()
+        local _cand_idx=0
         for rule_file in "${RULES_DIR}"/rule-*.conf; do
             if [ -f "$rule_file" ] && read_rule_file "$rule_file"; then
                 if [ "$RULE_ROLE" = "1" ]; then
@@ -100,8 +126,7 @@ sync_health_status_ids() {
                         fi
                     fi
                     if [ "$_matched" = true ]; then
-                        new_rule_id="$RULE_ID"
-                        break
+                        _cand_ids+=("$RULE_ID")
                     fi
                 else
                     local _fwd_ok=false
@@ -111,12 +136,29 @@ sync_health_status_ids() {
                         _fwd_ok=true
                     fi
                     if [ "$_fwd_ok" = true ]; then
-                        new_rule_id="$RULE_ID"
-                        break
+                        _cand_ids+=("$RULE_ID")
                     fi
                 fi
             fi
         done
+
+        # ① 身份优先：RULE_ID 与行首 old_rule_id 一致的候选
+        for _cand_idx in "${!_cand_ids[@]}"; do
+            [ "${_cand_ids[$_cand_idx]}" = "$old_rule_id" ] || continue
+            if ! _sync_status_pair_claimed "$temp_health_file" "${_cand_ids[$_cand_idx]}" "$target"; then
+                new_rule_id="${_cand_ids[$_cand_idx]}"
+                break
+            fi
+        done
+        # ② 退到还没认领过这个目标的候选
+        if [ -z "$new_rule_id" ]; then
+            for _cand_idx in "${!_cand_ids[@]}"; do
+                if ! _sync_status_pair_claimed "$temp_health_file" "${_cand_ids[$_cand_idx]}" "$target"; then
+                    new_rule_id="${_cand_ids[$_cand_idx]}"
+                    break
+                fi
+            done
+        fi
 
         if [ -n "$new_rule_id" ]; then
             echo "${new_rule_id}|${target}|${status}|${fail_count}|${success_count}|${last_check}|${failure_start_time}" >> "$temp_health_file"
