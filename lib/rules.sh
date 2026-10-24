@@ -58,7 +58,7 @@ sync_health_status_ids() {
     local temp_health_file="${health_status_file}.tmp"
     grep "^#" "$health_status_file" > "$temp_health_file" 2>/dev/null || true
 
-    while IFS='|' read -r old_rule_id target status fail_count success_count last_check failure_start_time; do
+    while IFS='|' read -r old_rule_id target status fail_count success_count last_check failure_start_time; do   # xwpf:noninteractive-io（输入来自健康状态文件）
         [[ "$old_rule_id" =~ ^#.*$ ]] && continue
         [[ -z "$old_rule_id" ]] && continue
         [[ -z "$target" ]] && continue
@@ -1403,7 +1403,7 @@ import_config_package() {
         echo -e "${YELLOW}正在恢复MPTCP端点配置...${NC}"
         /usr/bin/ip mptcp endpoint flush 2>/dev/null
 
-        while IFS= read -r line; do
+        while IFS= read -r line; do   # xwpf:noninteractive-io（输入来自 MPTCP 端点配置）
             if [ -n "$line" ]; then
                 local addr=$(echo "$line" | awk '{print $1}')
                 local dev=$(echo "$line" | awk '/dev/ {for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}')

@@ -355,7 +355,7 @@ generate_endpoints_from_rules() {
     done
 
     if [ -f "$health_status_file" ]; then
-        while IFS='|' read -r _row_rule_id _row_target _row_status _row_rest; do
+        while IFS='|' read -r _row_rule_id _row_target _row_status _row_rest; do   # xwpf:noninteractive-io（输入来自健康状态文件）
             # 跳过注释行和空行
             [[ "$_row_rule_id" =~ ^#.*$ ]] && continue
             [[ -z "$_row_rule_id" ]] && continue

@@ -253,7 +253,7 @@ update_restore_backup() {
     local dir="$1"
     [ -d "$dir" ] || return 1
     local f rel tmp err failed=0
-    while IFS= read -r f; do
+    while IFS= read -r f; do   # xwpf:noninteractive-io（输入来自目录文件列表）
         rel="${f#$dir/}"
         tmp="/${rel}.restore.$$"
         if err=$(cp -p "$f" "$tmp" 2>&1); then
@@ -279,7 +279,7 @@ update_restore_backup() {
 update_prune_backups() {
     [ -d "$UPDATE_BACKUP_DIR" ] || return 0
     local d
-    while IFS= read -r d; do
+    while IFS= read -r d; do   # xwpf:noninteractive-io（输入来自备份目录列表）
         [ -n "$d" ] || continue
         rm -rf "$d" 2>/dev/null
     done < <(ls -1dt "${UPDATE_BACKUP_DIR}"/*/ 2>/dev/null | tail -n +$((UPDATE_KEEP_BACKUPS + 1)))

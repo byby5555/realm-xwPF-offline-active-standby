@@ -280,7 +280,7 @@ init_nftables() {
 get_network_interfaces() {
     local interfaces=()
 
-    while IFS= read -r interface; do
+    while IFS= read -r interface; do   # xwpf:noninteractive-io（输入来自网卡列表）
         if [[ "$interface" != "lo" ]] && [[ "$interface" != "" ]]; then
             interfaces+=("$interface")
         fi
@@ -966,7 +966,7 @@ add_port_monitoring() {
 
     # 解析ss输出，聚合同程序的端口
     declare -A program_ports
-    while read line; do
+    while read line; do   # xwpf:noninteractive-io（输入来自监听端口列表）
         if [[ "$line" =~ LISTEN|UNCONN ]]; then
             local_addr=$(echo "$line" | awk '{print $5}')
             port=$(echo "$local_addr" | grep -o ':[0-9]*$' | cut -d':' -f2)

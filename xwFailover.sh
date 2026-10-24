@@ -600,7 +600,7 @@ show_health_status() {
 
     # 读取并显示健康状态
     local has_data=false
-    while read -r line; do
+    while read -r line; do   # xwpf:noninteractive-io（输入来自健康状态文件）
         # 跳过注释行和空行
         [[ "$line" =~ ^#.*$ ]] && continue
         [[ -z "$line" ]] && continue

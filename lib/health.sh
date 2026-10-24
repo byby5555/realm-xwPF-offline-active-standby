@@ -50,7 +50,7 @@ read_rule_file() {
 
     # 逐行解析：只认白名单 KEY，绝不执行文件内容
     declare -A _rule_vals=()
-    while IFS= read -r _line || [ -n "$_line" ]; do
+    while IFS= read -r _line || [ -n "$_line" ]; do   # xwpf:noninteractive-io（输入来自规则文件）
         # 去掉行尾 CR（规则文件若被 CRLF 写过，不剥掉会导致引号剥离失效、值里带 \r）
         [[ "$_line" == *$'\r' ]] && _line="${_line%$'\r'}"
         [[ -z "$_line" ]] && continue
@@ -251,7 +251,7 @@ health_status_find_row() {
 
     [ -f "$status_file" ] || return 1
 
-    while IFS='|' read -r _rid _field2 _rest || [ -n "${_field2:-}" ]; do
+    while IFS='|' read -r _rid _field2 _rest || [ -n "${_field2:-}" ]; do   # xwpf:noninteractive-io（输入来自健康状态文件）
         case "$_rid" in
             '#'*) continue ;;
         esac

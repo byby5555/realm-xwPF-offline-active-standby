@@ -429,7 +429,7 @@ cleanup_files_by_pattern() {
 
     IFS=' ' read -ra dirs_array <<< "$search_dirs"
     for dir in "${dirs_array[@]}"; do
-        [ -d "$dir" ] && find "$dir" -name "*${pattern}*" -type f 2>/dev/null | while read -r file; do
+        [ -d "$dir" ] && find "$dir" -name "*${pattern}*" -type f 2>/dev/null | while read -r file; do   # xwpf:noninteractive-io（输入来自管道）
             [ -f "$file" ] && rm -f "$file"
         done &
     done

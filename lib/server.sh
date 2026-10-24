@@ -404,7 +404,7 @@ get_mptcp_endpoints_status() {
     local endpoints_info=""
 
     if [ -n "$endpoints_output" ]; then
-        while IFS= read -r line; do
+        while IFS= read -r line; do   # xwpf:noninteractive-io（输入来自端点列表）
             if [ -n "$line" ]; then
                 endpoint_count=$((endpoint_count + 1))
                 local id=$(echo "$line" | grep -oP 'id \K[0-9]+' || echo "")
@@ -839,7 +839,7 @@ mptcp_select_ips() {
 
     local ipv4_list=$(ip -4 addr show "$selected_interface" 2>/dev/null | grep -oP 'inet \K[^/]+')
     if [ -n "$ipv4_list" ]; then
-        while IFS= read -r ip; do
+        while IFS= read -r ip; do   # xwpf:noninteractive-io（输入来自 IPv4 列表）
             if [ -n "$ip" ]; then
                 ip_count=$((ip_count + 1))
                 selected_ips+=("$ip")
@@ -850,7 +850,7 @@ mptcp_select_ips() {
 
     local ipv6_list=$(ip -6 addr show "$selected_interface" 2>/dev/null | grep -oP 'inet6 \K[^/]+' | grep -v '^fe80:')
     if [ -n "$ipv6_list" ]; then
-        while IFS= read -r ip; do
+        while IFS= read -r ip; do   # xwpf:noninteractive-io（输入来自 IPv6 列表）
             if [ -n "$ip" ]; then
                 ip_count=$((ip_count + 1))
                 selected_ips+=("$ip")
@@ -934,7 +934,7 @@ mptcp_select_endpoint_to_delete() {
     local endpoint_count=0
     local endpoints_list=()
 
-    while IFS= read -r line; do
+    while IFS= read -r line; do   # xwpf:noninteractive-io（输入来自端点列表）
         if [ -n "$line" ]; then
             endpoint_count=$((endpoint_count + 1))
             endpoints_list+=("$line")
@@ -993,7 +993,7 @@ add_mptcp_endpoint_interactive() {
     if [ $? -ne 0 ]; then return 1; fi
 
     local selected_ip_list=()
-    while IFS= read -r ip; do
+    while IFS= read -r ip; do   # xwpf:noninteractive-io（输入来自已选 IP 列表）
         if [ -n "$ip" ]; then
             selected_ip_list+=("$ip")
         fi
