@@ -8,34 +8,7 @@
 #   - 权重超出 0-10 必须被拒绝
 #   - 权重 1,0,0 → 规则里 BALANCE_MODE=active-standby、FAILOVER_ENABLED=true
 
-# 在沙箱里 source 产品代码，执行一个函数，返回 rc + 输出
-# 用法：_run_in_sandbox <bash 代码片段> [额外参数...]
-_run_in_sandbox() {
-    local code="$1"
-    shift
-    bash -c "$code" _ "$SBX_RUN" "$@" 2>&1
-}
-
-# 造一条规则文件（沙箱内）
-_make_rule() {
-    local file="$1" port="${2:-8080}" mode="${3:-roundrobin}" failover="${4:-false}" weights="${5:-1,0,0}" hosts="${6:-10.0.0.1,10.0.0.2,10.0.0.3}"
-    mkdir -p "$(dirname "$file")"
-    cat > "$file" <<EOF
-RULE_ID=1
-RULE_ROLE=1
-RULE_NAME=rule-test
-SECURITY_LEVEL=standard
-LISTEN_PORT=$port
-LISTEN_IP=0.0.0.0
-THROUGH_IP=::
-REMOTE_HOST=$hosts
-REMOTE_PORT=8080
-ENABLED=true
-BALANCE_MODE="$mode"
-FAILOVER_ENABLED="$failover"
-WEIGHTS="$weights"
-EOF
-}
+# 公共工具在 00_common.sh（_run_in_sandbox / _make_rule ...）
 
 case_T10_weight_valid() {
     h_case_begin "T10" "权重 1,0,0 合法" \

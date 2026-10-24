@@ -1,0 +1,659 @@
+# realm-xwPF 真机验收清单（Debian / Ubuntu VPS）
+
+> 产出：审稿（bot_263632b9af01）　｜　生成时间：2026-10-24　｜　基线 SHA：`a9102c1`
+> 适用范围：本机无 WSL / Docker / systemd / realm，下列全部项**只能在真实 Linux VPS 上验**。
+> 本清单只做**验收**，不修改 `lib/`、`tests/`、`docs/`、`xwFailover.sh`；发现问题登记缺陷单交 Chief 路由。
+
+---
+
+## 0. 通用约定
+
+### 0.1 验收环境基线（每台机器先跑一次并存档）
+
+```bash
+mkdir -p ~/realm-acceptance
+{
+  echo "=== 时间 ==="; date -Is
+  echo "=== OS ==="; cat /etc/os-release | head -3
+  echo "=== 内核/架构 ==="; uname -a
+  echo "=== bash ==="; bash --version | head -1
+  echo "=== systemd ==="; systemctl --version | head -1
+  echo "=== 关键依赖 ==="
+  for t in curl wget tar grep cut bc jq openssl python3 nc timeout flock; do
+    printf '%-10s %s\n' "$t" "$(command -v $t || echo MISSING)"
+  done
+  echo "=== realm ==="; realm version 2>/dev/null || echo "NO_REALM"
+} | tee ~/realm-acceptance/baseline.txt
+```
+
+### 0.2 记录方式
+
+- 每项单独存一份：`~/realm-acceptance/A<编号>.log`，命令输出直接 `| tee -a` 追加。
+- 结论只写 **PASS / FAIL / BLOCKED** 三态 + 一句话现象。
+  - **BLOCKED**：前置不满足（例如该机没装 realm），不算失败，但必须写明缺什么。
+- **禁止**用「基本正常」「看起来 OK」这类不可判定结论。
+
+### 0.3 全局危险动作提醒（先读）
+
+| 动作 | 风险 | 纪律 |
+|---|---|---|
+| `pf` 里的任何会写配置的菜单项 | 重启 realm → 转发中断 | 业务机先 `cp -a /etc/realm /etc/realm.bak.$(date +%s)` |
+| 卸载（`8. 卸载服务`） | **删除 /etc/realm 全部配置与规则** | 先备份；确认是测试机 |
+| 改 `iptables`/`ufw` | 可能锁死 SSH | **只允许在 loopback 上拦**；绝不拦 22 端口；拦完必须 `iptables -L` 留证 |
+| 改 `/usr/bin/nc` 文件名 | 系统级 | 见 A-7，**同一命令块内改回** |
+| `systemctl stop realm` | 转发全断 | 验收窗口内进行 |
+| 杀进程（模拟节点故障） | 低危 | 用 `kill $PID` 精确杀，不用 `pkill -f python` |
+
+---
+
+## A-1　一键安装落盘
+
+**验收目标**：一条命令安装后，主脚本、7 个 lib 模块、cmd 守护文件全部落盘；**落盘文件不含 CR**；`pf` 快捷命令可用。
+
+**前置**：干净的 Debian/Ubuntu VPS（root），可访问 GitHub raw；未装过 realm-xwPF。
+
+**命令**
+
+```bash
+# 1) 安装
+wget -qO- https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-active-standby/main/xwPF.sh | sudo bash -s install
+
+# 2) 落盘清单
+ls -l /usr/local/bin/pf /usr/local/bin/xwPF.sh
+ls -l /usr/local/bin/lib/
+ls -l /usr/local/bin/cmd/
+readlink -f /usr/local/bin/pf
+
+# 3) 【关键】行尾自检：任何文件含 CR 即 FAIL
+for f in /usr/local/bin/xwPF.sh /usr/local/bin/lib/*.sh /usr/local/bin/cmd/*; do
+  if grep -q $'\r' "$f"; then echo "FAIL-CRLF: $f"; else echo "OK: $f"; fi
+done
+
+# 4) 语法自检（落盘产物能解析）
+for f in /usr/local/bin/xwPF.sh /usr/local/bin/lib/*.sh; do bash -n "$f" && echo "SYNTAX-OK: $f"; done
+
+# 5) 依赖齐备性
+for t in curl wget tar grep cut bc jq openssl python3; do
+  printf '%-10s %s\n' "$t" "$(command -v $t || echo MISSING)"
+done
+```
+
+**期望结果（可判定）**
+
+1. 安装输出含 `=== 脚本安装完成 ===`，且 `lib/` 下 **7 个**文件齐全：`core.sh health.sh rules.sh server.sh realm.sh failover.sh ui.sh`。
+2. `/usr/local/bin/pf` → 解析到 `/usr/local/bin/xwPF.sh`。
+3. **第 3 步全部输出 `OK:`，没有任何 `FAIL-CRLF:`**。
+4. 第 4 步全部 `SYNTAX-OK`。
+5. 第 5 步 **无 `MISSING`**（`nc` 不在必需清单内，缺它不算 FAIL）。
+
+**失败判据与排查方向**
+
+| 现象 | 排查方向 |
+|---|---|
+| 出现 `FAIL-CRLF:` | 安装源被 CRLF 污染（Windows 打包的离线包）。查 `curl -sI <raw url> \| grep -i content-length` 与下载字节；**这是第 1 轮报告 B3 的残余风险**，`4558e65` 只归一了 heredoc 生成物，没归一落盘文件 |
+| `lib/` 少文件 | 看安装日志里哪一行 `✗ lib/xxx.sh 下载失败`；多半是 raw 路径拼错或分支不含该文件 |
+| `bash -n` 报错 | 同样是 CRLF 或文件被截断（`_download` 的原子替换失败） |
+| `MISSING: jq` | `jq` 在 `lib/core.sh:24 REQUIRED_TOOLS` 里，应由安装器自动装；自动装失败要走 `docs/install-and-upgrade.md` 的离线装法 |
+
+**危险动作**：`install` 会覆盖 `/usr/local/bin/lib/*`、重建 `pf` 软链、**触发 `smart_install`（可能改 `/etc/realm` 配置）并 `systemctl enable xwpf-failover`**。业务机先备份 `/etc/realm`。
+
+---
+
+## A-2　`pf --help` 实际行为
+
+**验收目标**：三种 `--help` 写法都打印用法并**以 0 退出**，不落进交互菜单。
+
+**前置**：A-1 已完成。
+
+**命令**
+
+```bash
+for a in "--help" "-h" "help"; do
+  echo "===== pf $a ====="
+  timeout 10 pf $a; echo "EXIT=$?"
+done
+```
+
+**期望结果（可判定）**
+
+1. 三次都输出用法文本（包含 `Usage` 或 `用法` 之一）。
+2. 三次 `EXIT=0`。
+3. 输出中**不出现主菜单项**（`负载均衡管理` / `主备 active/passive`）——出现即说明掉进了交互菜单。
+4. 三次输出**在 10 秒内**返回（`timeout` 不触发）。
+
+**失败判据与排查方向**
+
+| 现象 | 排查方向 |
+|---|---|
+| 出现菜单项或超时（124） | `--help` 未被 `xwPF.sh` 的 `case` 命中，掉进 `main "$@"` → 查 `xwPF.sh` 的 `case "${1:-}"` 分支 |
+| 退出码非 0 | 用法文本里 `main` 返回值未归一 → 查 `main` 的收尾 |
+| 某一种写法能出、另一种不能 | 三种写法未对齐（`--help` / `-h` / `help` 必须等价） |
+
+**危险动作**：无（只读）。**注意**：`pf help` 若被误改成进入菜单，输入流必须用 `</dev/null` 兜住，否则会挂住终端。
+
+---
+
+## A-3　权重 `1,0` 自动进主备并拉起 timer
+
+**验收目标**：把端口组权重填成含 0 → 规则自动变 `active-standby` + `FAILOVER_ENABLED=true`，健康检查脚本与 systemd timer/service 全部落地。
+
+**前置**：realm 已装且能起；A-1 通过；两个可连通目标（本机用 `127.0.0.1` / `127.0.0.2` 造，见 A-5）。
+
+> ⚠️ **必须用两个不同的 host，不要用同一 IP 的两个端口** —— 健康状态文件的 key 是 `RULE_ID|HOST`（**不含端口**），同 host 多端口会互相覆盖，详见附录 A-3。
+
+**命令（白盒，直接驱动产品代码路径，最可复现）**
+
+```bash
+sudo bash <<'EOF'
+set -e
+R=/etc/realm/rules
+mkdir -p "$R"
+
+cat > "$R/rule-9001.conf" <<'C'
+RULE_ID=9001
+RULE_ROLE=1
+RULE_NAME=acc-a
+SECURITY_LEVEL=standard
+LISTEN_PORT=8443
+LISTEN_IP=0.0.0.0
+THROUGH_IP=::
+REMOTE_HOST=127.0.0.1
+REMOTE_PORT=8443
+ENABLED=true
+BALANCE_MODE="roundrobin"
+FAILOVER_ENABLED="false"
+WEIGHTS="1,0"
+C
+
+cat > "$R/rule-9002.conf" <<'C'
+RULE_ID=9002
+RULE_ROLE=1
+RULE_NAME=acc-b
+SECURITY_LEVEL=standard
+LISTEN_PORT=8443
+LISTEN_IP=0.0.0.0
+THROUGH_IP=::
+REMOTE_HOST=127.0.0.2
+REMOTE_PORT=8443
+ENABLED=true
+BALANCE_MODE="roundrobin"
+FAILOVER_ENABLED="false"
+WEIGHTS="0"
+C
+
+source /usr/local/bin/lib/core.sh
+source /usr/local/bin/lib/health.sh
+source /usr/local/bin/lib/rules.sh
+source /usr/local/bin/lib/ui.sh
+apply_port_group_weight_config 8443 "1,0"
+EOF
+```
+
+**验收断言**
+
+```bash
+echo "--- 规则文件 ---"
+grep -E '^(BALANCE_MODE|FAILOVER_ENABLED|WEIGHTS)=' /etc/realm/rules/rule-9001.conf /etc/realm/rules/rule-9002.conf
+
+echo "--- 生成物 ---"
+ls -l /etc/realm/health/health_check.sh /etc/systemd/system/realm-health-check.service /etc/systemd/system/realm-health-check.timer
+grep -c $'\r' /etc/realm/health/health_check.sh /etc/systemd/system/realm-health-check.*   # 必须为 0
+
+echo "--- timer ---"
+systemctl is-enabled realm-health-check.timer
+systemctl is-active  realm-health-check.timer
+systemctl show realm-health-check.timer -p OnUnitActiveUSec
+systemctl cat realm-health-check.service | grep -E 'ExecStart|SyslogIdentifier'
+
+echo "--- realm 侧看到的权重 ---"
+jq -r '.endpoints[] | select(.listen_port==8443 or .listen==8443) | .balance' /etc/realm/config.json 2>/dev/null \
+  || jq -r '.endpoints[].balance' /etc/realm/config.json
+```
+
+**期望结果（可判定）**
+
+1. 规则文件里：`BALANCE_MODE="active-standby"`、`FAILOVER_ENABLED="true"`、`WEIGHTS="1,0"`（第 1 条规则存全量、第 2 条存单值）。
+2. `/etc/realm/health/health_check.sh` **存在**，且 `grep -c $'\r'` 结果为 **0**。
+3. `/etc/systemd/system/realm-health-check.service` 与 `.timer` **都存在**，且不含 CR。
+4. `systemctl is-enabled realm-health-check.timer` → `enabled`；`is-active` → `active`。
+5. `OnUnitActiveUSec` ≈ `4s`（默认 `HEALTH_CHECK_INTERVAL=4`；改过则按规则文件里的值）。
+6. `ExecStart=` 指向 `/etc/realm/health/health_check.sh`（**路径里不能有 `\r`**）。
+7. `config.json` 里该端点的 `balance` 形如 `"roundrobin: 1,0"` —— **注意 realm 不认识 `active-standby`，底层输出的是 `roundrobin`**（`lib/realm.sh:706-714`）。比较时按逗号切分取数字序列，忽略空格。
+
+**失败判据与排查方向**
+
+| 现象 | 排查方向 |
+|---|---|
+| timer `is-enabled` 返回 `disabled` / `is-active` 返回 `inactive` | 健康检查服务没被拉起 → 查 `ensure_health_check_service`（`lib/rules.sh:2735`）返回值；它失败时只打警告、**不回滚主备开关**，会出现「规则是主备但没人探测」的状态 → 这是第 1 轮报告 B1 |
+| `health_check.sh` 不存在 | `start_health_check_service` 没跑到；先 `bash -x /etc/realm/xwFailover.sh start` 看断点 |
+| `ExecStart` 路径带 `\r` | 落盘的 unit 是 CRLF → 同 A-1 第 3 步 |
+| `balance` 还是 `roundrobin: 1,1` 或权重不对 | `port_weights` 与目标数没对齐；查规则文件里 WEIGHTS 的存储约定（第 1 条全量、其余单值） |
+
+**交互路径复验**（可选，确认 UI 也能触发同一条链）：
+
+```bash
+pf   # 主菜单 → 6. 负载均衡管理 → 权重配置管理 → 选端口 8443 → 权重序列填 1,0 → 确认
+```
+
+**危险动作**：`apply_port_group_weight_config` 末尾会调 `service_restart` → **realm 重启，转发短暂中断**；并会写 `/etc/realm/rules/*`。业务机先备份。
+
+---
+
+## A-4　健康状态文件格式与文档一致
+
+**验收目标**：状态文件结构与 `docs/health-check-and-failover.md` 声明的格式逐字段一致。
+
+**前置**：A-3 已完成且健康检查至少跑过 1 轮。
+
+**命令**
+
+```bash
+echo "--- 头两行注释 ---"
+head -2 /etc/realm/health/health_status.conf
+
+echo "--- 数据行字段数分布（应只有 7）---"
+grep -v '^#' /etc/realm/health/health_status.conf | awk -F'|' '{print NF}' | sort | uniq -c
+
+echo "--- STATUS 取值集合（应只有 healthy / failed）---"
+grep -v '^#' /etc/realm/health/health_status.conf | awk -F'|' '{print $3}' | sort | uniq -c
+
+echo "--- 末字段应为整数时间戳 ---"
+grep -v '^#' /etc/realm/health/health_status.conf | awk -F'|' '$7 !~ /^[0-9]+$/ {print "BAD-TS:", $0}' | head
+
+echo "--- 文档声明的格式 ---"
+grep -n 'RULE_ID|TARGET|STATUS' /usr/local/bin/../../..//dev/null 2>/dev/null
+grep -rn 'RULE_ID|TARGET|STATUS|FAIL_COUNT|SUCCESS_COUNT|LAST_CHECK|FAILURE_START_TIME' docs/ 2>/dev/null | head
+```
+
+**期望结果（可判定）**
+
+1. 前两行是注释，第 1 行含 `RULE_ID|TARGET|STATUS|FAIL_COUNT|SUCCESS_COUNT|LAST_CHECK|FAILURE_START_TIME`。
+2. 数据行字段数**只有 7**（`awk` 输出只有一个计数，值为 7）。
+3. `STATUS` **只有 `healthy` / `failed`** 两种取值。
+4. 第 7 字段**全部是纯数字**（`BAD-TS:` 无输出）。
+5. 文档里声明的格式串与文件头注释**逐字符一致**。
+
+**失败判据与排查方向**
+
+| 现象 | 排查方向 |
+|---|---|
+| 字段数不是 7 | 生成端与文档端不同版本 → 比对 `/etc/realm/health/health_check.sh` 与 `lib/health.sh` 的写入语句 |
+| 出现第 3 种 STATUS | 判定逻辑里还有别的状态值 → 查 `lib/health.sh` 的状态机 |
+| 末字段不是数字 | 老格式（无 `failure_start_time`）未升级 → 文档提到过旧格式兼容，检查读取端是否做了兼容 |
+| **TARGET 只有 host、没有端口** | 这是**已知设计**（写入端 `target_key="${RULE_ID}|${target}"`，target 是裸 host），但文档没写明 → 见附录 A-3；**不判 FAIL，但要登记** |
+
+**危险动作**：**不要手工编辑** `health_status.conf`（每轮健康检查会原子重写，手改必丢）；排查时只读。
+
+---
+
+## A-5　主节点断连 → 权重翻 `0,1`
+
+**验收目标**：主目标不可达后，经过 `FAILURE_THRESHOLD` 轮，realm 实际配置的权重翻转为 `0,1`（备接管）。
+
+**前置**：A-3 完成；两个监听已起（见下）。
+
+**命令**
+
+```bash
+# 造两个目标（不同 IP，同一端口）
+python3 -m http.server 8443 --bind 127.0.0.1 >/tmp/acc-a.log 2>&1 & echo $! >/tmp/acc-a.pid
+python3 -m http.server 8443 --bind 127.0.0.2 >/tmp/acc-b.log 2>&1 & echo $! >/tmp/acc-b.pid
+sleep 1
+
+echo "--- 初始权重（应为 1,0）---"
+jq -r '.endpoints[].balance' /etc/realm/config.json
+
+echo "--- 模拟主节点断网：杀掉 127.0.0.1 的监听 ---"
+kill "$(cat /tmp/acc-a.pid)"; rm -f /tmp/acc-a.pid
+
+echo "--- 等待 FAILURE_THRESHOLD(2) x interval(4s) + 余量 ---"
+sleep 20
+
+echo "--- 状态文件 ---"
+grep -v '^#' /etc/realm/health/health_status.conf
+
+echo "--- 翻转后的权重（应为 0,1）---"
+jq -r '.endpoints[].balance' /etc/realm/config.json
+
+echo "--- 日志 ---"
+journalctl -u realm-health-check.service -n 30 --no-pager | grep -E 'FAILURE|CONFIG|RECOVERY'
+```
+
+**期望结果（可判定）**
+
+1. 初始 `balance` 的权重序列 = `1,0`。
+2. 杀掉主监听后 **≥ 20 秒**内，`health_status.conf` 里 `127.0.0.1` 那行的 `STATUS=failed`、`FAIL_COUNT≥2`；`127.0.0.2` 那行 `STATUS=healthy`。
+3. `config.json` 的权重序列变为 **`0,1`**（顺序对应端点顺序，不是「主机名顺序」）。
+4. `journalctl` 里出现 `[FAILURE] 目标 127.0.0.1:8443 检测失败…` 与 `[CONFIG] 检测到节点状态变化…`。
+5. **关键**：`127.0.0.2` 的那行**不能**也是 failed。
+
+**失败判据与排查方向**
+
+| 现象 | 排查方向 |
+|---|---|
+| 两个目标都 failed | 全局探测失败（多半两条规则的 host 被判成同一个 key，见附录 A-3）；或健康检查根本没在跑 |
+| 权重没翻 | ① 状态没进 failed → 看 `FAILURE_THRESHOLD` / `CONNECTION_TIMEOUT`；② 状态进了 failed 但 config 没重生成 → 看 `journalctl` 有没有 `[CONFIG]`，没有就是 `pf --restart-service` 没被调用（`lib/health.sh` 里调的是 `pf --restart-service`） |
+| `[CONFIG]` 有但 config.json 没变 | `pf --restart-service` 失败 → 手工执行 `pf --restart-service` 看报错；realm 起来后权重仍不变 → 生成端 `lib/realm.sh:519` 的健康映射 key 不匹配 |
+| 翻转了但方向反了 | 权重索引与目标顺序错位 → 回看第 1 轮报告 S1（权重落盘用 rule_index 与目标索引可能错位） |
+
+**危险动作**：`kill` 监听进程是低危。**如果改用 iptables 模拟断网**：只允许 `127.0.0.0/8`，**严禁动 22 端口**；拦完用 `iptables -L -n` 留证，验收后删除规则。
+
+---
+
+## A-6　主节点恢复 → 权重翻回 `1,0`
+
+**验收目标**：主目标恢复后，经过 `SUCCESS_THRESHOLD` + **`RECOVERY_COOLDOWN`（默认 120 秒）**，权重翻回 `1,0`（严格主备切回）。
+
+**前置**：A-5 已完成（当前处于 `0,1` 状态）。
+
+**命令**
+
+```bash
+# 恢复主节点
+python3 -m http.server 8443 --bind 127.0.0.1 >/tmp/acc-a.log 2>&1 & echo $! >/tmp/acc-a.pid
+sleep 1
+
+echo "--- 恢复后立刻（应当仍是 0,1，冷却期未到）---"
+jq -r '.endpoints[].balance' /etc/realm/config.json
+
+echo "--- 等待 SUCCESS_THRESHOLD(2) + RECOVERY_COOLDOWN(120s) + 余量 ---"
+sleep 140
+
+echo "--- 翻回了吗（应为 1,0）---"
+jq -r '.endpoints[].balance' /etc/realm/config.json
+grep -v '^#' /etc/realm/health/health_status.conf
+journalctl -u realm-health-check.service -n 40 --no-pager | grep -E 'RECOVERY|CONFIG'
+```
+
+**期望结果（可判定）**
+
+1. 恢复后**立刻**读取，权重仍是 `0,1`（**冷却期没到就不许翻**——这是严格主备的关键行为）。
+2. **≥ 140 秒**后，权重变为 **`1,0`**。
+3. `health_status.conf` 中 `127.0.0.1` 行 `STATUS=healthy`。
+4. `journalctl` 出现 `[RECOVERY] 目标 127.0.0.1:8443 已恢复健康`。
+
+**失败判据与排查方向**
+
+| 现象 | 排查方向 |
+|---|---|
+| 冷却期没到就翻回 | 冷却期判定失效 → 查 `RECOVERY_COOLDOWN`（默认 120，`_ensure_rule_field_default` 写入）是否真的落到规则文件里 |
+| 140 秒后仍未翻回 | ① 看 `SUCCESS_THRESHOLD`（默认 2）② 看 `failure_start_time` 是否被正确重置 ③ 看 `[RECOVERY]` 日志有没有 |
+| 翻回成 `1,1` | 兜底逻辑或多主语义有问题（第 1 轮报告缺口 D） |
+
+**危险动作**：无（低危）。**注意**：本项天然耗时 > 2.5 分钟，验收窗口要留够。
+
+---
+
+## A-7　不装 netcat 时靠 `/dev/tcp` 仍能切换
+
+**验收目标**：系统没有 `nc`（或 `nc` 不支持 `-z`）时，探测回退到 `bash /dev/tcp`，健康检查**继续正常工作**，不把全部目标误判为故障。
+
+**前置**：A-3 完成（主备已在跑）；本机 `command -v nc` 有输出（否则本项直接 PASS 跳过）。
+
+**命令**
+
+```bash
+# 0) 先证明 /dev/tcp 本身可用（前提）
+bash -c 'exec 3<>/dev/tcp/127.0.0.2/8443' && echo "DEVTCP_OK" || echo "DEVTCP_FAIL"
+
+# 1) 临时屏蔽 nc（必须同一命令块内改回）
+sudo bash <<'EOF'
+set -e
+NC=$(command -v nc || true)
+if [ -z "$NC" ]; then echo "NO_NC_INSTALLED"; exit 0; fi
+mv "$NC" "${NC}.accbak"
+restore() { mv "${NC}.accbak" "$NC" 2>/dev/null || true; }
+trap restore EXIT
+
+echo "--- 屏蔽 nc 后手工跑一轮健康检查 ---"
+bash /etc/realm/health/health_check.sh; echo "HEALTH_EXIT=$?"
+
+echo "--- 状态文件是否仍在更新 ---"
+stat -c '%y %n' /etc/realm/health/health_status.conf
+sleep 6
+stat -c '%y %n' /etc/realm/health/health_status.conf
+EOF
+
+# 2) 确认 nc 已恢复
+command -v nc && nc -h 2>&1 | head -2
+```
+
+**期望结果（可判定）**
+
+1. `DEVTCP_OK`（前提成立）。
+2. 屏蔽 nc 后 `bash /etc/realm/health/health_check.sh` **退出码 0**，无 `command not found` 类报错。
+3. 两次 `stat` 的 mtime **不同** → 状态文件仍在被更新（探测仍在跑）。
+4. `127.0.0.2` 那行 **仍是 `healthy`**（没有被误判 failed）。
+5. 脚本结束后 `command -v nc` **恢复有输出**，且 `nc` 文件已回到原位。
+
+**失败判据与排查方向**
+
+| 现象 | 排查方向 |
+|---|---|
+| 全部目标变 failed | 回退分支没生效 → 查 `lib/health.sh` 的 `check_connectivity`（nc 能力探测 → `/dev/tcp` 回退）。**能力探测靠 `nc -h \| grep -z` 匹配帮助文本**，各家 nc 的 usage 排版不同，可能整条 nc 分支被跳过 |
+| `HEALTH_EXIT` 非 0 且报 `timeout: command not found` | `timeout` 缺失（coreutils）→ 极简镜像场景；此时**必然全判故障** |
+| mtime 不变 | 健康检查没在跑 → 先看 timer 是否 active |
+| nc 没恢复 | `trap restore EXIT` 生效即可；若中途 `kill -9` 导致 trap 不执行 → 手工 `mv ${NC}.accbak $NC` |
+
+**危险动作**：**改 `/usr/bin/nc` 文件名属于系统级改动** —— 必须用 `trap` 保证改回；**不要在有并发任务/其它人用机的机器上做**；不要用 `apt-get remove netcat-openbsd`（会留下 dpkg 状态不一致）。备选方案：`unshare`/容器隔离（但本机无 Docker，只能在 VPS 上装）。
+
+---
+
+## A-8　journalctl 输出与 vacuum
+
+**验收目标**：健康检查的日志格式可读、可检索；journal 按 7 天保留策略被清理。
+
+**前置**：A-5/A-6 已跑过（有故障与恢复记录）。
+
+**命令**
+
+```bash
+echo "--- 近期日志 ---"
+journalctl -u realm-health-check.service -n 50 --no-pager
+
+echo "--- 关键事件计数 ---"
+journalctl -u realm-health-check.service --since "-30 min" --no-pager \
+  | grep -cE '\[FAILURE\]|\[RECOVERY\]|\[CONFIG\]|\[INFO\] 健康检查完成'
+
+echo "--- 日志量 ---"
+journalctl -u realm-health-check.service --since "-1 day" --no-pager | wc -l
+
+echo "--- vacuum 干跑（不改任何东西）---"
+journalctl --vacuum-time=7d --dry-run | tail -5
+
+echo "--- 当前保留策略 ---"
+grep -E 'MaxRetentionSec|SystemMaxUse' /etc/systemd/journald.conf 2>/dev/null || echo "(journald.conf 未显式设置，走默认)"
+
+echo "--- unit 的 journal 归属 ---"
+systemctl show realm-health-check.service -p SyslogIdentifier -p StandardOutput -p StandardError
+```
+
+**期望结果（可判定）**
+
+1. 日志里能看到 `[INFO] 健康检查完成`、`[FAILURE] …`、`[RECOVERY] …`、`[CONFIG] …` 四类标记。
+2. `grep -c` 结果 **≥ 4**（说明四类都出现过）。
+3. `journalctl --vacuum-time=7d --dry-run` 输出的条目数与实际保留策略一致（**dry-run 不删任何东西**）。
+4. `SyslogIdentifier=realm-health`，`StandardOutput=journal`。
+5. 1 天内的日志行数**不是持续暴涨**（健康检查默认 4 秒一轮，一天 ≈ 2 万行量级属正常；**远超这个量级说明有重复刷屏**）。
+
+**失败判据与排查方向**
+
+| 现象 | 排查方向 |
+|---|---|
+| journal 完全没记录 | unit 没跑，或 `StandardOutput` 不是 journal |
+| 一天行数远超 2 万 | 每轮打了过多日志，或 timer 间隔被设成了秒级 |
+| `vacuum` 报 `Unknown option` | systemd 版本过旧（`--dry-run` 需 systemd ≥ 230）→ 见兼容性矩阵 |
+| 一直不执行 vacuum | vacuum 只在**整点**（`current_minute == 00`）触发；非整点看到没清理是正常的 |
+
+**危险动作**：`journalctl --vacuum-time=7d`（**不带 `--dry-run`**）会**真删日志**，不可恢复 → 验收期间一律加 `--dry-run`；确需清理时先 `journalctl --backup` 或先导出。
+
+---
+
+## A-9　停服务 + 卸载后的残留清理
+
+**验收目标**：卸载后不留 systemd unit、不留常驻进程、不留 `/etc/realm` 残留配置（除用户明确保留的数据）。
+
+**前置**：**必须是测试机**（本项会删配置）；已 `cp -a /etc/realm /etc/realm.bak.$(date +%s)`。
+
+**命令**
+
+```bash
+# 0) 备份（不可跳过）
+sudo cp -a /etc/realm /etc/realm.bak.$(date +%s)
+sudo cp -a /etc/xwpf /etc/xwpf.bak.$(date +%s) 2>/dev/null || true
+
+# 1) 卸载前快照（用于比对残留）
+sudo ls -la /etc/systemd/system/ | grep -E 'realm|xwpf' | tee ~/realm-acceptance/A9-before-units.txt
+sudo ls -la /etc/realm/ | tee ~/realm-acceptance/A9-before-realm.txt
+
+# 2) 走官方卸载入口（pf 主菜单 → 8. 卸载服务；两阶段：Realm 服务与配置 / 脚本文件）
+sudo pf
+# 菜单里选「8. 卸载服务」，按提示走完两阶段
+
+# 3) 残留检查
+echo "--- systemd unit ---"
+ls /etc/systemd/system/ | grep -E 'realm|xwpf' || echo "NO-UNIT-LEFT"
+echo "--- 常驻进程 ---"
+pgrep -af 'realm|xwpf-failover|health_check' || echo "NO-PROCESS-LEFT"
+echo "--- /etc/realm ---"
+ls -la /etc/realm 2>/dev/null || echo "NO-/etc/realm"
+echo "--- /etc/xwpf ---"
+ls -la /etc/xwpf 2>/dev/null || echo "NO-/etc/xwpf"
+echo "--- 安装目录 ---"
+ls -la /usr/local/bin/lib /usr/local/bin/cmd /usr/local/bin/pf /usr/local/bin/xwPF.sh 2>/dev/null || echo "NO-INSTALL-FILES"
+echo "--- systemd 状态 ---"
+systemctl list-unit-files | grep -E 'realm|xwpf' || echo "NO-UNIT-FILE-REGISTERED"
+```
+
+**期望结果（可判定）**
+
+1. `ls /etc/systemd/system/ | grep -E 'realm|xwpf'` → **无输出**（打印 `NO-UNIT-LEFT`）。
+2. `pgrep -af 'realm|xwpf-failover|health_check'` → **无输出**。
+3. `/etc/realm`、`/etc/xwpf` → 不存在，或只剩**明确声明保留**的目录（用户备份、证书）。
+4. `/usr/local/bin/{pf,xwPF.sh,lib/,cmd/}` → 脚本文件被清掉（`uninstall_script_files` 的职责）。
+5. `systemctl list-unit-files | grep -E 'realm|xwpf'` → 无输出。
+
+**失败判据与排查方向**
+
+| 现象 | 排查方向 |
+|---|---|
+| unit 残留但 `systemctl list-unit-files` 没有 | 只是 `/etc/systemd/system/` 里的孤儿文件 → 卸载流程漏了 `rm -f` |
+| 进程还在 | 只 `stop` 了 timer 没停 service，或守护进程没被 `disable` |
+| `/etc/realm` 还在 | 两阶段卸载只做了阶段一（`uninstall_realm_stage_one`），阶段二（`uninstall_script_files`）没跑 |
+| 卸载后 `pf` 还在 | 快捷命令软链没删 |
+
+**危险动作**：**本项会删除全部转发配置与规则**。只在测试机做；执行前必须完成第 0 步备份；执行后**不要**立刻删备份，先确认业务无影响再清理。
+
+---
+
+## A-10　`xwpf-failover` 的 active/passive 热切换（进程级）
+
+**验收目标**：`xwpf-failover` 守护进程（**与 A-3~A-6 的 LB 模式故障转移是两套东西**）能自动完成主备角色互换。
+
+**前置**：**需要两台真实机器**（主 + 备），或一台机器 + 一个可被判定为故障的远端地址。本机无 Docker，无法本地模拟双节点。
+
+**命令（主节点执行）**
+
+```bash
+echo "--- 守护进程状态 ---"
+systemctl status xwpf-failover --no-pager | head -20
+systemctl is-enabled xwpf-failover
+
+echo "--- 池配置 ---"
+sudo cat /etc/xwpf/failover.json | jq . 2>/dev/null || sudo cat /etc/xwpf/failover.json
+
+echo "--- 版本记录（判定是否需要重装升级）---"
+sudo cat /usr/local/bin/.xwpf-failover-version 2>/dev/null || echo "NO-VERSION-FILE"
+
+echo "--- 日志：应出现 listening on 与状态迁移 ---"
+sudo journalctl -u xwpf-failover -n 60 --no-pager
+
+echo "--- 监听端口 ---"
+sudo ss -lntp | grep -E 'xwpf-failover|realm' || echo "NO-LISTEN"
+```
+
+**命令（制造主节点故障后，在另一台执行）**
+
+```bash
+sudo journalctl -u xwpf-failover --since "-5 min" --no-pager | grep -Ei 'failover|switch|standby|active|promote'
+sudo cat /etc/xwpf/failover.json | jq . 2>/dev/null
+```
+
+**期望结果（可判定）**
+
+1. `systemctl is-active xwpf-failover` → `active`；`is-enabled` → `enabled`。
+2. `/etc/xwpf/failover.json` 存在且是**合法 JSON**（`jq .` 不报错）。
+3. 日志里有 `listening on …` 字样（`cmd/README-failover.md:88` 明确以此为验收标志）。
+4. 主节点断连后，日志出现**状态迁移**记录（switch/standby/active/promote 之一），且池配置里的**主备角色互换**。
+5. 切换过程中**不需要人工干预**，且**不需要重启 realm 守护**（`cmd/README-failover.md:35` 称它会 restart realm 与自身）。
+
+**失败判据与排查方向**
+
+| 现象 | 排查方向 |
+|---|---|
+| `systemctl is-active` → `inactive` | 没 `enable --now`；或 `/usr/local/bin/xwpf-failover` 不存在（安装时的 cmd 副本没落盘） |
+| 日志无 `listening on` | 守护进程起来了但没绑到端口 → 查池配置里的监听端口是否被占 |
+| 有迁移日志但角色没换 | 池配置写回失败 → 查 `/etc/xwpf/failover.json` 权限与 `jq` 是否可用 |
+| 切换后转发仍走旧主 | 探测端与守护端用了不同的目标列表 → 这是 **A-3~A-6（LB 模式）** 与 **A-10（进程级）** 两条链路的边界，**不要混用结论** |
+
+**危险动作**：A-10 会**真的把流量切走**。必须在明确的双节点测试环境做；不要在承载真实流量的主节点上做故障注入。
+
+---
+
+## 11. 最小化 Debian 兼容性矩阵
+
+**为什么需要矩阵**：`lib/core.sh:24 REQUIRED_TOOLS` 只保证 `curl wget tar grep cut bc jq openssl python3`；`nc` **不在**清单内（健康检查已不依赖它，但**仍依赖 `timeout`**——属 coreutils，极简镜像也基本都有）。`jq` 缺失会让 `lib/core.sh:135` / `lib/rules.sh:1474` 的 config.json 合并退化。
+
+| 变量 | 取值 | **必跑**项 | 该组合的重点观察 |
+|---|---|---|---|
+| **netcat-openbsd** | 装了（`apt-get install -y netcat-openbsd`） | A-1 A-3 A-5 A-6 A-8 | 探测走 nc 分支；确认 `nc -h 2>&1 \| grep -q -- '-z'` 在**本机 nc 版本上返回真**（能力探测靠匹配帮助文本） |
+| | **不装**（或 busybox nc） | **A-7** + A-5 A-6 | 必须靠 `bash /dev/tcp` 回退；**任何目标都不能被误判 failed** |
+| **jq** | 装了 | 全部 | 基准 |
+| | **不装** | A-1 A-2 A-9 A-10 | ① 安装器应**自动补装**（在 REQUIRED_TOOLS 里）；② 故意不装时，`config.json` 的 network 段合并会退化 → 查 `lib/core.sh:135` 的 `2>/dev/null \|\| echo "{}"` 兜底是否留下残缺配置 |
+| **systemd 版本** | Debian 11（systemd 247） | A-3 A-8 A-9 | `journalctl --vacuum-time=7d --dry-run` 需 systemd ≥ 230（247 满足）；timer `OnUnitActiveUSec` 行为 |
+| | Debian 12（systemd 252） | A-3 A-8 A-9 | 基准；`systemctl show -p` 字段名有微调 |
+| | Ubuntu 22.04（systemd 249） | A-3 A-8 A-9 | `systemd-analyze verify` 对 unit 的校验更严 |
+| **shell** | `sh`（dash）调用 | A-1 A-3 | 所有 `.sh` 入口必须带 `#!/bin/bash`；`sh xwPF.sh install` **应明确失败**而不是半跑 |
+| | `bash`（Debian 默认 5.2） | 全部 | 基准 |
+
+**矩阵最小建议组合**（资源有限时至少跑这 4 组）：
+
+1. Debian 12 + netcat-openbsd + jq　→ 基准全绿
+2. Debian 12 + **无 nc** + jq　→ A-5 A-6 A-7（**回退路径**）
+3. Debian 11 + netcat-openbsd + jq　→ A-3 A-8 A-9（**旧 systemd**）
+4. Debian 12 + netcat-openbsd + **无 jq**　→ A-1 A-9（**自动装依赖**）
+
+**每组跑完必须记录**：`~/realm-acceptance/baseline.txt`（OS/systemd/依赖）+ 各项 PASS/FAIL + 失败现象原文。
+
+---
+
+## 12. 结果记录模板
+
+| 项 | 目标 | 结果 | 现象 / 证据 | 备注 |
+|---|---|---|---|---|
+| A-1 | 一键安装落盘 | ☐PASS ☐FAIL ☐BLOCKED | | 重点：落盘文件含 CR 数 = |
+| A-2 | `pf --help` | ☐PASS ☐FAIL ☐BLOCKED | | 三种写法退出码 |
+| A-3 | 权重 1,0 → 主备 + timer | ☐PASS ☐FAIL ☐BLOCKED | | timer enabled/active |
+| A-4 | 状态文件格式 | ☐PASS ☐FAIL ☐BLOCKED | | 字段数 = |
+| A-5 | 主断 → 权重 0,1 | ☐PASS ☐FAIL ☐BLOCKED | | 翻转耗时 |
+| A-6 | 主恢复 → 权重 1,0 | ☐PASS ☐FAIL ☐BLOCKED | | 冷却期是否生效 |
+| A-7 | 无 nc 靠 /dev/tcp | ☐PASS ☐FAIL ☐BLOCKED | | 误判 failed 的目标数 = |
+| A-8 | journal + vacuum | ☐PASS ☐FAIL ☐BLOCKED | | 四类标记是否齐全 |
+| A-9 | 卸载残留清理 | ☐PASS ☐FAIL ☐BLOCKED | | 残留 unit / 进程数 = |
+| A-10 | xwpf-failover 热切换 | ☐PASS ☐FAIL ☐BLOCKED | | 需双节点 |
+
+**缺陷单请直接交 Chief 路由**（按第 1 轮约定：审稿只出报告与清单，不改 `lib/`、`tests/`、`docs/`、`xwFailover.sh`）。
+
+---
+
+## 附：归档期间的门禁实测基线（供对照）
+
+以**唯一入口** `tests/run_tests.sh`、从**干净 clone + 指定 SHA checkout** 实测（不是工作区）：
+
+| SHA | 退出码 | 结果 | 说明 |
+|---|---|---|---|
+| `2244886` | 1 | 22 条 / 通过 14 / 失败 8 | 失败：T02 T05 T06 T07 T16 T17 T20 T22 |
+| `a9102c1` | **0** | **22 条 / 全过** | 8 条红已由 `4558e65` 修掉 |
+| `9d49653` | 0 | 22 条 / 全过 | |
+
+> **但门禁全绿 ≠ 缺陷已修**：截至 `a9102c1`，第 1 轮报告的 **B2（`source` 注入）/ B4（`TARGET_STATES` 未清）/ 探测函数三份拷贝**仍然成立，且**唯一性守卫（`check_connectivity() {` 出现次数 == 1）尚未落地** —— 见 `reports/round1-baseline-review.md` 附录 A-2、A-3。

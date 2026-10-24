@@ -1,19 +1,30 @@
 #!/bin/bash
-# realm-xwPF-offline-active-standby · 测试台架主入口
+# realm-xwPF-offline-active-standby · 测试台架主入口（唯一入口）
 #
 # 用法：
-#   bash tests/run_tests.sh                 # 跑全部用例
-#   bash tests/run_tests.sh --only T01,T02  # 只跑指定用例
-#   bash tests/run_tests.sh --repeat 3      # 连跑 3 轮，校验结果一致
-#   bash tests/run_tests.sh --list          # 列出用例
-#   bash tests/run_tests.sh --clean         # 跑完删掉沙箱
+#   bash tests/run_tests.sh                       # 跑全部用例
+#   bash tests/run_tests.sh --only T01,T02        # 只跑指定用例
+#   bash tests/run_tests.sh --repeat 3            # 连跑 3 轮，校验结果一致
+#   bash tests/run_tests.sh --list                # 列出用例
+#   bash tests/run_tests.sh --clean               # 跑完删掉沙箱
+#   BASE_SHA=a9102c1 bash tests/run_tests.sh      # 指定冻结点（推荐）
+#   bash tests/run_tests.sh --base-sha a9102c1    # 同上
+#
+# ★ 冻结点机制（第 2 轮起）
+#   被测产物一律来自 `git show $BASE_SHA:<path>`，**不读工作区文件**。
+#   仓库多人并行改动，工作区随时在变 —— 读工作区就会出现「第 1 轮红、后 2 轮绿」的假抖动。
+#   BASE_SHA 默认取当前 HEAD；正式跑批请显式指定，报告里必须写上这个 SHA。
+#   SHA 一变，旧结论全部作废，必须重跑。
 #
 # 退出码：全部通过 0；存在失败 非 0。
 #
-# 台架约定见 tests/README.md。
+# 台架约定见 tests/TEST-HARNESS.md。
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# 台架版本：台架自身的改动会让旧报告的结论打折，改了台架就 bump
+HARNESS_VERSION="v2.1.0 (frozen-base + docs-refs)"
 
 # shellcheck source=lib/harness.sh
 . "$SCRIPT_DIR/lib/harness.sh"
@@ -24,6 +35,7 @@ ONLY=""
 REPEAT=1
 CLEAN=0
 LIST=0
+BASE_SHA="${BASE_SHA:-}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -35,6 +47,10 @@ while [ $# -gt 0 ]; do
             REPEAT="${2:-1}"
             shift 2
             ;;
+        --base-sha)
+            BASE_SHA="${2:-}"
+            shift 2
+            ;;
         --clean)
             CLEAN=1
             shift
@@ -44,7 +60,7 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         -h|--help)
-            sed -n '2,14p' "$0"
+            sed -n '2,22p' "$0"
             exit 0
             ;;
         *)
@@ -53,6 +69,17 @@ while [ $# -gt 0 ]; do
             ;;
     esac
 done
+
+# 冻结点解析与校验：SHA 不存在就直接停，不要退化成"读工作区"
+if [ -z "$BASE_SHA" ]; then
+    BASE_SHA="$(cd "$REPO_ROOT" && git rev-parse HEAD 2>/dev/null)"
+fi
+if ! (cd "$REPO_ROOT" && git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null); then
+    echo "错误: 冻结点不存在: $BASE_SHA" >&2
+    echo "      用 git log --oneline -10 查可用 SHA，或用 --base-sha 指定" >&2
+    exit 2
+fi
+BASE_SHA="$(cd "$REPO_ROOT" && git rev-parse "$BASE_SHA" 2>/dev/null)"
 
 # 用例登记表：编号:函数名
 CASES=(
@@ -78,6 +105,20 @@ CASES=(
     "T20:case_T20_bootstrap_offline"
     "T21:case_T21_xwpf_help_runtime"
     "T22:case_T22_crlf_install_artifact"
+    # —— 第 2 轮：从原 4 套独立脚本并入的用例 ——
+    "T23:case_T23_auto_standby_multi_rule"
+    "T24:case_T24_priority_primary_selection"
+    "T25:case_T25_back_to_roundrobin"
+    "T26:case_T26_probe_source_behavior"
+    "T27:case_T27_probe_generated_copy_behavior"
+    "T28:case_T28_two_probe_copies_identical"
+    "T29:case_T29_active_standby_six_states"
+    "T30:case_T30_exclude_mode_five_states"
+    "T31:case_T31_set_u_robustness"
+    "T32:case_T32_single_probe_implementation"
+    "T33:case_T33_missing_optional_field_set_u"
+    # —— 第 3 轮：文档源码引用一致性 ——
+    "T34:case_T34_docs_source_refs"
 )
 
 for f in "$SCRIPT_DIR"/cases/*.sh; do
@@ -107,17 +148,21 @@ selected_cases() {
 }
 
 banner() {
-    local commit dirty
-    commit=$(cd "$REPO_ROOT" && git rev-parse --short HEAD 2>/dev/null)
+    local dirty
     dirty=$(cd "$REPO_ROOT" && git status --porcelain 2>/dev/null | tr '\n' ';')
     echo "=============================================================="
-    echo " realm-xwPF-offline-active-standby · 测试台架"
+    echo " realm-xwPF-offline-active-standby · 测试台架（唯一入口）"
     echo "=============================================================="
     echo "仓库        : $REPO_ROOT"
-    echo "被测提交    : $commit"
+    echo "★ 冻结点    : $BASE_SHA"
+    echo "  冻结点标题: $(cd "$REPO_ROOT" && git log -1 --format='%ad %s' "$BASE_SHA" 2>/dev/null)"
+    echo "  当前 HEAD : $(cd "$REPO_ROOT" && git rev-parse HEAD 2>/dev/null)（仅供对照，不作为被测产物）"
+    echo "  台架版本  : $HARNESS_VERSION"
+    echo "  产物来源  : git show \$BASE_SHA:<path>（不读工作区）"
     echo "工作区改动  : ${dirty:-（干净）}"
     echo "bash        : $BASH_VERSION"
     echo "沙箱根目录  : $SBX_ROOT"
+    echo "冻结态原始  : $SBX_RAW（git show 原始字节）"
     echo "LF 副本     : $SBX_SRC"
     echo "执行副本    : $SBX_RUN（= LF 副本 + 路径重定向 + root 模拟）"
     echo "假 bin      : $SBX_BIN （nc 单独放 $SBX_BIN_NC，默认不进 PATH）"
@@ -254,8 +299,31 @@ main() {
     echo
     echo "汇总: 总计 $((pass + fail)) 条，通过 $pass，失败 $fail"
     echo "多轮一致性（$REPEAT 轮）: $stable"
+    echo "★ 冻结点 BASE_SHA : $BASE_SHA"
+    echo "★ 台架版本        : $HARNESS_VERSION"
+    echo "★ 产物指纹        : $SBX_ROOT/manifest.txt"
     echo "沙箱证据目录: $SBX_ROOT/cases"
     echo "（每个用例的 stdout / notes / fails / meta 都在 $SBX_ROOT/cases/$ID.* 里）"
+
+    # 提交信息自查提示（第 2 轮新增）
+    # 背景：第 1 轮出现过「另三套脚本全绿、正式入口 run_tests.sh 16/22 红」，
+    # 提交信息却写成"全过"。这里把"提交信息声称全过"这件事显式提示出来。
+    local last_subject
+    last_subject=$(cd "$REPO_ROOT" && git log -1 --format='%s' 2>/dev/null)
+    echo
+    echo "── 提交信息自查 ─────────────────────────────────────────"
+    echo "· 本台架是**唯一入口**：bash tests/run_tests.sh"
+    echo "· 提交信息若声称「全过/通过/测试通过」，必须引用本入口的输出"
+    echo "  （BASE_SHA + 汇总行），不要引用其它脚本的 PASS 计数。"
+    if printf '%s' "$last_subject" | grep -qE '全过|全部通过|测试通过|passed|green'; then
+        if ! printf '%s' "$last_subject" | grep -q 'run_tests.sh'; then
+            echo "⚠ 提示：上一条提交信息「$last_subject」声称全过，但没引用 run_tests.sh —— 请核对本次真实结果。"
+        else
+            echo "· 上一条提交信息: $last_subject"
+        fi
+    else
+        echo "· 上一条提交信息: ${last_subject:-（无）}"
+    fi
 
     if [ "$CLEAN" = "1" ]; then
         rm -rf "$SBX_ROOT"

@@ -1,0 +1,69 @@
+# 被测产物基线快照（冻结点机制）
+repo        : /c/Users/liwend/.minimax-agent-cn/projects/realm-xwPF-offline-active-standby
+BASE_SHA    : a9102c1a20719cb808f11f9f5bbe94dbefceab30
+BASE_SHA 全 : a9102c1a20719cb808f11f9f5bbe94dbefceab30
+BASE 标题   : Sat Oct 24 10:59:39 2026 +0800 docs: 源码引用升级为函数级 + 补「IP 通但链路不通」排查专章
+harness     : v2.0.0 (frozen-base)
+time        : 2026-10-24 11:18:21 +0800
+sandbox     : /tmp/xwpf-sbx.LfdWqn
+
+--- 当前工作区 HEAD（仅供对照，不作为被测产物）---
+head        : 27fc74a8d05f88ea6cb99eb3eb1552ee0ed39b20
+
+--- git status --porcelain（跑批时刻的工作区状态）---
+ M lib/core.sh
+ M tests/cases/01_static_contract.sh
+ M tests/cases/02_weight_active_standby.sh
+ M tests/cases/03_failover_runtime.sh
+ M tests/lib/sandbox.sh
+ M tests/run_tests.sh
+ M tests/test_active_standby.sh
+ M tests/test_connectivity.sh
+ M tests/test_e2e.sh
+ M tests/test_set_u.sh
+?? lib/update.sh
+?? tests/BASELINE-round1.md
+?? tests/baseline-manifest.txt
+?? tests/cases/00_common.sh
+?? tests/cases/04_legacy_merged.sh
+
+--- sha256（冻结态原始 blob = 本次被测产物，git show $BASE_SHA:<path>）---
+eda857d567fbd984c220fae7eb0635e1438c99b0dce518bc66f9a78d6004f81f  README.md
+f35dcb398a22557334106888e42536618edaaae325fe4d1592f63bf459980cd8  README_EN.md
+0a814bde0e215e15acb9eb35855c988951ee9963480fb9326eb9a88d34327306  cmd/README-failover.md
+15be865d63f57a70392dc086f8a113c5b67f2a664b5b3ae821d55584feef5677  cmd/xwpf-failover.py
+0133affbb41f18f7e3178c774f89777baa25666ea1a57b13b7c30823c21aa7b2  cmd/xwpf-failover.service
+347bb02c2a5df27c8369c7657fcc37720e43f5049b3efdb3c8b195615c97baa2  docker-web-auth-feasibility.md
+83d3d89aa61f5116f9e1cd57100309ef433f61b60b61d5e76bfcfd9a441a6b8e  docs/README.md
+6e29cf666edb29686a7b576aeed961329a147309897ff78b20b1c8cae2fbb61e  docs/active-standby-logic.md
+85d4b0bcd08b5502e186969087dd381a2a582bb97db780d348c83d4ac99409b3  docs/health-check-and-failover.md
+536bcf2aaf8ffa899cba887615ccf797fe79e3a828866b77b38fff7657b76241  docs/install-and-upgrade.md
+8f0c5b88e1b12d0aaf437ea83c5fcbfa99251933a534b5ab864b91306b7929e5  docs/port-groups-and-weights.md
+48d05fe88e75fe06a88b5a53ef7116df6abeecfc2312e9b2d248eb737bd8f225  docs/troubleshooting.md
+6c154c087f9014ce5519fff00e3cf39251cc1ed5fedea65a34e620b07a704476  lib/core.sh
+1decba8695234c5be54c7e0bc90f2286753c5564b4b46556bdd569d972366c69  lib/failover.sh
+88e35ea851f2a8c7d6753b9f8c4ca50bfac2c8b482138e1b06fa1439be82cce4  lib/health.sh
+cef96d3f199757f275df9b43abfd42688318bf535740e26497d5e3449de2ea8b  lib/realm.sh
+f0289644604e6559a917625e9ffa5c735291e633464882acc42719e693b9cb19  lib/rules.sh
+05d74ca3a87715578dc4221a0541f2ca96e9530ee788ed00d3c119233aa75414  lib/server.sh
+deb4e7a992d2c552d5193cf0f6ceab594dc9c9bf9cc1e82d7fe13a2af65dbafa  lib/ui.sh
+d1dbbe3fb2b6149cced539ad462fc38c285b84a2171833568ef1d6151fa8217d  notifications/telegram.sh
+d9a6c53a902de6bb64262fbdece99744320643f94f0c250d8760b8d3427e37d1  notifications/wecom.sh
+bf7b29b9f23afa2933a965618992622e68c3c677cef4c27597ceba27b848a1d1  port-traffic-dog-README.md
+ab37971ee9b2f05b9eb0de199228275ccb34baff5ae55d223c3a22f141516918  port-traffic-dog.sh
+7d8d826412842746c2e1562d4891cba413ab9e13f8e0cb132fddf1ab50b760eb  speedtest.sh
+f58cb8fccdb3400c0c0af886379ad027afce3b9054b4a1c1bcf4208260f022d6  tests/README.md
+65bb2251d47d68bf70787e16759ebd47f1af1d4606c143c84f1c73641dd2f3ef  tests/TEST-HARNESS.md
+c0e2fe54ae43097874c14e6c05a39eb8dc9cb786fce18a49a1ba4c7f6a0864df  tests/cases/01_static_contract.sh
+bba9e5aec450ec1271a3998f31a2212fb420e80410be2bc7c7bbf2743eb3e79e  tests/cases/02_weight_active_standby.sh
+04cf419bd7e0777decf8036d07c445ce1f18b95ebaeb3d2809869d08708e8a23  tests/cases/03_failover_runtime.sh
+cb057fa70071de4f91d4a3acd7a9424808955279493b65fbc7b9361485ee4462  tests/lib/harness.sh
+448df7bb2e9a17f655a81a43c71ee0bbd64ec4e4f1d3d2ab4f17d16d53dafdef  tests/lib/sandbox.sh
+0de52faaa655fdf6210df88df9e47c94dac3382f83e8caf700e8f793621a81b5  tests/run_tests.sh
+a78f45fced8a3404698e4eb5523ad5ea4cdfc1a07c11b0a6d499bcef31a45fee  tests/test_active_standby.sh
+fa4845228321807e56a445990e2f0514dfa29ead414e9925dbb848fc09450cb5  tests/test_connectivity.sh
+160ab311f01818041b1b92e6a8ac4bd78bb2452292b74959e6034d128daef0bc  tests/test_e2e.sh
+404c8ec01afa28da58afee758046b96fa0c7b311d5a00a217392ac12e85feb19  tests/test_set_u.sh
+d5a2e850eb140b5e95f109631570f308243606cac5e2395e43db41afbe3e0c2f  xwFailover.sh
+bcebc48e3e10d3841360696c84064e676b349150ce1a617f66396dc4dc4488da  xwPF.sh
+0745a973d1c53368881ec0a1e28a99df5888d035f69b8d69c07f7b5e441723a6  xw_realm_OCR.sh
