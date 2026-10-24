@@ -739,6 +739,11 @@ failover_proxy_menu() {
         echo -e "  ${BLUE}说明:${NC} 基于独立守护进程配合 realm 回环监听，"
         echo -e "        实现真正的进程级主备热切换（不等负载均衡池）。"
         echo ""
+        echo -e "  ${GREEN}提示:${NC} 只想在**同一个端口**上做「主备 / 负载均衡」切换？走更简单的路径："
+        echo -e "        ${GREEN}转发配置管理 → 负载均衡管理 → 权重配置管理${NC}"
+        echo -e "        权重填 ${GREEN}10,0${NC} → 自动进主备（主故障自动切备、主恢复自动切回）"
+        echo -e "        权重填 ${GREEN}5,5${NC} → 回到普通负载均衡（按比例分流）"
+        echo ""
 
         # 守护状态
         if systemctl is-active "${XWPF_FAILOVER_SERVICE}" >/dev/null 2>&1; then
