@@ -13,6 +13,7 @@ xwPF 是一套跑在 Linux VPS 上的 Bash 转发管理工具。本目录是它�
 | **[健康检查与故障转移](health-check-and-failover.md)** | 想让出口挂了自动切走、主挂了自动切备 | 健康检查五项参数、systemd unit、健康状态文件、状态机、切换与回切逻辑 |
 | **[故障排查手册](troubleshooting.md)** | 出问题了 | 9 类常见症状的确认方法与修复步骤 + 报 bug 前的信息收集清单 |
 | [主备模式状态转换推演](active-standby-logic.md) | 要理解主备每一步怎么翻权重 | 7 个状态的逐态推演、realm 配置输出对比、与剔除模式的差异 |
+| [本机不可验项清单](local-unverifiable-checklist.md) | 开发机验不了、要上真机验的条目 | 每条「本机为什么验不了 / 真机怎么验 / 验收判据」+ 本机已验项对照 |
 
 另有仓库根目录的：
 

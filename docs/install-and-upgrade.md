@@ -301,6 +301,25 @@ systemctl restart xwpf-failover
 pf --restart-service   # 重新生成 /etc/realm/config.json 并重启 realm
 ```
 
+### 4.4 限流后 unit 停在 failed —— 什么时候要 `reset-failed`
+
+崩溃循环（端口被占、配置缺失）被 systemd 限流打停后，unit 会停在 `failed`，
+systemd **不会自己再拉起**，光 `systemctl start` 也没用 —— 必须先清计数：
+
+```bash
+systemctl show xwpf-failover -p Result -p NRestarts   # 先看是不是限流停手
+systemctl reset-failed xwpf-failover                   # 清计数
+systemctl start xwpf-failover                          # 再拉起
+journalctl -fu xwpf-failover                           # 看还起不起来了
+```
+
+**先修根因再 reset-failed** —— 端口没释放就 reset-failed，起来还会再撞限流。
+
+产品侧已经在两处替你清了：`pf install` / 升级成功之后、建池成功之后
+（`lib/failover.sh` 的 `failover_reset_failed_state`）。
+没被处理的故障仍然留在 `failed` 状态里等人来看 —— **该清的自动清，
+不该清的留着**。
+
 ---
 
 ## 5. 卸载

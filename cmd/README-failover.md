@@ -48,12 +48,20 @@ rule is involved, one hop instead of two.
         :443        :443
 ```
 
-⚠️ **Known limitation of the legacy mode**: the probe target is the
-**loopback port**, not the real backend. If the backend dies but `realm` is
+⚠️ **Legacy mode, single-address pools (old `failover.json`)**: when a pool
+target carries **no `|`**, the probe target is the **same address** the
+daemon forwards to — the loopback port. If the backend dies but `realm` is
 still up, the probe still succeeds → **the failover never switches**
 (measured on a real host: after killing the primary backend it stayed on
 PRIMARY for 40 s; the same host in direct mode switched over in 8 s).
-Use **direct mode** when the switch must follow the backend's health.
+
+✅ **Fixed by the dual-address form**: a pool written by the current menu
+stores `primary` / `backups` as `<loopback>|<real backend>`. The daemon
+**forwards to the first part** (loopback — keeps realm's TLS and per-rule
+logging) and **probes the second part** (the real backend — so a dead backend
+actually triggers the switch). Pools created before this change keep working
+with their old behaviour and are labelled `旧格式` in the status output and in
+the daemon log; **recreate the pool once** to get the dual-address form.
 
 The menu under `pf` → 转发配置管理 → 6. 负载均衡管理 → 4. 主动/被动主备
 asks which mode to use, writes `failover.json` accordingly, then restarts
@@ -68,8 +76,8 @@ asks which mode to use, writes `failover.json` accordingly, then restarts
   {
     "name": "tcp-443",
     "listen":  "0.0.0.0:443",
-    "primary": "127.0.0.1:10443",
-    "backups": ["127.0.0.1:10444"],
+    "primary": "127.0.0.1:10443|1.2.3.4:443",
+    "backups": ["127.0.0.1:10444|5.6.7.8:443"],
     "probe": {
       "interval_sec":      4,
       "timeout_sec":       3,
@@ -81,6 +89,25 @@ asks which mode to use, writes `failover.json` accordingly, then restarts
 ]
 ```
 
+### Target address format: `<forward>|<probe>`
+
+| Target string | Forward (dial) | Probe (health check) | Note |
+|---------------|----------------|----------------------|------|
+| `127.0.0.1:10443\|1.2.3.4:443` | `127.0.0.1:10443` | `1.2.3.4:443` | realm loopback mode |
+| `1.2.3.4:443` | `1.2.3.4:443` | `1.2.3.4:443` | direct mode / old single-address config |
+
+- Two or more segments → **forward = segment 1**, **probe = segment 2**,
+  segment 3 and beyond are dropped.
+- **No `|`** → forward = probe = the whole string (old configuration keeps
+  working; it is reported as `旧格式`).
+- The parsing lives in exactly one place — `cmd/xwpf-failover.py`'s
+  `split_target()`. Forwarding and probing read the **same** parsed view:
+  two separate `rsplit` calls at the two call sites would silently drift
+  into "probe the real backend, forward to the loopback" (or the other way
+  round).
+
+### Probe parameters
+
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `interval_sec`      | 4   | seconds between probes per backend |
@@ -88,6 +115,60 @@ asks which mode to use, writes `failover.json` accordingly, then restarts
 | `fail_threshold`    | 2   | consecutive failures before marking primary as down |
 | `success_threshold` | 2   | consecutive successes required before switching back |
 | `cooldown_sec`      | 120 | minimum time between any switch (prevents flapping) |
+
+### Probe outcome kinds
+
+Every probe returns `(ok, elapsed_ms, err_kind)`. `err_kind` separates two
+failure modes that need different operator responses:
+
+| `err_kind` | Meaning | What it usually means |
+|------------|---------|-----------------------|
+| `""` | success | — |
+| `refused` | connection refused | **the service is not listening — the line itself is fine** |
+| `timeout` | connect timed out | **packets are being dropped — a link/network problem** |
+| `dns` | name resolution failed | bad hostname / resolver problem |
+| `error` | anything else (including a malformed address) | read the daemon log |
+
+## Runtime state file
+
+The daemon writes `/etc/xwpf/failover-state.json` (override with `-s`):
+
+```json
+{
+  "version": 1,
+  "updated_at": 1761290000.0,
+  "pools": {
+    "tcp-443": {
+      "active_index": 1,
+      "active_role": "backup1",
+      "active_raw": "127.0.0.1:10444|5.6.7.8:443",
+      "active_forward": "127.0.0.1:10444",
+      "active_probe": "5.6.7.8:443",
+      "active_legacy": false,
+      "direct": false,
+      "fail_streak": [2, 0],
+      "succ_streak": [0, 3],
+      "last_switch_epoch": 1761290000.0,
+      "last_switch_at": "2026-10-24 21:33:20",
+      "last_probe": [
+        {"target": "5.6.7.8:443", "ok": true, "err_kind": "", "elapsed_ms": 12.4, "at": 1761290000.0}
+      ]
+    }
+  }
+}
+```
+
+- **Written** by `cmd/xwpf-failover.py`'s `StateStore` — the only writer.
+- **Read** by `lib/ui.sh`'s `ui_show_failover_state` — the only reader.
+  Both sides use the same field names, so the write side and the read side
+  cannot drift apart.
+- The file is rewritten on every switch and at a low frequency in between;
+  writes are atomic (temp file + rename).
+- `last_switch_at` **survives a daemon restart**: on startup the daemon reads
+  the file back and keeps the cooldown countdown running from the moment of
+  the actual switch. A restart no longer silently clears the cooldown.
+- If the state file cannot be written, the daemon logs a warning and keeps
+  forwarding — losing the status view must not take the traffic down.
 
 ## Failure semantics
 
@@ -214,6 +295,13 @@ Two details worth knowing:
   the kernel does not support** (e.g. a machine with IPv6 disabled) instead
   of reporting the port as busy. "Cannot tell" and "port is occupied" are
   two different verdicts and are printed as two different messages.
+- A family can also be *unusable* at bind time: on an IPv6-only host,
+  `bind(("0.0.0.0", port))` fails with `EADDRNOTAVAIL`. That is **not**
+  "the port is occupied" — it means "IPv4 is not available here". Such a
+  family is skipped as well, and the check continues with the other one.
+  (Earlier versions reported the busy verdict for this case, so an
+  IPv6-only host was told its listen port was taken, and the pool was
+  refused with the wrong reason.)
 - The check happens *before* anything is written, so a rejected pool leaves
   no half-written `failover.json` and no orphaned realm rule.
 
@@ -255,6 +343,24 @@ journalctl -fu xwpf-failover
 
 Fix the root cause (free the port, or change the listen port) **before**
 doing this — otherwise the daemon hits the rate limit again.
+
+**The product now clears that counter for you in the two places where the
+cause is already handled**: after a successful `pf install` / upgrade
+(`lib/failover.sh`'s `failover_install_files`) and after a pool is created
+successfully (`failover_pool_create` / `failover_pool_create_direct`). Both
+call `failover_reset_failed_state`. A failure that has *not* been dealt with
+is deliberately left in the `failed` state so it stays visible.
+
+The status page also shows it now — `is-active` alone cannot tell "stopped"
+from "stopped by the rate limiter":
+
+```sh
+systemctl show xwpf-failover -p Result -p NRestarts
+# Result=exit-code   NRestarts=3   ← crashed repeatedly, systemd gave up
+```
+
+`pf` → 主备池管理 prints the same (`Result` / restart count) and prints the
+`reset-failed` command to run.
 
 ### Local overrides: use a drop-in, do not edit the unit in place
 

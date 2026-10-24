@@ -367,6 +367,54 @@ grep -H 'BALANCE_MODE\|FAILOVER_ENABLED' /etc/realm/rules/rule-*.conf
 > 存活而关闭的探针端口。当前实现的探测对象是规则里的 `REMOTE_HOST:REMOTE_PORT`，
 > 不支持自定义探测端口。
 
+### 6.8 主备池不切换 —— 先看池是不是「旧格式」
+
+这是**主备 active/passive 守护进程**（`xwpf-failover`）的问题，与上面的
+端口组主备不是同一套机制。
+
+池的目标写成 `<转发口>|<探测口>`：
+
+| 目标串 | 转发打哪 | 探测打哪 |
+|--------|----------|----------|
+| `127.0.0.1:10443\|1.2.3.4:443` | 回环口 | **真实后端** ✅ |
+| `127.0.0.1:10443`（老池，没有 `|`） | 回环口 | 回环口 ⚠️ |
+
+老池（目标里**没有 `|`**）探测打的是 realm 回环口 —— realm 进程活着就一直
+算健康 → **后端真挂了也不切换**。
+
+排查三步：
+
+```bash
+# 1) 看池里的目标串：有没有 '|'
+cat /etc/xwpf/failover.json
+
+# 2) 看守护进程日志：老格式会被点名
+journalctl -u xwpf-failover -n 50 | grep '旧格式'
+
+# 3) 看状态页：当前主 / 探测目标 / 连续失败数 / 上次切换时间
+pf → 主备池管理
+```
+
+**处置**：老池删掉重建一次（菜单里删池 + 建新池）→ 新池自动带双地址 →
+转发仍走 realm 回环（TLS 与 per-rule 日志不丢），探测改打真实后端。
+
+### 6.9 守护进程一直 failed / 起不来（systemd 限流）
+
+崩溃循环被 systemd 限流后，unit 会停在 `failed`，systemd 不会自己再拉起。
+
+```bash
+systemctl show xwpf-failover -p Result -p NRestarts
+# Result=exit-code   NRestarts=3   ← 反复崩过，systemd 停手了
+
+# 先修根因（端口被占 / 配置缺失），再清计数
+systemctl reset-failed xwpf-failover
+systemctl start xwpf-failover
+```
+
+产品侧已经在两处自动清了计数：`pf install` / 升级成功之后、建池成功之后
+（`lib/failover.sh` 的 `failover_reset_failed_state`）——
+**故障已被处理才清**；没处理的故障仍然留在 `failed` 状态里等人来看。
+
 ---
 
 ## 7. 权重不生效或报错
@@ -428,6 +476,29 @@ ss -tulnp | grep ":8080 "
 
 端口合法性由 `is_valid_port` / `validate_port` 校验：1-65535
 （`lib/core.sh` 的 `is_valid_port`、`lib/core.sh` 的 `check_port_usage`）。
+
+### 8.1 主备池的 listen 端口：写配置之前就拦下来
+
+`lib/failover.sh` 的 `failover_require_listen_port_free` 在写 `failover.json`
+**之前**先试绑 listen 端口（`failover_check_port_listening`），三种结果三句话：
+
+| 探测结果 | 提示 | 后续 |
+|----------|------|------|
+| 端口空闲 | — | 正常写配置 |
+| 确认被占用 | 「端口 X 已被占用 (listen address already in use)」+ 占用者 + 处置建议 | **拒绝写配置** |
+| 无法判定 | 「无法确认端口 X 是否空闲」+ 具体原因 | **拒绝写配置** |
+
+「无法判定」不等于「被占用」—— 查不到占用者却下结论，比直接报错更误导运维。
+
+### 8.2 误报「端口已被占用」—— 协议族在本机不可用
+
+试绑会依次试 `0.0.0.0` 与 `::`。**某个协议族在本机不可用**（IPv6-only 主机上
+`bind(("0.0.0.0", port))` 报 `EADDRNOTAVAIL`；内核禁用 IPv6 时 `socket()` 直接失败）
+**不代表端口被占用** —— 这种情况会被跳过，继续试另一个族。
+
+> 旧版本把这类错误一律报成「端口被占用」→ 在 IPv6-only 主机上会**拒绝建池**，
+> 而且给出的理由完全不对。现在的表现：能试出另一个族可用就正常建池，
+> 两个族都不可用则报「无法确认端口是否空闲」。
 
 ---
 
