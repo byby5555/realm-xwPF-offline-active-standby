@@ -24,7 +24,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # 台架版本：台架自身的改动会让旧报告的结论打折，改了台架就 bump
-HARNESS_VERSION="v2.1.0 (frozen-base + docs-refs)"
+# v2.4.0：第 7 轮 —— 补覆盖盲区
+#         · T32 条件 4 改成**形态无关**（形态 A 内嵌 / 形态 B source 真源都判过）
+#         · T32 条件 5 正则收紧（只匹配肯定误导句式 + 整行否定词豁免 + 扫描范围下限护栏）
+#         · 新增 T43~T47（更新中心）、T48（OCR 导入）、T49（jq 配置生成）、
+#           T50（规则落盘格式）、T51（时延，原 test_latency.sh 并入）
+#         · tests/test_update.sh、tests/test_latency.sh 改薄封装（消除第二入口）
+#         · jq 桩扩能力：数组下标路径、-e 退出码语义、JSON 对象字面量；
+#           并把 `..` 这类「会被静默误解」的语法显式判为不支持
+HARNESS_VERSION="v2.4.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T51-coverage)"
 
 # shellcheck source=lib/harness.sh
 . "$SCRIPT_DIR/lib/harness.sh"
@@ -119,6 +127,28 @@ CASES=(
     "T33:case_T33_missing_optional_field_set_u"
     # —— 第 3 轮：文档源码引用一致性 ——
     "T34:case_T34_docs_source_refs"
+    # —— 第 4 轮：M1/M2/M5/M7/M8 的行为回归 ——
+    "T35:case_T35_rule_parse_no_exec"
+    "T36:case_T36_enter_standby_clears_target_states"
+    "T37:case_T37_health_start_failure_rollback"
+    "T38:case_T38_prev_balance_mode_restore"
+    "T39:case_T39_active_standby_confirm"
+    # —— 第 5 轮：提交信息契约（声称全过必须引用唯一入口实测口径）——
+    "T40:case_T40_commit_message_contract"
+    # —— 第 6 轮：主备语义（只有一个主）与权重落盘索引 ——
+    "T41:case_T41_weight_writeback_index"
+    "T42:case_T42_priority_single_primary"
+    # —— 第 7 轮：补覆盖盲区（更新中心 / OCR / jq / 规则落盘 / 时延）——
+    "T43:case_T43_version_normalize_and_uptodate"
+    "T44:case_T44_refuse_on_failed_verification"
+    "T45:case_T45_restore_backup_robust"
+    "T46:case_T46_auto_rollback_on_start_failure"
+    "T47:case_T47_scripts_update_and_lock"
+    # —— 第 7 轮：补覆盖盲区（OCR 导入 / jq 配置生成 / 规则落盘 / 时延）——
+    "T48:case_T48_ocr_import_chain"
+    "T49:case_T49_jq_config_generation"
+    "T50:case_T50_rule_crud_persistence"
+    "T51:case_T51_latency_merged"
 )
 
 for f in "$SCRIPT_DIR"/cases/*.sh; do
@@ -305,25 +335,20 @@ main() {
     echo "沙箱证据目录: $SBX_ROOT/cases"
     echo "（每个用例的 stdout / notes / fails / meta 都在 $SBX_ROOT/cases/$ID.* 里）"
 
-    # 提交信息自查提示（第 2 轮新增）
+    # 提交信息自查（第 2 轮是「打印告警」，第 5 轮升级为硬断言 → 见用例 T40）
     # 背景：第 1 轮出现过「另三套脚本全绿、正式入口 run_tests.sh 16/22 红」，
-    # 提交信息却写成"全过"。这里把"提交信息声称全过"这件事显式提示出来。
+    # 提交信息却写成「全过」。第 2 轮把它做成打印告警 —— 但告警拦不住任何人，
+    # 所以第 5 轮把同一套判定搬进用例 T40：**违规就是用例失败、门禁退出码非 0**。
+    # 规则、豁免白名单与自检见 tests/cases/07_commit_message_contract.sh。
     local last_subject
     last_subject=$(cd "$REPO_ROOT" && git log -1 --format='%s' 2>/dev/null)
     echo
     echo "── 提交信息自查 ─────────────────────────────────────────"
     echo "· 本台架是**唯一入口**：bash tests/run_tests.sh"
     echo "· 提交信息若声称「全过/通过/测试通过」，必须引用本入口的输出"
-    echo "  （BASE_SHA + 汇总行），不要引用其它脚本的 PASS 计数。"
-    if printf '%s' "$last_subject" | grep -qE '全过|全部通过|测试通过|passed|green'; then
-        if ! printf '%s' "$last_subject" | grep -q 'run_tests.sh'; then
-            echo "⚠ 提示：上一条提交信息「$last_subject」声称全过，但没引用 run_tests.sh —— 请核对本次真实结果。"
-        else
-            echo "· 上一条提交信息: $last_subject"
-        fi
-    else
-        echo "· 上一条提交信息: ${last_subject:-（无）}"
-    fi
+    echo "  （BASE_SHA + 汇总行 / 用例总数 / 退出码），不要引用其它脚本的 PASS 计数。"
+    echo "· 这条不再是告警：**用例 T40 会判红**（详见上面表格里的 T40 行）。"
+    echo "· 上一条提交信息: ${last_subject:-（无）}"
 
     if [ "$CLEAN" = "1" ]; then
         rm -rf "$SBX_ROOT"

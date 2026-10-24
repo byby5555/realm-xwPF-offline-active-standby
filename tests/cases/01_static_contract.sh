@@ -78,15 +78,55 @@ case_T02_old_repo_name() {
         "grep -F 'zywe03/realm-xwPF'" \
         "全仓出现次数 0（tests/ 自身除外）"
 
-    local hits
-    hits=$(grep -rnF "$REPO_OLD" "$SBX_SRC" --exclude-dir=tests 2>/dev/null)
-    local count=0
-    [ -n "$hits" ] && count=$(printf '%s' "$hits" | grep -c .)
-    if [ -n "$hits" ]; then
-        h_log "命中明细:"
-        while IFS= read -r v; do h_log "  - ${v#$SBX_SRC/}"; done <<< "$hits"
+    # ★ 第 5 轮：把「自指风险」显式化（这条用例自己就含被禁字符串）。
+    #
+    #   断言文件自身含有被禁字符串是**正常**的 —— 断言就得写出它要禁的东西
+    #   （本文件的 REPO_OLD 定义 + 说明文字里就有它）。
+    #   但**统计必须排除断言自身**（--exclude-dir=tests），
+    #   否则将来只要改动本文件的逻辑（哪怕只改一句注释、换一个变量名），
+    #   统计就会把自己数进去 → 出现跟产品无关的**自指假红**。
+    #
+    #   所以这里给三条断言，把「排除 tests/」这件事变成可验证的：
+    #     1) 排除 tests/ 后命中 0 条              → 产品与文档干净
+    #     2) 全树命中中落在 tests/ 之外的 0 条   → 证明排除 tests/ 没掩盖任何外部残留
+    #     3) 冻结树里 tests/ 内命中 ≥ 1          → 证明排除确实是必要的（不是多余的）
+
+    local hits_prod hits_all hits_tests tmp
+    local count_prod=0 count_tests=0 count_outside=0
+
+    # 统计口径：排除 tests/ 目录（断言自身所在目录）
+    hits_prod=$(grep -rnF "$REPO_OLD" "$SBX_SRC" --exclude-dir=tests 2>/dev/null)
+    # 全树命中（不排除任何目录）—— 用来核对「排除 tests/ 到底盖住了什么」
+    hits_all=$(grep -rnF "$REPO_OLD" "$SBX_SRC" 2>/dev/null)
+    # tests/ 目录内的命中
+    hits_tests=$(grep -rnF "$REPO_OLD" "$SBX_SRC/tests" 2>/dev/null)
+
+    [ -n "$hits_prod" ] && count_prod=$(printf '%s' "$hits_prod" | grep -c .)
+    [ -n "$hits_tests" ] && count_tests=$(printf '%s' "$hits_tests" | grep -c .)
+    if [ -n "$hits_all" ]; then
+        # 路径形如 <沙箱>/src/tests/README.md:45:xxx → 目录成分里有 tests/ 的算 tests/ 内
+        tmp=$(printf '%s\n' "$hits_all" | grep -vE '(^|/)tests/')
+        [ -n "$tmp" ] && count_outside=$(printf '%s' "$tmp" | grep -c .)
     fi
-    h_check_eq "0" "$count" "旧仓库名出现次数"
+
+    if [ -n "$hits_prod" ]; then
+        h_log "命中明细（排除 tests/ 后）:"
+        while IFS= read -r v; do h_log "  - ${v#$SBX_SRC/}"; done <<< "$hits_prod"
+    fi
+    if [ -n "$hits_all" ]; then
+        h_log "全树命中（含 tests/ 自身）共 $(printf '%s' "$hits_all" | grep -c .) 处，其中落在 tests/ 之外 $count_outside 处"
+        while IFS= read -r v; do h_log "  · ${v#$SBX_SRC/}"; done <<< "$hits_all"
+    fi
+
+    h_check_eq "0" "$count_prod" "旧仓库名出现次数（排除 tests/ 自身）"
+    h_check_eq "0" "$count_outside" "全树命中中落在 tests/ 之外的条数（证明排除 tests/ 没掩盖外部残留）"
+
+    if [ -f "$SBX_SRC/tests/cases/01_static_contract.sh" ]; then
+        h_check_ge 1 "$count_tests" "tests/ 内命中数（断言自身含被禁字符串 → 排除 tests/ 是必要的）"
+    else
+        h_log "冻结点没有 tests/cases/01_static_contract.sh（老冻结点）→ 「断言自身含被禁字符串」这一条不适用"
+        h_pass "断言自身含被禁字符串的检查不适用（冻结点无 tests/cases/01_static_contract.sh）"
+    fi
 }
 
 case_T03_eol() {

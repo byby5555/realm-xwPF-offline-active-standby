@@ -466,33 +466,168 @@ case_T31_set_u_robustness() {
     fi
 }
 
-# T32 · 探测实现「单一真源 + 一份内联副本」结构断言
+# T32 · 探测实现：唯一手写真源 + 生成物与真源一致（**形态无关**）
 #
-# ★ 第 2 轮修正（重要）：原始断言写的是「全仓出现次数 == 1」，**在本冻结点不可能成立**。
-#   实测（a9102c1）：全仓共 2 份，都在 lib/health.sh：
-#     第 1 份  lib/health.sh:33   —— 真源，主程序调用
-#     第 2 份  lib/health.sh:143  —— 在 health_check_script_body() 的 heredoc
-#                                   （lib/health.sh:98 `cat << 'EOF' | tr -d '\r'`）里，
-#                                   是**生成到 /etc/realm/health/health_check.sh 的内联副本**。
-#   文件头自己写明了原因：「生成的 health_check.sh 是一份独立可执行的脚本
-#   （systemd 直接调用它，不能依赖 pf 的安装目录），所以它的探测逻辑
-#   在下面 health_check_script_body 里另有一份内联副本，改动 check_connectivity 时两处必须同步。」
-#   → 这份副本是**设计要求的**，不是「逐字重复的脏拷贝」。
-#   → 曾经存在的第 3 份（lib/failover.sh）已在 4558e65「探测函数分层」里删掉。
+# ── 这条用例守的不变量 ───────────────────────────────────────────
+#   「健康检查的探测实现只有一份手写真源；生成的 health_check.sh 用的探测逻辑
+#     与那份真源**逐字一致**。」
 #
-# 因此把断言改成**真正想守的不变量**（比 ==1 更严）：
-#   1. 全仓 check_connectivity() { 总数必须 == 2（多一份 = 有人又抄了一份 → 红）
-#   2. 这 2 份必须都在 lib/health.sh 里（散落到别处 → 红）
-#   3. 第 2 份必须落在 health_check_script_body() 的 heredoc 内（位置对 → 绿）
-#   4. 两份必须逐字一致（漂移 → 红；T28 从生成物侧再校一次）
-# 这套断言在「3 份」的老状态下同样是红的，所以守的是同一个意图。
-case_T32_single_probe_implementation() {
-    h_case_begin "T32" "探测实现结构（单一真源 + 生成物一致）" \
-        "冻结态 $BASE_SHA（只读）+ 沙箱生成物" \
-        "grep -c '^check_connectivity() {' 全仓 .sh" \
-        "全仓份数 ∈ [1,2] 且都在 lib/health.sh；生成物里恰好 1 份且与真源逐字一致"
+# ── 第 7 轮修正：条件 4 之前钉死了「内嵌」这一种实现形态 ─────────
+#   旧条件 4 写的是「生成物 health_check.sh 里 check_connectivity() { 的份数 == 1」，
+#   这只对「机械抽取内嵌」这一种形态成立。将来如果把生成物改成
+#   「显式 source 已安装的真源」（依赖更少、漂移风险更低，是产品变好），
+#   份数会变成 0 → **误红**。断言钉住的是形态，而不是不变式。
+#
+#   现在条件 4 判的是「生成物的探测逻辑与真源是否一致」，两种合法形态都判过：
+#     形态 A：生成物内含 1 份 check_connectivity() {，且与真源逐字一致 → 过
+#     形态 B：生成物不含内嵌副本，但显式 source 已安装的真源
+#             （且该 source 路径能解析到真源、那份真源与基准逐字一致）→ 过
+#     其余（内嵌多份 / 逐字漂移 / 既不内嵌也不 source / source 路径解析不到）→ 红
+#
+#   条件 1/2/3 守的是**源码树**（唯一真源、集中在 lib/health.sh），
+#   它们对两种形态都成立，不受影响。
+#
+# ── 第 7 轮修正：条件 5 的扫描正则收紧 ───────────────────────────
+#   旧正则 `另有一份内联副本|两处必须同步` 漏掉了真实存在的过时说法
+#   「内含一份同源的探测副本，改动需两处同步」——「需两处同步」≠「两处必须同步」，
+#   「内含一份同源」≠「另有一份内联」。现在：
+#     ① 只匹配**肯定误导句式**（真的在说要手工同步两份）；
+#     ② 同一行若含否定词（不需要 / 不存在 / 无需 / 也不再 / 不再 …）→ 豁免该行；
+#     ③ 加**扫描范围下限护栏**（扫描到的候选文件数 ≥ N）——
+#        「违规数 == 0」这类断言最大的假绿风险是「扫描器什么都没扫」，
+#        正则一坏 / 路径过滤一改就永远 0 命中 → 绿灯假象。护栏把它挡住。
+#
+# ★ 每条负向对照都**先验证破坏手法生效**（注入处数 == 1）再信它的红 ——
+#   「怎么写都绿的断言等于没写」；「破坏没生效的红」比「红」更误导。
 
-    # ── 1. 全仓分布（排除 tests/ 自身：台架代码不是被测对象）──
+# ── T32 的判定器（可复用：真实产物 + 负向对照变体走**同一条**判定）──────────
+
+# 抽出某个文件里 check_connectivity() 的实现文本（从函数头到顶格 '}'）
+_t32_extract_fn() {
+    awk '/^check_connectivity\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$1" 2>/dev/null
+}
+
+# 判定器 1：生成物的探测实现与真源是否一致（形态 A / B 都判过）
+# 用法：_t32_judge_probe <生成物路径> <基准真源路径>
+# 输出："<PASS|FAIL>\t<说明>"；返回码 0 = PASS
+_t32_judge_probe() {
+    local script="$1" baseline="$2"
+    local n_gen form eff base src_line src_path resolved
+
+    n_gen=$(grep -c '^check_connectivity() {' "$script" 2>/dev/null || true)
+    [ -z "$n_gen" ] && n_gen=0
+
+    if [ "$n_gen" -ge 2 ]; then
+        printf 'FAIL\t生成物里内嵌了 %s 份探测实现（多份 = 又抄了一份）\n' "$n_gen"
+        return 1
+    fi
+
+    if [ "$n_gen" -eq 1 ]; then
+        form="形态A（生成物内嵌副本）"
+        eff=$(_t32_extract_fn "$script")
+    else
+        # 形态 B：生成物不含内嵌副本，但显式 source 已安装的真源
+        src_line=$(grep -nE '(^|[[:space:]])(source|\.)[[:space:]]+[^[:space:]]*health\.sh' "$script" 2>/dev/null | head -1)
+        if [ -z "$src_line" ]; then
+            printf 'FAIL\t生成物既不含内嵌副本，也没有 source 真源\n'
+            return 1
+        fi
+        src_path=$(printf '%s' "${src_line#*:}" | sed -E 's/.*(source|\.)[[:space:]]+([^[:space:]]*health\.sh).*/\2/')
+        case "$src_path" in
+            /*) resolved="$src_path" ;;
+            *)  resolved="$(dirname "$script")/$src_path" ;;
+        esac
+        if [ ! -f "$resolved" ]; then
+            printf 'FAIL\t形态B 的 source 路径解析不到真源：%s\n' "$src_path"
+            return 1
+        fi
+        if ! grep -q '^check_connectivity() {' "$resolved" 2>/dev/null; then
+            printf 'FAIL\t形态B source 的文件里没有探测实现：%s\n' "$resolved"
+            return 1
+        fi
+        form="形态B（生成物 source 真源）"
+        eff=$(_t32_extract_fn "$resolved")
+    fi
+
+    base=$(_t32_extract_fn "$baseline")
+    if [ -z "$base" ] || [ -z "$eff" ]; then
+        printf 'FAIL\t取不到探测实现（基准 %s 字节 / 生成物 %s 字节）\n' "${#base}" "${#eff}"
+        return 1
+    fi
+    if [ "$eff" = "$base" ]; then
+        printf 'PASS\t%s：与真源逐字一致\n' "$form"
+        return 0
+    fi
+    printf 'FAIL\t%s：与真源逐字漂移\n' "$form"
+    return 1
+}
+
+# 判定器 2：仓库里是否仍出现「要手工同步两份探测实现」的**肯定**误导句式
+# 用法：_t32_scan_stale <扫描根目录> <相对路径清单>
+#   命中行写到 $SBX_ROOT/t32_stale_hits.txt
+#   T32_SCAN_N = 实际扫描到的文件数；T32_STALE_HITS = 命中行数
+#
+# 正则口径（为什么这么写）：
+#   「误导」= 在**肯定**地说「改动 X 要动两处」。所以：
+#     · 只匹配带「改动…两处…同步」这类**动作语义**的句式；
+#     · 描述性的「内含一份同源的探测副本」单独出现时**不算违规** ——
+#       形态 A 下生成物确实含一份副本，这句话是真的；只有「要手工同步」才是假的。
+#       （把它也算违规 = 又把断言钉回「内嵌」这一种形态，第 7 轮要避免的正是这个。）
+#     · 否定句（不需要 / 不再 / 无需 …）豁免整行 —— 「不需要两处同步」是对的写法。
+_T32_STALE_RE='改动[^，。；、]{0,40}两处[^，。；、]{0,6}同步|两处必须同步|需两处同步|必须两处同步|改动[^，。；、]{0,40}两处[^，。；、]{0,6}手工同步'
+_T32_NEG_RE='不需要|不存在|无需|无须|不再|不必|不用|不涉及|并非|没有'
+# 扫描范围下限护栏：实测候选文件 28 个（6a1e8a1），取约一半。
+# 作用：挡住「扫描器一个文件都没扫 → 违规数必然 0 → 假绿」。
+_T32_SCAN_FLOOR=14
+
+_t32_candidate_list() {
+    local rel
+    while IFS= read -r rel; do
+        case "$rel" in
+            tests/*|reports/*) continue ;;
+        esac
+        case "$rel" in
+            lib/*|cmd/*|docs/*|notifications/*) ;;
+            *.sh|*.md) ;;
+            *) continue ;;
+        esac
+        printf '%s\n' "$rel"
+    done < <(git ls-tree -r --name-only "$BASE_SHA")
+}
+
+_t32_scan_stale() {
+    local root="$1" list="$2"
+    local rel l text
+    T32_SCAN_N=0
+    T32_STALE_HITS=0
+    : > "$SBX_ROOT/t32_stale_hits.txt"
+    while IFS= read -r rel; do
+        [ -z "$rel" ] && continue
+        [ -f "$root/$rel" ] || continue
+        T32_SCAN_N=$((T32_SCAN_N + 1))
+        while IFS= read -r l; do
+            [ -z "$l" ] && continue
+            text="${l#*:}"
+            # 同一行含否定词 → 豁免（这是否定句，不是肯定误导句式）
+            if printf '%s' "$text" | grep -qE "$_T32_NEG_RE"; then
+                h_log "  豁免（含否定词）: $rel:${l%%:*}  $(printf '%s' "$text" | cut -c1-90)"
+                continue
+            fi
+            T32_STALE_HITS=$((T32_STALE_HITS + 1))
+            printf '%s\n' "$rel:$l" >> "$SBX_ROOT/t32_stale_hits.txt"
+        done < <(grep -nE "$_T32_STALE_RE" "$root/$rel" 2>/dev/null || true)
+    done < "$list"
+}
+
+case_T32_single_probe_implementation() {
+    h_case_begin "T32" "探测实现：唯一手写真源 + 生成物与真源逐字一致（形态无关）" \
+        "冻结态 $BASE_SHA（只读）+ 沙箱生成物" \
+        "生成物 health_check.sh 的探测实现 vs 真源（形态 A 内嵌 / 形态 B source 都判过）+ 扫仓库里的「要手工同步」句式" \
+        "全仓手写份数 == 1 且集中在 lib/health.sh；生成物的探测实现与真源逐字一致（形态无关）；仓库无肯定误导句式"
+
+    local hl="$SBX_SRC/lib/health.sh"
+
+    # ── 1. 全仓手写份数必须 == 1（多一份 = 有人又手抄了一份）──
     local rel total=0 detail="" n
     while IFS= read -r rel; do
         case "$rel" in
@@ -510,19 +645,10 @@ case_T32_single_probe_implementation() {
             detail="$detail$rel×$n "
         fi
     done < <(git ls-tree -r --name-only "$BASE_SHA")
-    h_log "分布: ${detail:-（无）}"
+    h_log "手写份数分布: ${detail:-（无）}"
+    h_check_eq "1" "$total" "check_connectivity() { 的全仓手写份数（唯一真源）"
 
-    # ★ 第 3 轮放宽：允许两种**合法**结构
-    #   1 份 = 已收敛为单一真源（6df4721 起：health_emit_function 自动抽取注入生成物）
-    #   2 份 = 真源 + 生成脚本内的手工内联副本（a9102c1 / b361ca8 的形态）
-    # 关键不变式不是「等于几」，而是「**不许有第 3 份**」和「生成物里恰好 1 份且与真源一致」。
-    if [ "$total" -ge 1 ] && [ "$total" -le 2 ]; then
-        h_pass "check_connectivity() { 的全仓出现次数 = $total（允许 1 或 2）"
-    else
-        h_fail "check_connectivity() { 的全仓出现次数 = $total（允许 1 或 2；>2 说明有人又抄了一份）"
-    fi
-
-    # ── 2. 必须都集中在 lib/health.sh ──
+    # ── 2. 这 1 份必须在 lib/health.sh（散落到别处 → 红）──
     local only_health="是"
     while IFS= read -r rel; do
         case "$rel" in
@@ -543,13 +669,38 @@ case_T32_single_probe_implementation() {
     done < <(git ls-tree -r --name-only "$BASE_SHA")
     h_check_eq "是" "$only_health" "探测实现是否只集中在 lib/health.sh"
 
-    # ── 3. 生成物里必须恰好 1 份（两种结构下都成立的不变式）──
-    local hl="$SBX_SRC/lib/health.sh"
+    # ── 3. 生成脚本所在文件里仍只有 1 处 ──
+    # 守的是**源码树**的性质（真源在 lib/health.sh 里），
+    # 对「生成物内嵌」和「生成物 source」两种形态都成立。
+    local body_file=""
+    while IFS= read -r rel; do
+        case "$rel" in
+            *.sh) ;;
+            *) continue ;;
+        esac
+        case "$rel" in
+            tests/*) continue ;;
+        esac
+        [ -f "$SBX_SRC/$rel" ] || continue
+        if grep -q '^health_check_script_body() {' "$SBX_SRC/$rel" 2>/dev/null; then
+            body_file="$rel"
+            break
+        fi
+    done < <(git ls-tree -r --name-only "$BASE_SHA")
+    h_log "health_check_script_body() 所在文件: ${body_file:-（未找到）}"
+    if [ -z "$body_file" ]; then
+        h_fail "冻结态里找不到 health_check_script_body()"
+    else
+        n=$(grep -c '^check_connectivity() {' "$SBX_SRC/$body_file" 2>/dev/null || true)
+        [ -z "$n" ] && n=0
+        h_check_eq "1" "$n" "生成脚本所在文件里 check_connectivity() { 的处数"
+    fi
+
+    # ── 4. 生成物的探测实现必须与真源逐字一致（**形态无关**）──
     if [ ! -f "$hl" ]; then
         h_fail "冻结态里没有 lib/health.sh，无法核对探测实现位置"
         return
     fi
-
     _prepare_failover_runtime
     rm -f "$SBX_ROOT/realm/rules"/rule-*.conf
     _make_failover_rule "$SBX_ROOT/realm/rules/rule-1.conf"
@@ -559,30 +710,146 @@ case_T32_single_probe_implementation() {
         h_fail "健康检查脚本没生成出来，无法核对生成物里的探测实现"
         return
     fi
-    local n_gen
-    n_gen=$(grep -c '^check_connectivity() {' "$script" 2>/dev/null || true)
-    [ -z "$n_gen" ] && n_gen=0
-    h_check_eq "1" "$n_gen" "生成物 health_check.sh 里 check_connectivity() { 的份数"
 
-    # ── 4. 生成物里的实现必须与真源逐字一致 ──
-    # 这一条才是「探测逻辑只允许一份」的真正含义：
-    # 不管它是自动抽取注入的，还是手工内联的，**内容必须一模一样**。
-    local a="$SBX_ROOT/probe_t32_src.sh" b="$SBX_ROOT/probe_t32_gen.sh"
-    awk 'BEGIN{c=0} /^check_connectivity\(\) \{/{c++; f=(c==1)} f{print} c==1 && /^\}/{exit}' "$hl" > "$a"
-    awk '/^check_connectivity\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$script" > "$b"
-    if [ ! -s "$a" ] || [ ! -s "$b" ]; then
-        h_fail "取不到探测实现（真源 $(wc -c < "$a" 2>/dev/null) 字节 / 生成物 $(wc -c < "$b" 2>/dev/null) 字节）"
-        return
-    fi
-    if diff "$a" "$b" >/dev/null 2>&1; then
-        h_pass "真源与生成物里的探测实现逐字一致"
+    # 基准 = 沙箱可执行副本（冻结态 + 与被测同款重定向）——
+    # 生成器（health_emit_function）抽取的就是这一份，所以比较是同源对同源。
+    local baseline="$SBX_RUN/lib/health.sh"
+    # 附带的保真度断言：沙箱重定向**不得改变**探测实现的文本
+    # （改了的话，下面比的就是「副本 vs 副本」，不是「真源 vs 生成物」）。
+    local t_frozen t_base
+    t_frozen=$(_t32_extract_fn "$hl")
+    t_base=$(_t32_extract_fn "$baseline")
+    if [ "$t_frozen" = "$t_base" ]; then
+        h_pass "沙箱重定向未改变探测实现的文本（真源 = 冻结态原样）"
     else
-        h_log "--- 真源 ---"
-        while IFS= read -r x; do h_log "  $x"; done < "$a"
-        h_log "--- 生成物 ---"
-        while IFS= read -r x; do h_log "  $x"; done < "$b"
-        h_fail "真源与生成物里的探测实现已漂移（改了一处忘了另一处）"
+        h_fail "沙箱重定向改变了探测实现的文本：真源 ${#t_frozen} 字节 vs 沙箱副本 ${#t_base} 字节（下面的比较将不可信）"
     fi
+
+    local verdict detail
+    verdict=$(_t32_judge_probe "$script" "$baseline")
+    detail=$(printf '%s' "$verdict" | cut -f2-)
+    h_log "条件 4 判定: $(printf '%s' "$verdict" | cut -f1) —— $detail"
+    h_check_contains "$verdict" "PASS" "生成物的探测实现与真源一致（形态 A/B 都判过）：$detail"
+
+    # ── 负向对照 1：形态 B（生成物改成 source 真源）→ 必须判过 ──
+    # 造一个形态 B 的变体：去掉内嵌副本，改成 source 已安装的真源。
+    local formB="$SBX_ROOT/t32_formB.sh" formB_body="$SBX_ROOT/t32_formB.body"
+    local real_src="$SBX_ROOT/realm/lib/health.sh"
+    awk '
+        /^check_connectivity\(\) \{/ { inb=1; next }
+        inb { if ($0 ~ /^\}/) { inb=0 } ; next }
+        { print }
+    ' "$script" > "$formB_body"
+    {
+        head -1 "$formB_body"
+        echo "source $real_src"
+        tail -n +2 "$formB_body"
+    } > "$formB"
+    local formB_inj n_formB
+    formB_inj=$(grep -c '^source ' "$formB" 2>/dev/null || true)
+    n_formB=$(grep -c '^check_connectivity() {' "$formB" 2>/dev/null || true)
+    [ -z "$formB_inj" ] && formB_inj=0
+    [ -z "$n_formB" ] && n_formB=0
+    h_log "负向对照 1 构造：形态 B 变体（内嵌副本 $n_formB 份 / source $formB_inj 处）"
+    h_check_eq "1" "$formB_inj" "负向对照 1 的破坏手法生效（形态 B 变体确实 source 了真源）"
+    h_check_eq "0" "$n_formB" "负向对照 1 的破坏手法生效（形态 B 变体确实不含内嵌副本）"
+    local v_formB
+    v_formB=$(_t32_judge_probe "$formB" "$baseline")
+    h_log "形态 B 判定: $(printf '%s' "$v_formB" | cut -f1) —— $(printf '%s' "$v_formB" | cut -f2-)"
+    h_check_contains "$v_formB" "PASS" "负向对照 1：形态 B（source 真源）必须判过"
+    h_check_contains "$v_formB" "形态B" "负向对照 1：形态 B 被识别成形态 B（不是碰巧内嵌）"
+
+    # ── 负向对照 2：内嵌副本逐字漂移 → 必须判红 ──
+    local drift="$SBX_ROOT/t32_drift.sh"
+    awk '/^check_connectivity\(\) \{/{print; print "    : # T32-NEG-DRIFT 注入"; next} {print}' \
+        "$script" > "$drift"
+    local drift_inj
+    drift_inj=$(grep -c 'T32-NEG-DRIFT' "$drift" 2>/dev/null || true)
+    [ -z "$drift_inj" ] && drift_inj=0
+    h_check_eq "1" "$drift_inj" "负向对照 2 的破坏手法生效（漂移注入点 == 1）"
+    local v_drift
+    v_drift=$(_t32_judge_probe "$drift" "$baseline")
+    h_log "漂移判定: $(printf '%s' "$v_drift" | cut -f1) —— $(printf '%s' "$v_drift" | cut -f2-)"
+    h_check_contains "$v_drift" "FAIL" "负向对照 2：内嵌副本逐字漂移必须判红"
+    h_check_contains "$v_drift" "漂移" "负向对照 2：判红原因指到「逐字漂移」"
+
+    # ── 负向对照 3：内嵌多份 → 必须判红 ──
+    local dup="$SBX_ROOT/t32_dup.sh"
+    { cat "$script"; _t32_extract_fn "$script"; } > "$dup"
+    local n_dup
+    n_dup=$(grep -c '^check_connectivity() {' "$dup" 2>/dev/null || true)
+    [ -z "$n_dup" ] && n_dup=0
+    h_check_eq "2" "$n_dup" "负向对照 3 的构造生效（内嵌 2 份）"
+    local v_dup
+    v_dup=$(_t32_judge_probe "$dup" "$baseline")
+    h_log "多份判定: $(printf '%s' "$v_dup" | cut -f1) —— $(printf '%s' "$v_dup" | cut -f2-)"
+    h_check_contains "$v_dup" "FAIL" "负向对照 3：内嵌多份必须判红"
+
+    # ── 负向对照 4：既不内嵌也不 source → 必须判红 ──
+    local none="$SBX_ROOT/t32_none.sh"
+    cp "$formB_body" "$none"
+    local n_none
+    n_none=$(grep -c '^check_connectivity() {' "$none" 2>/dev/null || true)
+    [ -z "$n_none" ] && n_none=0
+    h_check_eq "0" "$n_none" "负向对照 4 的构造生效（内嵌 0 份）"
+    local v_none
+    v_none=$(_t32_judge_probe "$none" "$baseline")
+    h_log "既无内嵌也无 source 判定: $(printf '%s' "$v_none" | cut -f1) —— $(printf '%s' "$v_none" | cut -f2-)"
+    h_check_contains "$v_none" "FAIL" "负向对照 4：既不内嵌也不 source 必须判红"
+
+    # ── 5. 仓库里不得再出现「要手工同步两份探测实现」的肯定误导句式 ──
+    # 实现已经改成机械抽取（health_emit_function），文档/注释再说「改动要两处同步」就是骗人。
+    # 扫描范围：产品代码 + 面向用户的文档；排除 tests/（台架自己）与 reports/（历史报告）。
+    local list="$SBX_ROOT/t32_candidates.txt"
+    _t32_candidate_list > "$list"
+    _t32_scan_stale "$SBX_SRC" "$list"
+    h_log "条件 5 扫描了 $T32_SCAN_N 个候选文件，命中 $T32_STALE_HITS 行"
+    if [ -s "$SBX_ROOT/t32_stale_hits.txt" ]; then
+        while IFS= read -r l; do
+            h_log "  过时字样: $(printf '%s' "$l" | cut -c1-160)"
+        done < "$SBX_ROOT/t32_stale_hits.txt"
+    fi
+    # 扫描范围下限护栏：候选文件一个都没扫到 → 「违规数 == 0」就是假绿
+    h_check_ge "$_T32_SCAN_FLOOR" "$T32_SCAN_N" "条件 5 的扫描范围下限护栏（扫描到的候选文件数）"
+    h_check_eq "0" "$T32_STALE_HITS" "仍声称「改动要手工同步两份探测实现」的行数"
+
+    # ── 负向对照 5：注入一句肯定误导句式 → 条件 5 必须变红 ──
+    # ★ 隔离做法：用**合成探针树**（只放一个候选文件），不复制冻结态整棵树。
+    #   原因：冻结态里若还有真实缺陷（当前就有），复制整棵树会把真实命中混进计数，
+    #   负向对照就变成「在测真实缺陷」而不是「在测扫描器」——
+    #   这跟「负向对照红了先怀疑破坏手法」是同一类错误，只是方向相反。
+    local probe="$SBX_ROOT/t32_probe"
+    local plist="$SBX_ROOT/t32_probe.list"
+    rm -rf "$probe"
+    mkdir -p "$probe/docs"
+    printf '# 干净的探针文件\n' > "$probe/docs/t32-probe.md"
+    printf '# T32-NEG-STALE: 改动需两处同步\n' >> "$probe/docs/t32-probe.md"
+    printf 'docs/t32-probe.md\n' > "$plist"
+    local n_inj
+    n_inj=$(grep -c 'T32-NEG-STALE' "$probe/docs/t32-probe.md" 2>/dev/null || true)
+    [ -z "$n_inj" ] && n_inj=0
+    h_check_eq "1" "$n_inj" "负向对照 5 的破坏手法生效（注入点 == 1）"
+    _t32_scan_stale "$probe" "$plist"
+    h_log "负向对照 5：合成探针树扫描了 $T32_SCAN_N 个文件，命中 $T32_STALE_HITS 行"
+    h_check_eq "1" "$T32_STALE_HITS" "负向对照 5：注入「改动需两处同步」后条件 5 必须变红"
+
+    # ── 负向对照 6：注入否定句 → 条件 5 必须保持绿 ──
+    # 两种否定句各来一行：
+    #   (a) 纯否定句「不需要手工同步」—— 本来就不该命中；
+    #   (b) 否定句里**带着**肯定误导句式（「…两处必须同步（现在不再需要手工同步）」）——
+    #       这才真正检验「同一行含否定词 → 豁免该行」这条规则真的生效。
+    rm -rf "$probe"
+    mkdir -p "$probe/docs"
+    printf '# 干净的探针文件\n' > "$probe/docs/t32-probe.md"
+    printf '# T32-NEG-NEG: 不需要手工同步\n' >> "$probe/docs/t32-probe.md"
+    printf '# T32-NEG-NEG2: 改动 check_connectivity 时两处必须同步（现在不再需要手工同步）\n' >> "$probe/docs/t32-probe.md"
+    local n_inj2
+    n_inj2=$(grep -c 'T32-NEG-NEG' "$probe/docs/t32-probe.md" 2>/dev/null || true)
+    [ -z "$n_inj2" ] && n_inj2=0
+    h_check_ge 2 "$n_inj2" "负向对照 6 的构造生效（两句否定句都在）"
+    _t32_scan_stale "$probe" "$plist"
+    h_log "负向对照 6：合成探针树扫描了 $T32_SCAN_N 个文件，命中 $T32_STALE_HITS 行"
+    h_check_eq "0" "$T32_STALE_HITS" "负向对照 6：否定句（含带肯定句式的否定句）必须保持绿"
 }
 
 # T33 · 第 2 轮新增
