@@ -111,6 +111,9 @@ FAILURE_THRESHOLD="2"
 SUCCESS_THRESHOLD="2"
 CONNECTION_TIMEOUT="10"
 RECOVERY_COOLDOWN="120"
+# N5 阶段 1 · 质量观测窗口大小（只观测，不动作；默认 20）
+#   ★ 与显示口径的 latency_hist（上限 5）无关，两套窗口并存。
+PROBE_QUALITY_WINDOW="20"
 
 MPTCP_MODE="off"
 PROXY_MODE="off"
@@ -158,6 +161,9 @@ FAILURE_THRESHOLD="2"
 SUCCESS_THRESHOLD="2"
 CONNECTION_TIMEOUT="10"
 RECOVERY_COOLDOWN="120"
+# N5 阶段 1 · 质量观测窗口大小（只观测，不动作；默认 20）
+#   ★ 与显示口径的 latency_hist（上限 5）无关，两套窗口并存。
+PROBE_QUALITY_WINDOW="20"
 
 MPTCP_MODE="off"
 PROXY_MODE="off"

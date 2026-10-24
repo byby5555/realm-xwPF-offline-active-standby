@@ -42,7 +42,7 @@ REALM_HEALTH_LIB="${REALM_HEALTH_LIB:-${BASH_SOURCE[0]}}"
 read_rule_file() {
     local rule_file="$1"
     local _line _k _v _key
-    local _allowed='RULE_ID RULE_ROLE RULE_NAME SECURITY_LEVEL LISTEN_PORT LISTEN_IP THROUGH_IP REMOTE_HOST REMOTE_PORT FORWARD_TARGET TLS_SERVER_NAME TLS_CERT_PATH TLS_KEY_PATH WS_PATH WS_HOST RULE_NOTE ENABLED CREATED_TIME BALANCE_MODE PREV_BALANCE_MODE TARGET_STATES WEIGHTS FAILOVER_ENABLED HEALTH_CHECK_INTERVAL FAILURE_THRESHOLD SUCCESS_THRESHOLD CONNECTION_TIMEOUT RECOVERY_COOLDOWN MPTCP_MODE PROXY_MODE'
+    local _allowed='RULE_ID RULE_ROLE RULE_NAME SECURITY_LEVEL LISTEN_PORT LISTEN_IP THROUGH_IP REMOTE_HOST REMOTE_PORT FORWARD_TARGET TLS_SERVER_NAME TLS_CERT_PATH TLS_KEY_PATH WS_PATH WS_HOST RULE_NOTE ENABLED CREATED_TIME BALANCE_MODE PREV_BALANCE_MODE TARGET_STATES WEIGHTS FAILOVER_ENABLED HEALTH_CHECK_INTERVAL FAILURE_THRESHOLD SUCCESS_THRESHOLD CONNECTION_TIMEOUT RECOVERY_COOLDOWN PROBE_QUALITY_WINDOW MPTCP_MODE PROXY_MODE'
 
     if [ ! -f "$rule_file" ]; then
         return 1
@@ -293,6 +293,209 @@ latency_avg_ms() {
     echo $((sum / n))
 }
 
+# ══════════════════════════════════════════════════════════════
+# N5 阶段 1 · 质量指标窗口（**只观测，不动作**）
+# ══════════════════════════════════════════════════════════════
+#
+# ★ 硬红线（Chief 拍板）：
+#   本节的任何数字都**不得**参与切换/权重决策、**不得**影响探测端对目标的
+#   status 判定、**不得**写进任何影响 realm 配置生成的字段。
+#   本节**只**做一件事：把「采样总数 / 失败次数 / 成功样本时延均值」记下来给人看。
+#
+# ★ 两套窗口并存（不许合并）：
+#   · `latency_hist`（上限 5）= **显示口径**（菜单 `[时延: Xms (均 Yms)]` 的均值分母
+#     + 文档「保留最近 5 次样本」）⇒ **一个字都不许改**（台架 T51 锁死：
+#     「跑 3 轮累积 3 样本、跑 7 轮封顶 5 个」）。
+#   · `quality_window`（默认 20）= **质量观测窗口** ⇒ **另开**，与上面互不影响。
+#
+# ★ 只钉相对量：失败率 = 窗口内失败次数 / 采样总数（**比例**），
+#   时延均值只用**窗口内成功样本**的相对分布。
+#   ⇒ **不许出现任何跨宿主绝对阈值**（绝对阈值跨宿主不稳 = T53 同源坑）。
+#
+# ★ 落盘在**独立文件**：不动 `health_status.conf`
+#   （它的形态被台架 T86 锁着：每轮原子重建、只留当前规则的行
+#     ⇒ 往里加列/加行 = 改产品把门禁搞红）。
+#
+# 文件格式（每行一条记录；`#` 开头为注释）：
+#   TARGET|RULE_ID|SAMPLE_SEQ|LAT_SEQ
+#     TARGET     = host:port（与状态文件同口径）
+#     RULE_ID    = 归属规则的 RULE_ID（组合键的一部分）
+#     SAMPLE_SEQ = 窗口内最近 N 次采样的**成败位**（逗号分隔，0=成功 / 1=失败）
+#     LAT_SEQ    = 窗口内**成功样本**的时延（逗号分隔，毫秒；与 SAMPLE_SEQ 里的 0 一一对应）
+#   ⇒ 采样总数   = SAMPLE_SEQ 的个数
+#   ⇒ 失败次数   = SAMPLE_SEQ 里 1 的个数
+#   ⇒ 失败率     = 失败次数 / 采样总数（**比例**，相对量）
+#   ⇒ 成功时延均值 = LAT_SEQ 的平均（**只用成功样本**，相对量）
+#   ★ 存**序列**而不是存「总数 + 总和」：窗口滚动时要丢掉最旧那次样本，
+#     若只存总数就不知道该减「失败数」还是「成功数 + 它的时延」
+#     ⇒ 序列能让滚动**精确**，不会把计数减错。
+#   ★ 两个分母都随窗口一起滚，**不写死** ⇒ 不出现跨宿主绝对阈值。
+
+# 质量窗口大小（默认 20）。可配：PROBE_QUALITY_WINDOW（规范名）
+#   兼容别名：probe.quality_window（点号小写 —— 解析器的键名规则认不得，
+#   由 quality_window_size 按文本兜底读一次；两个写法都生效）
+#   ★ 只影响**质量观测窗口**；与显示口径的 latency_hist（上限 5）无关。
+QUALITY_WINDOW_DEFAULT=20
+
+# 质量指标文件路径（独立文件，不碰 health_status.conf）
+QUALITY_METRICS_FILE="${QUALITY_METRICS_FILE:-/var/lib/realm/quality_metrics.conf}"
+
+# 取质量窗口大小（**当前规则**生效的窗口）
+#   用法：quality_window_size <规则文件路径>
+#   ★ 规范名的值**不用自己再去找**：read_rule_file 解析白名单时已经把
+#     PROBE_QUALITY_WINDOW 赋值到同名变量（它在白名单里 ⇒ 一定被读到），
+#     而且 read_rule_file 每次都会把白名单键**重置**（缺失即空串）
+#     ⇒ 上一条规则的值不会串到下一条。
+#   ★ 兼容别名 `probe.quality_window`（点号小写）**解析器认不得**
+#     （键名规则 ^[A-Z_][A-Z0-9_]*$ ⇒ 点号 + 小写直接被跳过）
+#     ⇒ 按文本单独读一次（规范名优先，别名兜底）。
+#   ★ 非法值 / 0 一律回退默认（不报错、不中断探测端）。
+quality_window_size() {
+    local rule_file="${1:-}"
+    local v="${PROBE_QUALITY_WINDOW:-}"
+    if [ -z "$v" ] && [ -n "$rule_file" ] && [ -f "$rule_file" ]; then
+        v=$(grep -m1 '^[[:space:]]*probe\.quality_window[[:space:]]*=' "$rule_file" 2>/dev/null \
+            | cut -d= -f2- | tr -d '"' | tr -d "'" | tr -d '[:space:]')
+    fi
+    case "$v" in
+        ''|*[!0-9]*) v="$QUALITY_WINDOW_DEFAULT" ;;
+    esac
+    if [ "$v" -lt 1 ] 2>/dev/null; then
+        v="$QUALITY_WINDOW_DEFAULT"
+    fi
+    printf '%s\n' "$v"
+}
+
+# 读某目标的质量窗口原始序列
+#   用法：read_quality_window <target> <rule_id> → 输出 "SAMPLE_SEQ|LAT_SEQ"
+#   找不到 = 无记录 = 输出 "|"（空序列，从零开始 = 安全方向）
+read_quality_window() {
+    local target="$1" rule_id="$2"
+    local line=""
+    [ -f "$QUALITY_METRICS_FILE" ] || { echo "|"; return 0; }
+
+    # 组合键 = (RULE_ID, 目标)：与状态文件同口径，避免同后端两规则共用时串数据
+    line=$(awk -F'|' -v r="$rule_id" -v t="$target" \
+        '!/^#/ && $1 == t && $2 == r { print $3 "|" $4; exit }' \
+        "$QUALITY_METRICS_FILE" 2>/dev/null)
+
+    if [ -z "$line" ]; then
+        echo "|"
+        return 0
+    fi
+    echo "$line"
+}
+
+# 把新的采样推进窗口（**滚动环形**：满了就丢最旧一次）
+#   用法：push_quality_sample <sample_seq> <lat_seq> <is_failure 0|1> <latency_ms> <window>
+#   输出：新的 "SAMPLE_SEQ|LAT_SEQ"
+#   ★ 纯计算，不碰任何判定状态（不写 status、不写权重）。
+push_quality_sample() {
+    local seq="$1" lat_seq="$2" is_fail="$3" lat_ms="$4" win="$5"
+
+    local -a s_arr l_arr
+    IFS=',' read -ra s_arr <<< "$seq"
+    IFS=',' read -ra l_arr <<< "$lat_seq"
+    # 空串会造出一个空元素 ⇒ 过滤掉
+    local -a s_new=() l_new=()
+    local v
+    for v in "${s_arr[@]}"; do
+        case "$v" in 0|1) s_new+=("$v") ;; esac
+    done
+    for v in "${l_arr[@]}"; do
+        case "$v" in ''|*[!0-9]*) continue ;; esac
+        l_new+=("$v")
+    done
+
+    # 追加本次样本
+    if [ "$is_fail" = "1" ]; then
+        s_new+=("1")
+    else
+        s_new+=("0")
+        case "$lat_ms" in
+            ''|*[!0-9]*) lat_ms=0 ;;
+        esac
+        l_new+=("$lat_ms")
+    fi
+
+    # 环形：超过窗口就丢最旧（失败位与它对应的成功时延同步丢）
+    while [ "${#s_new[@]}" -gt "$win" ]; do
+        _old="${s_new[0]}"
+        s_new=("${s_new[@]:1}")
+        if [ "$_old" = "0" ] && [ "${#l_new[@]}" -gt 0 ]; then
+            l_new=("${l_new[@]:1}")
+        fi
+    done
+
+    # 输出
+    if [ "${#s_new[@]}" -eq 0 ]; then
+        echo "|"
+        return 0
+    fi
+    local out_s out_l
+    out_s=$(IFS=','; echo "${s_new[*]}")
+    if [ "${#l_new[@]}" -eq 0 ]; then
+        out_l=""
+    else
+        out_l=$(IFS=','; echo "${l_new[*]}")
+    fi
+    echo "${out_s}|${out_l}"
+}
+
+# 把质量窗口落盘（**整份原子重建**，与状态文件同一种写法）
+#   用法：write_quality_window <行文件>
+#   ★ 只写**本轮被采样到的**目标 ⇒ 目标消失后它的行自然消失
+#     （不留在文件里当「还在观测」）。
+write_quality_window() {
+    local rows_file="$1"
+    local dir
+    dir=$(dirname "$QUALITY_METRICS_FILE")
+
+    mkdir -p "$dir" 2>/dev/null || return 0
+
+    {
+        echo "# Realm质量观测指标（只观测，不动作）"
+        echo "# 格式: TARGET|RULE_ID|SAMPLE_SEQ|LAT_SEQ|WINDOW"
+        echo "# 采样总数 = SAMPLE_SEQ 个数；失败率 = 1 的个数 / 采样总数；成功时延均值 = LAT_SEQ 平均"
+        echo "# WINDOW = 该行**生效**的质量窗口大小（= 规则里配的值；未配 = 默认 20）"
+        cat "$rows_file" 2>/dev/null
+    } > "${QUALITY_METRICS_FILE}.tmp.$$" 2>/dev/null \
+        && mv -f "${QUALITY_METRICS_FILE}.tmp.$$" "$QUALITY_METRICS_FILE" 2>/dev/null
+    return 0
+}
+
+# 从质量窗口算出可展示的三个值（**只读，不改任何状态**）
+#   用法：quality_window_stats <target> <rule_id> → 输出 "SAMPLES|FAILURES|OK|AVG_LAT_MS"
+#   ★ AVG_LAT_MS 用整数除法（毫秒精度足够）；无成功样本时输出 0。
+#   ★ 失败率由调用方用 FAILURES/SAMPLES 现算（**分母不写死**）。
+quality_window_stats() {
+    local target="$1" rule_id="$2"
+    local raw seq lat_seq
+    raw=$(read_quality_window "$target" "$rule_id")
+    seq="${raw%%|*}"
+    lat_seq="${raw#*|}"
+
+    local s f ok sum n v
+    s=0; f=0; ok=0; sum=0; n=0
+    local IFS=','
+    for v in $seq; do
+        case "$v" in
+            0) s=$((s+1)); ok=$((ok+1)) ;;
+            1) s=$((s+1)); f=$((f+1)) ;;
+        esac
+    done
+    for v in $lat_seq; do
+        case "$v" in
+            ''|*[!0-9]*) continue ;;
+        esac
+        sum=$((sum + v)); n=$((n+1))
+    done
+
+    local avg=0
+    [ "$n" -gt 0 ] && avg=$((sum / n))
+    echo "${s}|${f}|${ok}|${avg}"
+}
+
 # 格式化时延展示：最近一次 + 最近若干次平均
 format_latency_display() {
     local latency_ms="$1"
@@ -394,6 +597,13 @@ HEALTH_DIR="/etc/realm/health"
 RULES_DIR="/etc/realm/rules"
 LOCK_FILE="/var/lock/realm-health-check.lock"
 
+# ★ 质量观测指标文件（**独立文件**，不碰 health_status.conf —— 它的形态被台架 T86 锁着）
+QUALITY_METRICS_FILE="/var/lib/realm/quality_metrics.conf"
+# ★ 质量窗口大小（默认 20，可配 PROBE_QUALITY_WINDOW；兼容别名 probe.quality_window）
+#   —— 与显示口径的 latency_hist（上限 5）**无关**，两套窗口并存。
+QUALITY_WINDOW_DEFAULT=20
+PROBE_QUALITY_WINDOW=""
+
 # 查找健康状态文件
 HEALTH_STATUS_FILE=""
 for path in "/etc/realm/health/health_status.conf" "/etc/realm/health_status.conf" "/var/lib/realm/health_status.conf"; do
@@ -440,6 +650,11 @@ HEADER_EOF
         health_emit_function health_status_find_row
         health_emit_function latency_avg_ms
         health_emit_function format_latency_display
+        health_emit_function quality_window_size
+        health_emit_function read_quality_window
+        health_emit_function push_quality_sample
+        health_emit_function write_quality_window
+        health_emit_function quality_window_stats
         # ↑↑↑ 抽取结束 ↑↑↑
 
         cat << 'BODY_EOF'
@@ -454,6 +669,10 @@ _health_status_old="${HEALTH_STATUS_FILE}.old.$$"
 _health_status_new="${HEALTH_STATUS_FILE}.new.$$"
 cp -f "$HEALTH_STATUS_FILE" "$_health_status_old" 2>/dev/null || : > "$_health_status_old"
 : > "$_health_status_new"
+
+# ★ N5 阶段 1：质量观测指标的本轮行（**独立文件**，不碰 health_status.conf）
+_quality_rows_new="${QUALITY_METRICS_FILE}.new.$$"
+: > "$_quality_rows_new"
 
 # 检查所有启用故障转移的规则
 config_changed=false
@@ -544,6 +763,7 @@ for rule_file in "${RULES_DIR}"/rule-*.conf; do
         fi
 
         # 时延历史：保留最近 5 次样本（用于算平均值，避免单次抖动误导）
+        #   ★ 这是**显示口径**，上限 5 一个字都不许改（台架 T51 锁死）。
         if [ -n "$PROBE_LATENCY_MS" ]; then
             latency_ms="$PROBE_LATENCY_MS"
             _lat_hist=()
@@ -556,6 +776,51 @@ for rule_file in "${RULES_DIR}"/rule-*.conf; do
         else
             latency_ms=""
         fi
+
+        # ── N5 阶段 1 · 质量观测窗口采样（**只观测，不动作**）────────────
+        #   ★ 硬红线：下面这段**不写** status、**不写**权重、**不碰** config_changed
+        #     ⇒ 指标永远不参与切换判定。
+        #   · 成功与失败**各算一次采样** ⇒ 失败率的分母 = 采样总数
+        #   · 失败 = 探测不通（**不区分 timeout / refused**：check_connectivity
+        #     把两者归一化成同一个 rc=1；区分原因是阶段 2 的活）
+        #   · 时延只记**成功**样本（失败样本的时延分布不在阶段 1 口径内）
+        #   · 窗口满 N 后**滚动**丢最旧一次（环形）
+        #   ★ 存序列（成败位 + 各成功样本时延）⇒ 滚动时能**精确**移除最旧样本，
+        #     不会「总数减一但不知道该减失败数还是成功数」。
+        #   ★ 窗口大小取**当前规则**的配置值（quality_window_size 传当前规则文件）：
+        #     规范名 PROBE_QUALITY_WINDOW 由 read_rule_file 解析白名单时赋值，
+        #     兼容别名 probe.quality_window 按文本兜底读。
+        _q_win=$(quality_window_size "$rule_file")
+        case "$_q_win" in
+            ''|*[!0-9]*) _q_win="$QUALITY_WINDOW_DEFAULT" ;;
+        esac
+        [ "$_q_win" -lt 1 ] && _q_win=1
+
+        _q_prev=$(read_quality_window "$target_endpoint" "$RULE_ID")
+        _q_seq="${_q_prev%%|*}"
+        _q_lat="${_q_prev#*|}"
+        # 空序列时 _q_lat 会等于 _q_prev（无 '|'）⇒ 归一成空
+        if [ "$_q_lat" = "$_q_prev" ] && [ -z "$_q_seq" ]; then
+            _q_lat=""
+        fi
+
+        if probe_with_latency "$target" "$REMOTE_PORT" "${CONNECTION_TIMEOUT:-10}"; then
+            _q_is_fail=0
+        else
+            _q_is_fail=1
+        fi
+        _q_new=$(push_quality_sample "$_q_seq" "$_q_lat" "$_q_is_fail" "${PROBE_LATENCY_MS:-0}" "$_q_win")
+        _q_new_seq="${_q_new%%|*}"
+        _q_new_lat="${_q_new#*|}"
+        if [ "$_q_new_lat" = "$_q_new" ] && [ -z "$_q_new_seq" ]; then
+            _q_new_lat=""
+        fi
+
+        # 记到本轮的质量指标行（循环结束后整份落盘）
+        #   ★ 末位记**本行生效的窗口大小** ⇒ 「配的值真的生效」可被外部直接读到
+        #     （配置项存在 ≠ 配置项可生效：没有这一列就证明不了值被读到了）。
+        echo "${target_endpoint}|${RULE_ID}|${_q_new_seq}|${_q_new_lat}|${_q_win}" >> "$_quality_rows_new"
+        # ────────────────────────────────────────────────────────────
 
         # 本轮新行先写进临时文件（循环结束后才整份覆盖）
         #   ★ 不再逐个目标改写状态文件：那样会留下「已被删掉的规则」的残留行
@@ -572,6 +837,13 @@ done
     cat "$_health_status_new" 2>/dev/null
 } > "${HEALTH_STATUS_FILE}.tmp.$$" 2>/dev/null && mv -f "${HEALTH_STATUS_FILE}.tmp.$$" "$HEALTH_STATUS_FILE" 2>/dev/null
 rm -f "$_health_status_old" "$_health_status_new" 2>/dev/null
+
+# ── N5 阶段 1 · 质量观测指标落盘（**独立文件**）────────────────────
+#   ★ 与上面的状态文件**完全分开**：不碰 health_status.conf（形态被台架 T86 锁着）。
+#   ★ 整份原子重建：只留本轮被采样到的目标 ⇒ 目标消失后它的行自然消失。
+#   ★ 写失败**不中断探测端**（观测指标是辅助信息，不是判定依据）。
+write_quality_window "$_quality_rows_new" 2>/dev/null || true
+rm -f "$_quality_rows_new" 2>/dev/null
 
 # 如果配置有变化，调用xwPF.sh重启接口
 if [ "$config_changed" = true ]; then

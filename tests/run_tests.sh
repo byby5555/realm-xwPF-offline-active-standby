@@ -352,6 +352,10 @@ CASES=(
     "T65:case_T65_quality_threshold_injection_no_switch"
     "T66:case_T66_quality_detector_selfcheck"
     "T67:case_T67_observation_no_side_effect"
+    # 质量窗口「真的可配」（T108 · cases/17_n5_quality_observation.sh）
+    #   ★ Chief 拍板补的断言：键写在白名单/模板/文档里 ≠ 值真被读到
+    #     （N5 第一版去 grep 一个从未被赋值的变量 ⇒ 永远回落默认 ⇒ 缺陷静默过去）。
+    "T108:case_T108_quality_window_configurable"
     # 主备切换可靠性九组（T68~T76 · cases/18_failover_switch_reliability.sh）
     "T68:case_T68_enter_active_standby"
     "T69:case_T69_switch_away_on_failure"

@@ -1859,6 +1859,9 @@ load_balance_management_menu() {
         declare -A port_balance_modes
         declare -A port_weights
         declare -A port_failover_status
+        # ★ 端口组 → 目标 → 归属规则的 RULE_ID（先声明者为准，与读端同口径）
+        #   质量观测指标的键是 (RULE_ID, 目标) ⇒ 展示端查指标时必须带 RULE_ID
+        declare -A port_target_owner
 
         for rule_file in "${RULES_DIR}"/rule-*.conf; do
             if [ -f "$rule_file" ]; then
@@ -1885,6 +1888,14 @@ load_balance_management_menu() {
                                     port_groups[$port_key]="${port_groups[$port_key]:-},$target"
                                 fi
                             fi
+                            # ★ 归属规则 = 该目标在本端口组里归属的那条规则（**先声明者为准**）
+                            #   —— 与读端（lib/realm.sh 的 generate_endpoints_from_rules）同口径。
+                            #   质量观测指标的键是 (RULE_ID, 目标) 组合键 ⇒ 展示端必须带 RULE_ID 查，
+                            #   否则同后端被两条规则共用时会显示成另一条规则的指标。
+                            local _own_key="${port_key}|${target}"
+                            if [ -z "${port_target_owner[$_own_key]:-}" ]; then
+                                port_target_owner[$_own_key]="$RULE_ID"
+                            fi
                         done
                     else
                         local target="$REMOTE_HOST:$REMOTE_PORT"
@@ -1894,6 +1905,10 @@ load_balance_management_menu() {
                             else
                                 port_groups[$port_key]="${port_groups[$port_key]:-},$target"
                             fi
+                        fi
+                        local _own_key="${port_key}|${target}"
+                        if [ -z "${port_target_owner[$_own_key]:-}" ]; then
+                            port_target_owner[$_own_key]="$RULE_ID"
                         fi
                     fi
                 fi
@@ -1975,6 +1990,28 @@ load_balance_management_menu() {
                             fi
                         fi
 
+                        # ── N5 阶段 1 · 质量观测指标（**只显示，不做任何自动切换**）────
+                        #   ★ 独立文件（quality_metrics.conf），不碰 health_status.conf。
+                        #   ★ 只钉**相对量**：失败率 = 窗口内失败次数 / 采样总数（分母不写死）。
+                        #   ★ 老机器没这个文件 / 窗口还没采样 ⇒ 显示 "-"（向后兼容，缺字段不报错）。
+                        local quality_info=""
+                        local _own_rule="${port_target_owner[${port_key}|${target}]:-}"
+                        if [ -n "$_own_rule" ] && declare -F quality_window_stats >/dev/null 2>&1; then
+                            local _qstats
+                            _qstats=$(quality_window_stats "$target" "$_own_rule")
+                            IFS='|' read -r _qs _qf _qok _qavg <<< "$_qstats"
+                            if [ "${_qs:-0}" -gt 0 ]; then
+                                # 失败率 = 失败次数 / 采样总数（整数百分比，**比例**）
+                                local _qrate=$(( _qf * 100 / _qs ))
+                                local _qavg_txt="-"
+                                [ "${_qok:-0}" -gt 0 ] && _qavg_txt="${_qavg}ms"
+                                quality_info=" ${BLUE}[窗口: 失败率 ${_qrate}% (${_qf}/${_qs}) · 成功时延均值 ${_qavg_txt}]${NC}"
+                            else
+                                quality_info=" ${BLUE}[窗口: -]${NC}"
+                            fi
+                        fi
+                        # ───────────────────────────────────────────────────
+
                         case "$node_status" in
                             "healthy") failover_info=" ${GREEN}[健康]${NC}" ;;
                             "failed") failover_info=" ${RED}[故障]${NC}" ;;
@@ -1983,11 +2020,15 @@ load_balance_management_menu() {
 
                     # 显示服务器信息（只在负载均衡模式下显示权重）
                     if [ "$balance_mode" != "off" ]; then
-                        echo -e "    ${BLUE}$((i+1)).${NC} $target ${GREEN}[权重: $current_weight]${NC} ${BLUE}($percentage%)${NC}$failover_info$latency_info"
+                        echo -e "    ${BLUE}$((i+1)).${NC} $target ${GREEN}[权重: $current_weight]${NC} ${BLUE}($percentage%)${NC}$failover_info$latency_info$quality_info"
                     else
-                        echo -e "    ${BLUE}$((i+1)).${NC} $target$failover_info$latency_info"
+                        echo -e "    ${BLUE}$((i+1)).${NC} $target$failover_info$latency_info$quality_info"
                     fi
                 done
+                echo ""
+                # ★ N5 阶段 1 · 观测模式说明（**只显示指标，不做任何自动切换**）
+                #   写明「30ms·10% 仅参考不作为判据」⇒ 避免有人把窗口指标当阈值用。
+                echo -e "  ${BLUE}注：窗口指标为只观测（不影响切换/权重）；30ms·10% 仅参考，不作为判据${NC}"
                 echo ""
             fi
         done

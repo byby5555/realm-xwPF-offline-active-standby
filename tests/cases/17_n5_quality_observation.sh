@@ -642,3 +642,112 @@ case_T67_observation_no_side_effect() {
     h_check_ge "100" "$last_check" "规则 1 的记录被探测刷新（LAST_CHECK 已更新为真实时间戳）"
     h_check_eq "1" "$(grep -c '^2|127.0.0.1:18102|' "$health" 2>/dev/null)" "规则 2 的目标也被探测覆盖（探测真的跑到了每个目标）"
 }
+
+# ══════════════════════════════════════════════════════════════
+# T108 · 质量窗口「真的可配」
+# ══════════════════════════════════════════════════════════════
+# ★ 为什么要有这一条（Chief 拍板）：
+#   「配置项存在 ≠ 配置项可生效」—— 键写在白名单里、模板里有、文档里有，
+#   都不等于**值真的被读到**。
+#   实际踩过的坑：N5 第一版读值时去 grep 一个**从未被赋值**的变量
+#   （$RULE_FILE 全代码库没人赋值）⇒ 那段是死代码 ⇒ 窗口永远回落默认 20
+#   ⇒ 「可配」只是**看起来可配**。而当时台架里**一条断言都没有**
+#   （T63-T67 只验「只观测不动作」红线）⇒ 缺陷就这么过去了。
+#   ⇒ 本条专门盯「值被读到了」这件事。
+#
+# ★ 观测面：质量指标文件的**末列 WINDOW** = 该行**生效的窗口大小**
+#   （产品侧在采样时把生效值一起写进去）⇒ 外部可以直接读到，
+#   不用反推采样条数。
+#
+# ★ 四腿 + 一条负向对照：
+#   腿 A：规则写 PROBE_QUALITY_WINDOW="12"  ⇒ 生效窗口 = 12（≠ 默认 20）
+#   负向对照：把 quality_window_size 换成「恒返回 20」的坏实现 ⇒ 同一断言必须判红
+#            （否则本条恒真、没有判别力）
+#   腿 B：规则不写该键                        ⇒ 生效窗口 = 20（默认）
+#   腿 C：规则写兼容别名 probe.quality_window="12" ⇒ 生效窗口 = 12
+#   腿 D：规则写 PROBE_QUALITY_WINDOW="abc"  ⇒ 生效窗口 = 20（非法值回退）
+#
+# ★ 每条腿跑探测前都先删掉指标文件 ⇒ 陈旧文件不会造成假绿。
+case_T108_quality_window_configurable() {
+    h_case_begin "T108" "N5 阶段 1：质量窗口真的可配（规则里写 12 ⇒ 生效 12，而不是回落默认 20）" \
+        "沙箱 rules（含 PROBE_QUALITY_WINDOW / 兼容别名）+ 冻结态生成的 health_check.sh" \
+        "跑一轮真实探测 → 读质量指标文件末列 WINDOW（= 本行**生效**的窗口大小）" \
+        "配 12 ⇒ 生效 12；没配 ⇒ 20；兼容别名 ⇒ 12；非法值 ⇒ 20；坏实现（恒 20）⇒ 判红"
+
+    local rules="$SBX_ROOT/realm/rules"
+    local health="$SBX_ROOT/realm/health/health_status.conf"
+    local qm="$SBX_ROOT/var.lib.realm/quality_metrics.conf"
+    local hc="$SBX_ROOT/health_check.sh"
+    local hc_bad="$SBX_ROOT/health_check_bad.sh"
+
+    # 读某一行的生效窗口（末列）
+    _t108_win() {
+        awk -F'|' '$1 == "127.0.0.1:18101" && $2 == "1" { print $5; exit }' "$qm" 2>/dev/null
+    }
+
+    # 生成冻结态探测脚本（好版本）
+    rm -f "$hc"
+    _run_in_sandbox '
+        source "$1/lib/health.sh" >/dev/null 2>&1
+        health_check_script_body
+    ' > "$hc" 2>/dev/null
+    h_check_file "$hc" "生成的 health_check.sh"
+
+    # ── 腿 A：规则里写规范名 12 ⇒ 生效 12 ─────────────────────
+    _n5_prepare "$rules" "$health"
+    _n5_check_rule_ids "$rules" "T108 腿 A"
+    printf 'PROBE_QUALITY_WINDOW="12"\n' >> "$rules/rule-1.conf"
+    rm -f "$qm"
+    bash "$hc" >/dev/null 2>&1
+    h_check_file "$qm" "质量指标文件（独立文件）"
+    local w
+    w=$(_t108_win)
+    h_log "腿 A 生效窗口 = ${w:-（读不到）}"
+    h_check_eq "12" "$w" "规则里 PROBE_QUALITY_WINDOW=\"12\" ⇒ 生效窗口 = 12（不是默认 20 ⇒ 值真被读到了）"
+
+    # ── 负向对照：把 quality_window_size 换成「恒 20」的坏实现 ──
+    #    同一套断言在坏实现上必须判红 ⇒ 证明腿 A 不是恒真断言。
+    awk '
+        /^quality_window_size\(\) \{/ { print "quality_window_size() { echo 20; }"; inblk = 1; next }
+        inblk && /^\}/ { inblk = 0; next }
+        !inblk { print }
+    ' "$hc" > "$hc_bad"
+    h_check_file "$hc_bad" "缺陷版 health_check.sh（注入式退化）"
+    h_check_file_has "$hc_bad" "quality_window_size() { echo 20; }" \
+        "缺陷版确实把 quality_window_size 换成了恒 20 的坏实现（否则负向对照没生效）"
+    rm -f "$qm"
+    bash "$hc_bad" >/dev/null 2>&1
+    local w_bad
+    w_bad=$(_t108_win)
+    h_log "坏实现下生效窗口 = ${w_bad:-（读不到）}"
+    h_check_eq "20" "$w_bad" "坏实现（恒 20）下生效窗口 = 20 ⇒ 腿 A 的断言在缺陷版上会判红（有判别力，非恒真）"
+
+    # ── 腿 B：规则不写该键 ⇒ 生效 20（默认）──────────────────
+    _n5_prepare "$rules" "$health"
+    _n5_check_rule_ids "$rules" "T108 腿 B"
+    rm -f "$qm"
+    bash "$hc" >/dev/null 2>&1
+    w=$(_t108_win)
+    h_log "腿 B 生效窗口 = ${w:-（读不到）}"
+    h_check_eq "20" "$w" "规则里没写该键 ⇒ 生效窗口 = 20（默认值）"
+
+    # ── 腿 C：兼容别名（点号小写）⇒ 生效 12 ──────────────────
+    _n5_prepare "$rules" "$health"
+    _n5_check_rule_ids "$rules" "T108 腿 C"
+    printf 'probe.quality_window="12"\n' >> "$rules/rule-1.conf"
+    rm -f "$qm"
+    bash "$hc" >/dev/null 2>&1
+    w=$(_t108_win)
+    h_log "腿 C 生效窗口 = ${w:-（读不到）}"
+    h_check_eq "12" "$w" "兼容别名 probe.quality_window=\"12\" ⇒ 生效窗口 = 12（别名也生效，不失效）"
+
+    # ── 腿 D：非法值 ⇒ 回退 20 ────────────────────────────────
+    _n5_prepare "$rules" "$health"
+    _n5_check_rule_ids "$rules" "T108 腿 D"
+    printf 'PROBE_QUALITY_WINDOW="abc"\n' >> "$rules/rule-1.conf"
+    rm -f "$qm"
+    bash "$hc" >/dev/null 2>&1
+    w=$(_t108_win)
+    h_log "腿 D 生效窗口 = ${w:-（读不到）}"
+    h_check_eq "20" "$w" "非法值 PROBE_QUALITY_WINDOW=\"abc\" ⇒ 回退到默认 20（不中断探测端）"
+}
