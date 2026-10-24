@@ -1992,23 +1992,13 @@ load_balance_management_menu() {
 
                         # ── N5 阶段 1 · 质量观测指标（**只显示，不做任何自动切换**）────
                         #   ★ 独立文件（quality_metrics.conf），不碰 health_status.conf。
-                        #   ★ 只钉**相对量**：失败率 = 窗口内失败次数 / 采样总数（分母不写死）。
+                        #   ★ 展示口径只有一处（lib/health.sh 的 quality_window_display）⇒
+                        #     这里不再自己拼字符串 ⇒ 两处不会漂。
                         #   ★ 老机器没这个文件 / 窗口还没采样 ⇒ 显示 "-"（向后兼容，缺字段不报错）。
                         local quality_info=""
                         local _own_rule="${port_target_owner[${port_key}|${target}]:-}"
-                        if [ -n "$_own_rule" ] && declare -F quality_window_stats >/dev/null 2>&1; then
-                            local _qstats
-                            _qstats=$(quality_window_stats "$target" "$_own_rule")
-                            IFS='|' read -r _qs _qf _qok _qavg <<< "$_qstats"
-                            if [ "${_qs:-0}" -gt 0 ]; then
-                                # 失败率 = 失败次数 / 采样总数（整数百分比，**比例**）
-                                local _qrate=$(( _qf * 100 / _qs ))
-                                local _qavg_txt="-"
-                                [ "${_qok:-0}" -gt 0 ] && _qavg_txt="${_qavg}ms"
-                                quality_info=" ${BLUE}[窗口: 失败率 ${_qrate}% (${_qf}/${_qs}) · 成功时延均值 ${_qavg_txt}]${NC}"
-                            else
-                                quality_info=" ${BLUE}[窗口: -]${NC}"
-                            fi
+                        if [ -n "$_own_rule" ] && declare -F quality_window_display >/dev/null 2>&1; then
+                            quality_info=" ${BLUE}$(quality_window_display "$target" "$_own_rule")${NC}"
                         fi
                         # ───────────────────────────────────────────────────
 

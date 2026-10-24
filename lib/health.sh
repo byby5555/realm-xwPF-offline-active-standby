@@ -153,11 +153,24 @@ check_connectivity() {
     return 1
 }
 
-# 取当前时间（微秒）
-# 优先 bash 5 的 EPOCHREALTIME（不 fork，更快）；回退 date +%s%N
-# （GNU coreutils 支持；busybox date 不支持 %N，会返回字面量 N，此时判定为不可用）
+# 取当前时间（**微秒**）
+#
+# ★ 单位契约（函数名 / 本注释 / 返回值 三处必须写同一个单位）：
+#   返回值 = **微秒**（16 位左右）。调用方统一按 (t1-t0)/1000 取毫秒。
+#   ★ 两条分支**必须产出同一个单位** —— 这里最容易出错：
+#     · bash 5 的 EPOCHREALTIME = **微秒** ✔
+#     · `date +%s%N`          = **纳秒**（19 位）✘ ⇒ 必须在这里 ÷1000 换算，
+#       否则调用方会把时延**放大 1000 倍**
+#       （实测：睡 0.2 秒被算成 259620ms，真值约 200ms）。
+#   ⇒ 换算在**本函数**里做 ⇒ 调用方永远只拿到微秒，不会各算各的。
+#   ★ 回退分支的前提：GNU coreutils 的 date 支持 %N；
+#     busybox date 不支持（返回字面量 N）⇒ 判定为不可用（返回 1），
+#     调用方降级为「无时延」（优雅退化，不影响任何切换判定）。
+#   ★ NOW_US_FORCE_FALLBACK=1：强制走 date 分支。
+#     台架要能在 bash 5 的机器上**覆盖**回退分支 ——
+#     否则回退分支永远没被测过（bash 4 的机器上它才是主路径 ⇒ 盲区）。
 now_us() {
-    if [ -n "${EPOCHREALTIME:-}" ]; then
+    if [ "${NOW_US_FORCE_FALLBACK:-0}" != "1" ] && [ -n "${EPOCHREALTIME:-}" ]; then
         local t="${EPOCHREALTIME}"
         t="${t/[.,]/}"
         case "$t" in
@@ -171,8 +184,10 @@ now_us() {
     t=$(date +%s%N 2>/dev/null)
     case "$t" in
         ''|*N*) return 1 ;;
+        *[!0-9]*) return 1 ;;
     esac
-    echo "$t"
+    # 纳秒 → 微秒（÷1000）：换算在**本函数**里做，调用方只拿微秒
+    echo $(( t / 1000 ))
     return 0
 }
 
@@ -300,7 +315,7 @@ latency_avg_ms() {
 # ★ 硬红线（Chief 拍板）：
 #   本节的任何数字都**不得**参与切换/权重决策、**不得**影响探测端对目标的
 #   status 判定、**不得**写进任何影响 realm 配置生成的字段。
-#   本节**只**做一件事：把「采样总数 / 失败次数 / 成功样本时延均值」记下来给人看。
+#   本节**只**做一件事：把「采样总数 / 失败次数 / 成功样本时延均值 / 失败样本时延」记下来给人看。
 #
 # ★ 两套窗口并存（不许合并）：
 #   · `latency_hist`（上限 5）= **显示口径**（菜单 `[时延: Xms (均 Yms)]` 的均值分母
@@ -309,7 +324,8 @@ latency_avg_ms() {
 #   · `quality_window`（默认 20）= **质量观测窗口** ⇒ **另开**，与上面互不影响。
 #
 # ★ 只钉相对量：失败率 = 窗口内失败次数 / 采样总数（**比例**），
-#   时延均值只用**窗口内成功样本**的相对分布。
+#   时延均值只用**窗口内成功样本**的相对分布，
+#   失败样本时延 = 窗口内**失败样本**的相对分布（失败次数 / 均值 / 最大值）。
 #   ⇒ **不许出现任何跨宿主绝对阈值**（绝对阈值跨宿主不稳 = T53 同源坑）。
 #
 # ★ 落盘在**独立文件**：不动 `health_status.conf`
@@ -317,19 +333,23 @@ latency_avg_ms() {
 #     ⇒ 往里加列/加行 = 改产品把门禁搞红）。
 #
 # 文件格式（每行一条记录；`#` 开头为注释）：
-#   TARGET|RULE_ID|SAMPLE_SEQ|LAT_SEQ
-#     TARGET     = host:port（与状态文件同口径）
-#     RULE_ID    = 归属规则的 RULE_ID（组合键的一部分）
-#     SAMPLE_SEQ = 窗口内最近 N 次采样的**成败位**（逗号分隔，0=成功 / 1=失败）
-#     LAT_SEQ    = 窗口内**成功样本**的时延（逗号分隔，毫秒；与 SAMPLE_SEQ 里的 0 一一对应）
+#   TARGET|RULE_ID|SAMPLE_SEQ|LAT_SEQ|WINDOW|FAIL_LAT_SEQ
+#     TARGET      = host:port（与状态文件同口径）
+#     RULE_ID     = 归属规则的 RULE_ID（组合键的一部分）
+#     SAMPLE_SEQ  = 窗口内最近 N 次采样的**成败位**（逗号分隔，0=成功 / 1=失败）
+#     LAT_SEQ     = 窗口内**成功样本**的时延（逗号分隔，毫秒；与 SAMPLE_SEQ 里的 0 一一对应）
+#     WINDOW      = 该行**生效**的质量窗口大小
+#     FAIL_LAT_SEQ= 窗口内**失败样本**的时延（逗号分隔，毫秒；与 SAMPLE_SEQ 里的 1 一一对应）
 #   ⇒ 采样总数   = SAMPLE_SEQ 的个数
 #   ⇒ 失败次数   = SAMPLE_SEQ 里 1 的个数
 #   ⇒ 失败率     = 失败次数 / 采样总数（**比例**，相对量）
 #   ⇒ 成功时延均值 = LAT_SEQ 的平均（**只用成功样本**，相对量）
+#   ⇒ 失败时延分布 = FAIL_LAT_SEQ 的（个数 / 均值 / 最大值；**只用失败样本**，相对量）
+#   ★ FAIL_LAT_SEQ 追加在**末尾**：前 5 列的位置保持不变 ⇒
+#     老文件（没有第 6 列）与老读者（前 5 列）都不受影响（向后兼容）。
 #   ★ 存**序列**而不是存「总数 + 总和」：窗口滚动时要丢掉最旧那次样本，
 #     若只存总数就不知道该减「失败数」还是「成功数 + 它的时延」
 #     ⇒ 序列能让滚动**精确**，不会把计数减错。
-#   ★ 两个分母都随窗口一起滚，**不写死** ⇒ 不出现跨宿主绝对阈值。
 
 # 质量窗口大小（默认 20）。可配：PROBE_QUALITY_WINDOW（规范名）
 #   兼容别名：probe.quality_window（点号小写 —— 解析器的键名规则认不得，
@@ -367,37 +387,41 @@ quality_window_size() {
 }
 
 # 读某目标的质量窗口原始序列
-#   用法：read_quality_window <target> <rule_id> → 输出 "SAMPLE_SEQ|LAT_SEQ"
-#   找不到 = 无记录 = 输出 "|"（空序列，从零开始 = 安全方向）
+#   用法：read_quality_window <target> <rule_id> → 输出 "SAMPLE_SEQ|LAT_SEQ|FAIL_LAT_SEQ"
+#   找不到 = 无记录 = 输出 "||"（三段空序列，从零开始 = 安全方向）
+#   ★ 老文件（没有第 6 列）⇒ FAIL_LAT_SEQ 读出来是空串 ⇒ 兼容，不报错。
 read_quality_window() {
     local target="$1" rule_id="$2"
     local line=""
-    [ -f "$QUALITY_METRICS_FILE" ] || { echo "|"; return 0; }
+    [ -f "$QUALITY_METRICS_FILE" ] || { echo "||"; return 0; }
 
     # 组合键 = (RULE_ID, 目标)：与状态文件同口径，避免同后端两规则共用时串数据
     line=$(awk -F'|' -v r="$rule_id" -v t="$target" \
-        '!/^#/ && $1 == t && $2 == r { print $3 "|" $4; exit }' \
+        '!/^#/ && $1 == t && $2 == r { print $3 "|" $4 "|" $6; exit }' \
         "$QUALITY_METRICS_FILE" 2>/dev/null)
 
     if [ -z "$line" ]; then
-        echo "|"
+        echo "||"
         return 0
     fi
     echo "$line"
 }
 
 # 把新的采样推进窗口（**滚动环形**：满了就丢最旧一次）
-#   用法：push_quality_sample <sample_seq> <lat_seq> <is_failure 0|1> <latency_ms> <window>
-#   输出：新的 "SAMPLE_SEQ|LAT_SEQ"
+#   用法：push_quality_sample <sample_seq> <lat_seq> <fail_lat_seq> <is_failure 0|1> <latency_ms> <window>
+#   输出：新的 "SAMPLE_SEQ|LAT_SEQ|FAIL_LAT_SEQ"
 #   ★ 纯计算，不碰任何判定状态（不写 status、不写权重）。
+#   ★ 成功样本的时延进 LAT_SEQ、失败样本的时延进 FAIL_LAT_SEQ ——
+#     两者**分开存**，才能分别算「成功时延分布」与「失败时延分布」。
 push_quality_sample() {
-    local seq="$1" lat_seq="$2" is_fail="$3" lat_ms="$4" win="$5"
+    local seq="$1" lat_seq="$2" fail_lat_seq="$3" is_fail="$4" lat_ms="$5" win="$6"
 
-    local -a s_arr l_arr
+    local -a s_arr l_arr fl_arr
     IFS=',' read -ra s_arr <<< "$seq"
     IFS=',' read -ra l_arr <<< "$lat_seq"
+    IFS=',' read -ra fl_arr <<< "$fail_lat_seq"
     # 空串会造出一个空元素 ⇒ 过滤掉
-    local -a s_new=() l_new=()
+    local -a s_new=() l_new=() fl_new=()
     local v
     for v in "${s_arr[@]}"; do
         case "$v" in 0|1) s_new+=("$v") ;; esac
@@ -406,40 +430,52 @@ push_quality_sample() {
         case "$v" in ''|*[!0-9]*) continue ;; esac
         l_new+=("$v")
     done
+    for v in "${fl_arr[@]}"; do
+        case "$v" in ''|*[!0-9]*) continue ;; esac
+        fl_new+=("$v")
+    done
 
     # 追加本次样本
+    case "$lat_ms" in
+        ''|*[!0-9]*) lat_ms=0 ;;
+    esac
     if [ "$is_fail" = "1" ]; then
         s_new+=("1")
+        fl_new+=("$lat_ms")
     else
         s_new+=("0")
-        case "$lat_ms" in
-            ''|*[!0-9]*) lat_ms=0 ;;
-        esac
         l_new+=("$lat_ms")
     fi
 
-    # 环形：超过窗口就丢最旧（失败位与它对应的成功时延同步丢）
+    # 环形：超过窗口就丢最旧（失败位与它对应的时延序列**同步丢**）
     while [ "${#s_new[@]}" -gt "$win" ]; do
         _old="${s_new[0]}"
         s_new=("${s_new[@]:1}")
         if [ "$_old" = "0" ] && [ "${#l_new[@]}" -gt 0 ]; then
             l_new=("${l_new[@]:1}")
+        elif [ "$_old" = "1" ] && [ "${#fl_new[@]}" -gt 0 ]; then
+            fl_new=("${fl_new[@]:1}")
         fi
     done
 
     # 输出
     if [ "${#s_new[@]}" -eq 0 ]; then
-        echo "|"
+        echo "||"
         return 0
     fi
-    local out_s out_l
+    local out_s out_l out_fl
     out_s=$(IFS=','; echo "${s_new[*]}")
     if [ "${#l_new[@]}" -eq 0 ]; then
         out_l=""
     else
         out_l=$(IFS=','; echo "${l_new[*]}")
     fi
-    echo "${out_s}|${out_l}"
+    if [ "${#fl_new[@]}" -eq 0 ]; then
+        out_fl=""
+    else
+        out_fl=$(IFS=','; echo "${fl_new[*]}")
+    fi
+    echo "${out_s}|${out_l}|${out_fl}"
 }
 
 # 把质量窗口落盘（**整份原子重建**，与状态文件同一种写法）
@@ -455,8 +491,9 @@ write_quality_window() {
 
     {
         echo "# Realm质量观测指标（只观测，不动作）"
-        echo "# 格式: TARGET|RULE_ID|SAMPLE_SEQ|LAT_SEQ|WINDOW"
+        echo "# 格式: TARGET|RULE_ID|SAMPLE_SEQ|LAT_SEQ|WINDOW|FAIL_LAT_SEQ"
         echo "# 采样总数 = SAMPLE_SEQ 个数；失败率 = 1 的个数 / 采样总数；成功时延均值 = LAT_SEQ 平均"
+        echo "# 失败时延分布 = FAIL_LAT_SEQ 的（个数 / 均值 / 最大值；只用失败样本）"
         echo "# WINDOW = 该行**生效**的质量窗口大小（= 规则里配的值；未配 = 默认 20）"
         cat "$rows_file" 2>/dev/null
     } > "${QUALITY_METRICS_FILE}.tmp.$$" 2>/dev/null \
@@ -464,19 +501,25 @@ write_quality_window() {
     return 0
 }
 
-# 从质量窗口算出可展示的三个值（**只读，不改任何状态**）
-#   用法：quality_window_stats <target> <rule_id> → 输出 "SAMPLES|FAILURES|OK|AVG_LAT_MS"
+# 从质量窗口算出可展示的值（**只读，不改任何状态**）
+#   用法：quality_window_stats <target> <rule_id>
+#         → 输出 "SAMPLES|FAILURES|OK|AVG_LAT_MS|FAIL_LAT_AVG|FAIL_LAT_MAX|FAIL_LAT_N"
 #   ★ AVG_LAT_MS 用整数除法（毫秒精度足够）；无成功样本时输出 0。
+#   ★ FAIL_LAT_AVG / FAIL_LAT_MAX / FAIL_LAT_N = **失败样本**的时延分布
+#     （个数 / 均值 / 最大值）；没有失败样本时三个都输出 0。
 #   ★ 失败率由调用方用 FAILURES/SAMPLES 现算（**分母不写死**）。
 quality_window_stats() {
     local target="$1" rule_id="$2"
-    local raw seq lat_seq
+    local raw seq lat_seq fail_lat_seq
     raw=$(read_quality_window "$target" "$rule_id")
     seq="${raw%%|*}"
-    lat_seq="${raw#*|}"
+    local _mid="${raw#*|}"
+    lat_seq="${_mid%%|*}"
+    fail_lat_seq="${_mid#*|}"
 
     local s f ok sum n v
     s=0; f=0; ok=0; sum=0; n=0
+    local fsum=0 fn=0 fmax=0
     local IFS=','
     for v in $seq; do
         case "$v" in
@@ -490,10 +533,45 @@ quality_window_stats() {
         esac
         sum=$((sum + v)); n=$((n+1))
     done
+    for v in $fail_lat_seq; do
+        case "$v" in
+            ''|*[!0-9]*) continue ;;
+        esac
+        fsum=$((fsum + v)); fn=$((fn+1))
+        [ "$v" -gt "$fmax" ] && fmax=$v
+    done
 
-    local avg=0
+    local avg=0 favg=0
     [ "$n" -gt 0 ] && avg=$((sum / n))
-    echo "${s}|${f}|${ok}|${avg}"
+    [ "$fn" -gt 0 ] && favg=$((fsum / fn))
+    echo "${s}|${f}|${ok}|${avg}|${favg}|${fmax}|${fn}"
+}
+
+# 把质量窗口拼成**展示串**（只读，不改任何状态）
+#   用法：quality_window_display <target> <rule_id>
+#   输出："[窗口: 失败率 30% (6/20) · 成功时延均值 12ms · 失败时延 均 2500ms 最大 3000ms]"
+#         没有采样时输出 "[窗口: -]"（向后兼容：老机器没这个文件也不报错）
+#   ★ 展示口径只有**这一处** ⇒ 菜单与别处不会两处漂。
+#   ★ 没有失败样本时失败时延显示 "-"（不是 0ms —— 0ms 会被读成「失败得很快」）。
+quality_window_display() {
+    local target="$1" rule_id="$2"
+    local stats s f ok avg favg fmax fn
+    stats=$(quality_window_stats "$target" "$rule_id")
+    IFS='|' read -r s f ok avg favg fmax fn <<< "$stats"
+    if [ "${s:-0}" -le 0 ]; then
+        echo "[窗口: -]"
+        return 0
+    fi
+
+    # 失败率 = 失败次数 / 采样总数（整数百分比，**比例**；分母不写死）
+    local rate=$(( f * 100 / s ))
+    local avg_txt="-"
+    [ "${ok:-0}" -gt 0 ] && avg_txt="${avg}ms"
+    local fail_txt="-"
+    if [ "${fn:-0}" -gt 0 ]; then
+        fail_txt="均 ${favg}ms 最大 ${fmax}ms"
+    fi
+    echo "[窗口: 失败率 ${rate}% (${f}/${s}) · 成功时延均值 ${avg_txt} · 失败时延 ${fail_txt}]"
 }
 
 # 格式化时延展示：最近一次 + 最近若干次平均
@@ -655,6 +733,7 @@ HEADER_EOF
         health_emit_function push_quality_sample
         health_emit_function write_quality_window
         health_emit_function quality_window_stats
+        health_emit_function quality_window_display
         # ↑↑↑ 抽取结束 ↑↑↑
 
         cat << 'BODY_EOF'
@@ -789,9 +868,10 @@ for rule_file in "${RULES_DIR}"/rule-*.conf; do
         #   · 成功与失败**各算一次采样** ⇒ 失败率的分母 = 采样总数
         #   · 失败 = 探测不通（**不区分 timeout / refused**：check_connectivity
         #     把两者归一化成同一个 rc=1；区分原因是阶段 2 的活）
-        #   · 时延只记**成功**样本（失败样本的时延分布不在阶段 1 口径内）
+        #   · 时延分两路记：**成功样本**进 LAT_SEQ、**失败样本**进 FAIL_LAT_SEQ
+        #     ⇒ 「成功时延分布」与「失败时延分布」都能算（失败样本的耗时也有观测价值）
         #   · 窗口满 N 后**滚动**丢最旧一次（环形）
-        #   ★ 存序列（成败位 + 各成功样本时延）⇒ 滚动时能**精确**移除最旧样本，
+        #   ★ 存序列（成败位 + 各样本时延）⇒ 滚动时能**精确**移除最旧样本，
         #     不会「总数减一但不知道该减失败数还是成功数」。
         #   ★ 窗口大小取**当前规则**的配置值（quality_window_size 传当前规则文件）：
         #     规范名 PROBE_QUALITY_WINDOW 由 read_rule_file 解析白名单时赋值，
@@ -804,28 +884,28 @@ for rule_file in "${RULES_DIR}"/rule-*.conf; do
 
         _q_prev=$(read_quality_window "$target_endpoint" "$RULE_ID")
         _q_seq="${_q_prev%%|*}"
-        _q_lat="${_q_prev#*|}"
-        # 空序列时 _q_lat 会等于 _q_prev（无 '|'）⇒ 归一成空
-        if [ "$_q_lat" = "$_q_prev" ] && [ -z "$_q_seq" ]; then
-            _q_lat=""
-        fi
+        _q_mid="${_q_prev#*|}"
+        _q_lat="${_q_mid%%|*}"
+        _q_fail_lat="${_q_mid#*|}"
 
         #   ★ 复用**本轮那一次**探测的结果（不重复探测）：
         #     重复探测 ⇒ 真机探测次数翻倍（负载翻倍），
         #     且采样口径可能与本轮 status 判定来自不同的探测结果（不一致）。
         #     ⇒ 采样 = 驱动切换的那一次探测（同一口径）。
+        #   ★ 失败路径同样有 PROBE_LATENCY_MS（probe_with_latency 两条路径都测耗时）
+        #     ⇒ 失败样本的时延可直接取用，不用再探一次。
         _q_is_fail=$_q_probe_fail
-        _q_new=$(push_quality_sample "$_q_seq" "$_q_lat" "$_q_is_fail" "${PROBE_LATENCY_MS:-0}" "$_q_win")
+        _q_new=$(push_quality_sample "$_q_seq" "$_q_lat" "$_q_fail_lat" "$_q_is_fail" "${PROBE_LATENCY_MS:-0}" "$_q_win")
         _q_new_seq="${_q_new%%|*}"
-        _q_new_lat="${_q_new#*|}"
-        if [ "$_q_new_lat" = "$_q_new" ] && [ -z "$_q_new_seq" ]; then
-            _q_new_lat=""
-        fi
+        _q_new_mid="${_q_new#*|}"
+        _q_new_lat="${_q_new_mid%%|*}"
+        _q_new_fail_lat="${_q_new_mid#*|}"
 
         # 记到本轮的质量指标行（循环结束后整份落盘）
         #   ★ 末位记**本行生效的窗口大小** ⇒ 「配的值真的生效」可被外部直接读到
         #     （配置项存在 ≠ 配置项可生效：没有这一列就证明不了值被读到了）。
-        echo "${target_endpoint}|${RULE_ID}|${_q_new_seq}|${_q_new_lat}|${_q_win}" >> "$_quality_rows_new"
+        #   ★ 失败样本时延追加在**最后一列** ⇒ 前 5 列位置不变（向后兼容）。
+        echo "${target_endpoint}|${RULE_ID}|${_q_new_seq}|${_q_new_lat}|${_q_win}|${_q_new_fail_lat}" >> "$_quality_rows_new"
         # ────────────────────────────────────────────────────────────
 
         # 本轮新行先写进临时文件（循环结束后才整份覆盖）
