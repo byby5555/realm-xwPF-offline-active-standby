@@ -163,7 +163,6 @@ sudo bash /usr/local/bin/xwPF.sh
 
 - **主脚本**：[xwPF.sh](https://github.com/byby5555/realm-xwPF-offline-active-standby/raw/main/xwPF.sh)
 - **模块文件**（全部需要）：https://github.com/byby5555/realm-xwPF-offline-active-standby/tree/main/lib
-- **主备守护文件**（active/passive 热备功能）：https://github.com/byby5555/realm-xwPF-offline-active-standby/tree/main/cmd
 
 - **Realm 程序**（根据系统架构选择）：
 
@@ -180,14 +179,12 @@ sudo bash /usr/local/bin/xwPF.sh
 ├── xwPF.sh                ← 主脚本
 ├── lib/                   ← 创建 lib 子目录
 │   ├── core.sh
+│   ├── health.sh
 │   ├── rules.sh
 │   ├── server.sh
 │   ├── realm.sh
-│   ├── failover.sh        ← 主备池核心模块（含 daemon 安装函数）
+│   ├── update.sh
 │   └── ui.sh
-└── cmd/                   ← 主备守护文件（active/passive 热备 daemon）
-    ├── xwpf-failover.py
-    └── xwpf-failover.service
 
 ~/                         ← Realm 压缩包放在任意其他位置
 └── realm-xxx.tar.gz
@@ -225,9 +222,8 @@ bash /usr/local/bin/xwPF.sh
 - **智能检测** - 自动检测系统架构、端口冲突,连接可用性
 
 - **搭建隧道** - 双端realm架构支持 TLS,ws,wss,搭建隧道
-- **负载均衡** - 支持轮询、IP哈希、主备（active-standby）等策略，可配置权重分配
-- **故障转移** - 使用系统工具,完成自动故障检测,保持轻量化。支持主备模式（1 主 N 备按顺序接替，权重翻转）
-- **主备 active/passive** - 进程级主备热切换（独立守护 xwpf-failover，详见 `cmd/README-failover.md`；守护进程崩溃循环、systemd 限流、端口被占用的处理见 `cmd/README-failover.md` 的「Crash loop」一节）
+- **负载均衡** - 支持轮询、IP哈希、权重主备（active-standby）等策略，可配置权重分配
+- **故障转移** - 使用系统工具,完成自动故障检测,保持轻量化。支持规则级权重主备（同一端口组内 1 主 N 备按顺序接替，权重翻转）
 - **规则备注** - 清晰的备注功能,不再需要额外记忆
 
 - **端口流量犬** - 统计端口流量，控制端口限速，限流，可设置通知方式
@@ -238,6 +234,12 @@ bash /usr/local/bin/xwPF.sh
 - **一键导入** - 识别导出的压缩包完成自由迁移
 - **一键识别批量导入** 自写realm的规则配置,方便管理和维护自己的规则集
 - **完整卸载** - 分阶段全面清理，“轻轻的我走了，正如我轻轻的来”
+
+> ℹ️ **「进程级主备池」已下线**（2026-10-24）：独立守护进程 `xwpf-failover`、公开监听口、
+> 建池 / 列池 / 删池、以及崩溃循环防护那一整套已随功能**整块删除**，脚本与文档里都不再提供。
+> 现在保留的主备能力是**规则级权重主备** —— 同一个端口组内的多个目标之间，
+> 靠健康检查驱动权重翻转（主故障切备、主恢复切回）。
+> 两者都叫「主备」，但**不是一回事**，别混着看。
 
 ## 示意图理解不同场景下工作原理(推荐阅读理解)
 
@@ -292,7 +294,7 @@ bash /usr/local/bin/xwPF.sh
 
 原生realm暂不支持故障转移
 
-- 主备模式 (active-standby)
+- 主备模式 (active-standby) —— **规则级**：同一端口组内的多个目标之间切换
 
 严格主备：1 主 N 备按顺序接替。**主备的先后顺序由配置期的权重决定**（数值大的排前面当主，权重相同按原序；`1,0,0` 即第一个当主、后两个当备）—— 这里的权重表示「谁先上」的主备优先级，不是流量比例。**运行期**健康检查对所有目标一视同仁地独立探测（探测本身不看权重），只用来判定当前谁健康：主目标故障时把它的权重置 0、接管的那个备的权重置 1（其余目标权重保持 0）；主+备1都挂时切到备2，以此类推；主恢复后立刻切回主（严格主备，不退化为多活）。同一时刻只有一个主在承接流量。底层依然输出 `balance: roundrobin: 0, 1, 0` 给 realm，权重 0 的目标相当于不出现在流量分配里。
 
@@ -409,18 +411,14 @@ IP地址：MPTCP协议需要知道可以使用哪些IP地址建立子流
 │   ├── realm                    # Realm 主程序
 │   ├── xwPF.sh                  # 管理脚本主入口
 │   ├── pf                       # 快捷命令（软链 → xwPF.sh）
-│   ├── lib/                     # 模块目录
+│   ├── lib/                     # 模块目录（7 个模块）
 │   │   ├── core.sh              # 核心工具（系统探测 / 依赖 / 网络 / 校验）
+│   │   ├── health.sh            # 健康检查（唯一真源：生成 health_check.sh）
 │   │   ├── rules.sh             # 规则管理（增删改查 / 负载均衡 / 权重）
 │   │   ├── server.sh            # 服务端配置（中转与出口交互 / MPTCP）
 │   │   ├── realm.sh             # Realm 安装 / 配置生成 / 服务管理
-│   │   ├── failover.sh          # 主备池核心模块（含 daemon 安装函数）
+│   │   ├── update.sh            # 更新中心（查版本 / 安全更新）
 │   │   └── ui.sh                # 交互菜单 / 状态显示 / 卸载
-│   ├── cmd/                     # 主备守护文件
-│   │   ├── xwpf-failover.py     # active/passive 热备守护进程
-│   │   └── xwpf-failover.service
-│   ├── xwpf-failover            # 已安装的守护进程（0755）
-│   └── .xwpf-failover-version   # 已装版本指纹（判断是否需要重装）
 │
 ├── /etc/realm/                  # Realm 配置目录
 │   ├── config.json              # Realm 工作配置（由脚本生成，勿手改）
@@ -431,14 +429,10 @@ IP地址：MPTCP协议需要知道可以使用哪些IP地址建立子流
 │       ├── health_check.sh      # 健康检查脚本
 │       └── health_status.conf   # 健康状态文件
 │
-├── /etc/xwpf/                   # 主备守护进程配置目录
-│   └── failover.json            # 主备池配置
-│
 └── /etc/systemd/system/
     ├── realm.service            # Realm 服务 unit
     ├── realm-health-check.service  # 健康检查 service（开启故障转移后生成）
-    ├── realm-health-check.timer    # 健康检查 timer（开启故障转移后生成）
-    └── xwpf-failover.service    # 主备守护进程 unit
+    └── realm-health-check.timer    # 健康检查 timer（开启故障转移后生成）
 ```
 
 ### 按需下载（点到对应菜单才拉取）
@@ -480,12 +474,11 @@ MPTCP（开启 MPTCP 后创建）
 | 文档 | 什么时候读 |
 |------|------------|
 | [安装、升级与卸载](docs/install-and-upgrade.md) | 装机器、离线安装、升级、卸载、首次初始化 |
-| [端口组与权重](docs/port-groups-and-weights.md) | 一个端口转多个出口、权重分流、`1,0,0` 主备写法 |
+| [端口组与权重](docs/port-groups-and-weights.md) | 一个端口转多个出口、权重分流、`1,0,0` 权重主备写法 |
 | [健康检查与故障转移](docs/health-check-and-failover.md) | 健康检查参数、systemd unit、状态文件、切换与回切 |
 | [故障排查手册](docs/troubleshooting.md) | realm 起不来、规则不生效、无 `nc` 全判失败、下载 404、日志位置 |
-| [主备模式状态转换推演](docs/active-standby-logic.md) | 理解主备每一步怎么翻权重 |
+| [主备模式状态转换推演](docs/active-standby-logic.md) | 理解**权重主备**每一步怎么翻权重 |
 | [测试台架索引](docs/README.md#测试台架索引) | 想跑回归、看有哪些测试覆盖了什么 |
-| [主备 active/passive 守护进程](cmd/README-failover.md) | 进程级主备热切换 |
 
 ## 🤝 支持
 

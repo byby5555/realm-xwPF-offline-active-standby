@@ -163,10 +163,9 @@ For servers with absolutely no network connectivity.
 
 - **Main script**: [xwPF.sh](https://github.com/byby5555/realm-xwPF-offline-active-standby/raw/main/xwPF.sh)
 - **Module files** (all required): https://github.com/byby5555/realm-xwPF-offline-active-standby/tree/main/lib
-- **Failover daemon files** (required for active/passive hot standby): https://github.com/byby5555/realm-xwPF-offline-active-standby/tree/main/cmd
 
 > The Realm binary itself is **not** part of this fork — it comes from the official
-> upstream release page below. Everything else (scripts, modules, daemon) comes from
+> upstream release page below. Everything else (scripts and modules) comes from
 > `byby5555/realm-xwPF-offline-active-standby`.
 
 - **Realm binary** (pick the one matching your architecture):
@@ -186,14 +185,12 @@ For servers with absolutely no network connectivity.
 ├── xwPF.sh                ← Main script
 ├── lib/                   ← Create this subdirectory
 │   ├── core.sh
+│   ├── health.sh
 │   ├── rules.sh
 │   ├── server.sh
 │   ├── realm.sh
-│   ├── failover.sh
+│   ├── update.sh
 │   └── ui.sh
-└── cmd/                   ← Failover daemon files (must be placed manually offline)
-    ├── xwpf-failover.py
-    └── xwpf-failover.service
 
 ~/                         ← Put the Realm tarball anywhere else
 └── realm-xxx.tar.gz
@@ -231,9 +228,8 @@ Select **1. Install & Configure**, then:
 - **Smart Detection** — Auto-detects system architecture, port conflicts, and connection availability
 
 - **Tunnel Building** — Dual-Realm architecture with TLS, WS, WSS tunnel support
-- **Load Balancing** — Round-robin, IP hash, and active-standby strategies, with configurable weight distribution
-- **Failover** — Automatic failure detection using native system tools, keeping things lightweight. Supports strict active-standby mode (1 primary + N standbys taking over in order, weights flipped to 0/1)
-- **Active/Passive Hot Standby** — Process-level primary/standby hot switching via the independent `xwpf-failover` daemon (see `cmd/README-failover.md`; for crash-loop triage, systemd rate limiting and port conflicts see the "Crash loop" section of `cmd/README-failover.md`)
+- **Load Balancing** — Round-robin, IP hash, and rule-level active-standby strategies, with configurable weight distribution
+- **Failover** — Automatic failure detection using native system tools, keeping things lightweight. Supports strict rule-level active-standby mode (within one port group: 1 primary + N standbys taking over in order, weights flipped to 0/1)
 - **Rule Annotations** — Clear labeling for every rule — no more memorizing port mappings
 
 - **Port Traffic Dog** — Per-port traffic stats, rate limiting, throttling, with configurable notifications
@@ -244,6 +240,14 @@ Select **1. Install & Configure**, then:
 - **One-Click Import** — Recognize and restore from an exported bundle
 - **Batch Import** — Parse and import custom Realm rule configs for easy rule-set management
 - **Clean Uninstall** — Phased, thorough cleanup — *"I leave as quietly as I came"*
+
+> ℹ️ **The process-level failover pool has been retired** (2026-10-24): the standalone
+> `xwpf-failover` daemon, its public listen port, pool create/list/delete and the
+> crash-loop protection were removed as one block — no script or document ships them
+> anymore. What remains is **rule-level active/standby**: switching between multiple
+> targets of the same port group by flipping `WEIGHTS` from the health check
+> (primary down → standby takes over, primary back → switch back).
+> Both are called "standby", but they are **not** the same thing.
 
 ## Architecture Diagrams — How It Works in Different Scenarios (Recommended Reading)
 
@@ -329,7 +333,7 @@ timeout / recovery cooldown) are configurable per port group — see
 Monitor IP changes in real time from the client:
 `while ($true) { (Invoke-WebRequest -Uri 'http://ifconfig.me/ip' -UseBasicParsing).Content; Start-Sleep -Seconds 1 }` or `while true; do curl -s ifconfig.me; echo; sleep 1; done`
 
-- Active/Standby Mode (active-standby)
+- Active/Standby Mode (active-standby) — **rule-level**: switches between multiple targets of the same port group
 
 Strict primary/standby: 1 primary + N standbys taking over in order. **The standby order is
 decided by the weights you configure** (a larger weight comes first and becomes the primary;
@@ -439,18 +443,14 @@ System Files
 │   ├── realm                    # Realm binary
 │   ├── xwPF.sh                  # Management script entry point
 │   ├── pf                       # Quick-launch shortcut (symlink → xwPF.sh)
-│   ├── lib/                     # Module directory
+│   ├── lib/                     # Module directory (7 modules)
 │   │   ├── core.sh              # Core utilities (system detection / deps / network / validation)
+│   │   ├── health.sh            # Health check (single source of truth — generates health_check.sh)
 │   │   ├── rules.sh             # Rule management (CRUD / load balancing / weights)
 │   │   ├── server.sh            # Server config (relay & exit interaction / MPTCP management)
 │   │   ├── realm.sh             # Realm install / config generation / service management
-│   │   ├── failover.sh          # Failover pool core module (incl. daemon install functions)
+│   │   ├── update.sh            # Update center (version check / safe update)
 │   │   └── ui.sh                # Interactive menu / status display / uninstall
-│   ├── cmd/                     # Failover daemon files
-│   │   ├── xwpf-failover.py     # active/passive hot-standby daemon
-│   │   └── xwpf-failover.service
-│   ├── xwpf-failover            # Installed daemon (0755)
-│   └── .xwpf-failover-version   # Installed-version fingerprint
 │
 ├── /etc/realm/                  # Realm configuration directory
 │   ├── config.json              # Realm working config (generated — do not hand-edit)
@@ -461,14 +461,10 @@ System Files
 │       ├── health_check.sh      # Health-check script
 │       └── health_status.conf   # Health status file
 │
-├── /etc/xwpf/                   # Failover daemon config directory
-│   └── failover.json            # Failover pool configuration
-│
 └── /etc/systemd/system/
     ├── realm.service            # Realm service unit
     ├── realm-health-check.service  # Health-check service (when failover enabled)
-    ├── realm-health-check.timer    # Health-check timer (when failover enabled)
-    └── xwpf-failover.service    # Failover daemon unit
+    └── realm-health-check.timer    # Health-check timer (when failover enabled)
 ```
 
 ### Downloaded on Demand (fetched when you select the feature)
@@ -510,12 +506,11 @@ Full documentation lives in [`docs/`](docs/):
 | Document | Read it when |
 |---|---|
 | [Install, Upgrade & Uninstall](docs/install-and-upgrade.md) | Setting up a machine, offline install, upgrading, uninstalling, first-time setup |
-| [Port Groups & Weights](docs/port-groups-and-weights.md) | Forwarding one port to multiple exits, weighted splitting, the `1,0,0` primary/standby form |
+| [Port Groups & Weights](docs/port-groups-and-weights.md) | Forwarding one port to multiple exits, weighted splitting, the `1,0,0` weight-based primary/standby form |
 | [Health Check & Failover](docs/health-check-and-failover.md) | Health-check parameters, systemd unit, status file, switch and fail-back logic |
 | [Troubleshooting](docs/troubleshooting.md) | Realm won't start, rule changes don't apply, no `nc` → everything judged down, download 404, where the logs are |
-| [Active-Standby State Transitions](docs/active-standby-logic.md) | Understanding how weights flip at each step |
+| [Active-Standby State Transitions](docs/active-standby-logic.md) | Understanding how weights flip at each step (rule-level primary/standby) |
 | [Test Harness Index](docs/README.md#测试台架索引) | Running the regression suite, seeing what the tests cover |
-| [Active/Passive Failover Daemon](cmd/README-failover.md) | Process-level primary/standby hot switching |
 
 ## 🤝 Support
 
