@@ -73,6 +73,19 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #           (c) 扫描层真违规行在两种 ambient locale 下都必须抓到
 #         · 负向对照 7 必须做在扫描层：正则层是**故意**两种 locale 各跑一遍的，
 #           拿它比判定会判红自己
+# v2.11.0：第 10 轮 —— T54 交互读入 EOF 收口的不变式
+#         · 静态四层（判据跑在冻结态 $SBX_SRC 上，不读工作区）：
+#           ① UI helper 的**份数**（恰为 4：lib/core.sh + 3 个独立脚本）与**逐字一致性**
+#              （sha256 相同）—— 独立脚本是独立安装单元、拿不到 lib/，
+#              「一份实现」只能是「四份逐字一致的拷贝」→ 漂移必须判红
+#           ② 不存在「无 EOF 处理的用户输入读入」（裸 read / 裸 read -p）
+#           ③ 每个含输入读入的 while 循环都有 sleep 0.2 兜底
+#           ④ 不存在裸 clear（必须走 ui_clear）
+#         · 运行时层：ui_read_default 的契约 —— 读到 EOF → 取默认值 + **不终止调用方**
+#           （与 ui_read_into 的「EOF 一律退出」刻意不同：安装流程里 EOF 是常态）
+#         · 负向对照 (a)：静态四层用**真实修复前实现**（修复前冻结点的产品文件树）
+#           跑同一套判定器 → 必须抓到违规（坏情况确实发生）
+#         · 负向对照 (b)：运行时层是注入式退化（ui_read_default 新引入，修复前无等价形态）
 # v2.10.0：第 9 轮 —— T53 交互菜单 EOF 忙循环护栏
 #         · 第一层 · helper 契约：读到 EOF 时 helper 必须**终止调用方**（4 处实现：
 #           lib/core.sh + 3 个独立脚本各内置一份）—— 判据用**哨兵**（调用后打印的
@@ -88,7 +101,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #         · 负向对照：helper 层用注入式退化（helper 是新引入的，修复前没有等价形态，
 #           如实标注）；入口层用**真实修复前实现**（d0366b3 的 lib/）复现忙循环，
 #           断言的是「坏情况确实发生」（124 + 输出膨胀），不是「坏情况没发生」
-HARNESS_VERSION="v2.10.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive + negctl-selfcheck + t45-portable-equiv + t45-win-mv-truth + t32-locale-pin + t53-menu-eof)"
+HARNESS_VERSION="v2.11.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive + negctl-selfcheck + t45-portable-equiv + t45-win-mv-truth + t32-locale-pin + t53-menu-eof + t54-ui-eof-closure-invariants)"
 
 # shellcheck source=lib/harness.sh
 . "$SCRIPT_DIR/lib/harness.sh"
@@ -209,6 +222,8 @@ CASES=(
     "T52:case_T52_health_target_scope"
     # —— 第 9 轮：交互菜单 EOF 忙循环护栏 ——
     "T53:case_T53_menu_eof_no_busy_loop"
+    # —— 第 10 轮：交互读入 EOF 收口的不变式 ——
+    "T54:case_T54_ui_eof_closure_invariants"
 )
 
 for f in "$SCRIPT_DIR"/cases/*.sh; do
