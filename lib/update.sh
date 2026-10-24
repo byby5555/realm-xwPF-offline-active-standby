@@ -602,15 +602,49 @@ safe_update_scripts() {
     #      日志照样每 4 秒打「[INFO] 健康检查完成」、退出码 0，
     #      但状态文件 LAST_CHECK 停在几小时前 → 权重 10,0 主备永远不切。
     #    不重启 timer：unit 是 Type=oneshot + ExecStart=<路径>，产物换掉后下个 tick 自然生效。
-    #    失败不中断升级：只打印醒目错误（装/升级主流程不该被这一步带崩）。
-    #    ★ 用子 shell 且重新 source 新版 health.sh：
-    #      当前进程里跑的还是**旧版** health.sh（脚本包刚换掉，进程没重启），
-    #      直接调用等于拿旧版真源重新生成旧产物 = 白做。
-    if ! ( . "${LIB_DIR}/health.sh" && health_migrate_connection_timeout && health_check_script_regenerate ); then
-        echo -e "${RED}✗ 重新生成健康检查脚本失败：/etc/realm/health/health_check.sh 仍是旧产物${NC}"
-        echo -e "${RED}  权重 10,0 主备的切换会静默失效（探测端不再更新状态）${NC}"
+    # ★ 升级路径 = **不中断整个升级，但返回非 0**（Chief 裁定）：
+    #   脚本包已经换掉了，中断会让机器停在半升级状态，风险比首次安装更大；
+    #   但**绝不能静默继续** —— 非 0 返回码 + 醒目报错 + 写日志，让调用方能感知到。
+    #   ⇒ 升级流程走完（下面照常收尾），本函数最终 return 3。
+    # ★ 返回码约定（调用方靠它区分「要不要继续后面的步骤」）：
+    #   0 = 全部成功
+    #   1 = 脚本包本身没更新成（下载失败 / 语法错 / 自检失败）—— 既有语义
+    #   3 = 脚本包**已更新**，但探测端重生成失败（探测端不可用）
+    # ★ 用子 shell 且重新 source 新版 health.sh：
+    #   当前进程里跑的还是**旧版** health.sh（脚本包刚换掉，进程没重启），
+    #   直接调用等于拿旧版真源重新生成旧产物 = 白做。
+    # ★ 老版本 / 降级：脚本包里根本没有 health_check_script_regenerate
+    #   ⇒ 无从重生成，**不算失败**（否则老机器升级会被误判成失败）。
+    #   用 grep 判「能力是否存在」：有 ⇒ 必须成功；没有 ⇒ 跳过。
+    local regenerate_failed=0
+    if grep -q '^health_check_script_regenerate()' "${LIB_DIR}/health.sh" 2>/dev/null; then
+        if ! (
+            . "${LIB_DIR}/health.sh" 2>/dev/null
+            health_migrate_connection_timeout >/dev/null 2>&1 || true
+            health_check_script_regenerate
+        ); then
+            echo -e "${RED}✗ 重新生成健康检查脚本失败：/etc/realm/health/health_check.sh 仍是旧产物${NC}"
+            echo -e "${RED}  健康探测不可用 → 权重 10,0 主备的切换不可用${NC}"
+            echo -e "${RED}  （探测端不再更新状态文件 → 该切不切，且界面看不出来）${NC}"
+            echo -e "${YELLOW}  可执行的修复步骤：${NC}"
+            echo -e "    1) 修好上面的报错原因后，重跑一次脚本包更新"
+            echo -e "    2) 或手工重生成探测端脚本（需 root）："
+            echo -e "       ${BLUE}sudo bash -c 'source ${LIB_DIR}/health.sh && health_check_script_regenerate'${NC}"
+            # 写日志：**在子 shell 里 source 新版 health.sh 再调** ——
+            #   父进程里装的是旧版 health.sh，这个函数可能根本不存在。
+            #   写日志本身失败也不影响主流程（函数内部已吞掉所有错误）。
+            (
+                . "${LIB_DIR}/health.sh" 2>/dev/null
+                declare -F health_regenerate_log_failure >/dev/null 2>&1 || exit 0
+                health_regenerate_log_failure "升级路径（lib/update.sh safe_update_scripts）：/etc/realm/health/health_check.sh 仍是旧产物"
+            ) >/dev/null 2>&1 || true
+            echo -e "${YELLOW}  详细日志：/var/log/xwPF/health-regenerate.log${NC}"
+            regenerate_failed=1
+        else
+            echo -e "${GREEN}  ✓ 已按新版本重新生成健康检查脚本${NC}"
+        fi
     else
-        echo -e "${GREEN}  ✓ 已按新版本重新生成健康检查脚本${NC}"
+        echo -e "${YELLOW}  ! 当前脚本包不含探测端重生成能力（老版本 / 降级），本次跳过${NC}"
     fi
 
     rm -rf "$staging" 2>/dev/null
@@ -620,6 +654,13 @@ safe_update_scripts() {
     echo ""
     echo -e "${GREEN}✓ 脚本包已更新${NC}"
     echo -e "${YELLOW}  注意: 当前进程还在运行旧脚本，重新运行 pf 后生效${NC}"
+
+    # ★ 探测端重生成失败时**升级本身不算失败**（脚本包已换掉，不留在半升级状态），
+    #   但必须返回**非 0** —— 让调用方知道探测端是坏的。
+    #   用 3 而不是 1：调用方靠它区分「脚本包没更新成」与「脚本包好了但探测端坏了」。
+    if [ "$regenerate_failed" = "1" ]; then
+        return 3
+    fi
     return 0
 }
 
@@ -686,7 +727,14 @@ update_center_menu() {
         case "$choice" in
             1)
                 safe_update_scripts
-                if [ $? -eq 0 ]; then
+                _upd_rc=$?
+                if [ "$_upd_rc" -eq 0 ]; then
+                    safe_update_realm
+                elif [ "$_upd_rc" -eq 3 ]; then
+                    # ★ 脚本包已更新，只是探测端重生成失败 → 升级**继续**（不中断），
+                    #   但要把失败说清楚（调用方拿到的也是非 0）。
+                    echo -e "${RED}✗ 脚本包已更新，但探测端重生成失败 —— 继续更新 realm 主程序${NC}"
+                    echo -e "${YELLOW}  详见上面的报错与 /var/log/xwPF/health-regenerate.log${NC}"
                     safe_update_realm
                 fi
                 ui_pause "按回车键返回..."

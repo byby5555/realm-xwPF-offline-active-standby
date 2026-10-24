@@ -131,12 +131,30 @@ case "${1:-}" in
         # ★ 装/升级不重新生成 → 机器上跑的是旧产物 = 探测端静默失效
         #   （日志照样打「健康检查完成」，状态文件却停在几小时前）
         # 不重启 timer：unit 是 Type=oneshot + ExecStart=<路径>，下个 tick 自然生效。
-        # 失败不中断安装：只打印醒目错误（装/升级主流程不该被这一步带崩）。
+        # ★ 首次安装 = **fail fast 中断**（Chief 裁定）：
+        #   装完但探测端是坏的 = 主备切换不可用 = 用户以为装好了。
+        #   安装失败是**可恢复**的（重跑一次），功能坏掉是**不可见**的
+        #   → 宁可中断，也不能留一个「看起来装好了」的坏机器。
         if health_check_script_regenerate; then
             echo -e "  ${_GREEN}✓${_NC} 已重新生成健康检查脚本"
         else
+            echo -e ""
             echo -e "  ${_RED}✗${_NC} 重新生成健康检查脚本失败：/etc/realm/health/health_check.sh 仍是旧产物"
-            echo -e "  ${_RED}  权重 10,0 主备的切换会静默失效（探测端不再更新状态）${_NC}"
+            echo -e "  ${_RED}  健康探测不可用 → 权重 10,0 主备的切换不可用${_NC}"
+            echo -e "  ${_RED}  （探测端不再更新状态文件 → 该切不切，且界面看不出来）${_NC}"
+            echo -e "  ${_YELLOW}  可执行的修复步骤：${_NC}"
+            echo -e "    1) 修好上面的报错原因后，重新执行一次安装："
+            echo -e "       ${_BLUE}wget -qO- ${REPO_RAW_URL}/xwPF.sh | sudo bash -s install${_NC}"
+            echo -e "    2) 或手工重生成探测端脚本（需 root）："
+            echo -e "       ${_BLUE}sudo bash -c 'source ${LIB_DIR}/health.sh && health_check_script_regenerate'${_NC}"
+            # 写日志（写日志本身失败也不影响主流程：函数内部已吞掉所有错误）
+            if declare -F health_regenerate_log_failure >/dev/null 2>&1; then
+                health_regenerate_log_failure "首次安装（xwPF.sh install）：/etc/realm/health/health_check.sh 仍是旧产物" || true
+            fi
+            echo -e ""
+            echo -e "  ${_RED}✗${_NC} 安装中断：健康探测端不可用，不能留一个坏掉的机器。"
+            echo -e "  ${_YELLOW}  详细日志：/var/log/xwPF/health-regenerate.log${_NC}"
+            exit 1
         fi
         ;;
     uninstall)

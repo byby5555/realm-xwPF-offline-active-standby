@@ -801,8 +801,10 @@ show_menu() {
 
         case $choice in
             1)
+                # ★ 传出去真实退出码：首次安装失败（探测端不可用）必须以非 0 退出，
+                #   不能让调用方以为装好了（Chief 裁定：首次安装 = fail fast）。
                 smart_install
-                exit 0
+                exit $?
                 ;;
             2)
                 check_dependencies

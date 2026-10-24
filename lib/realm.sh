@@ -1051,13 +1051,26 @@ smart_install() {
         #   菜单里「安装服务」走的是本函数，**不经过 xwPF.sh install** ——
         #   不在这里重生成，机器上跑的就还是旧产物 = 探测端静默失效
         #   （日志照样每 4 秒打「健康检查完成」，状态却停在几小时前）。
-        #   失败只提示，不中断安装。
+        # ★ 这里也是**首次安装** → 同样 fail fast（Chief 裁定）：
+        #   装完但探测端是坏的 = 主备切换不可用 = 用户以为装好了。
+        #   ⇒ 失败则中断安装（返回非 0，由调用方决定怎么退出）。
         if declare -F health_check_script_regenerate >/dev/null 2>&1; then
             if health_check_script_regenerate; then
                 echo -e "${GREEN}✓ 健康检查脚本已按真源重新生成${NC}"
             else
                 echo -e "${RED}✗ 重新生成健康检查脚本失败：/etc/realm/health/health_check.sh 仍是旧产物${NC}"
-                echo -e "${RED}  权重 10,0 主备的切换会静默失效（探测端不再更新状态）${NC}"
+                echo -e "${RED}  健康探测不可用 → 权重 10,0 主备的切换不可用${NC}"
+                echo -e "${RED}  （探测端不再更新状态文件 → 该切不切，且界面看不出来）${NC}"
+                echo -e "${YELLOW}  可执行的修复步骤：${NC}"
+                echo -e "    1) 修好上面的报错原因后，重新执行一次「安装服务」"
+                echo -e "    2) 或手工重生成探测端脚本（需 root）："
+                echo -e "       ${BLUE}sudo bash -c 'source ${LIB_DIR}/health.sh && health_check_script_regenerate'${NC}"
+                # 写日志（写日志本身失败也不影响主流程：函数内部已吞掉所有错误）
+                if declare -F health_regenerate_log_failure >/dev/null 2>&1; then
+                    health_regenerate_log_failure "首次安装（菜单「安装服务」）：/etc/realm/health/health_check.sh 仍是旧产物" || true
+                fi
+                echo -e "${YELLOW}  详细日志：/var/log/xwPF/health-regenerate.log${NC}"
+                return 1
             fi
         fi
     else

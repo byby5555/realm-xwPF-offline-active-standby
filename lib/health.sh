@@ -588,6 +588,29 @@ BODY_EOF
     } | tr -d '\r'
 }
 
+# 把「重新生成健康探测脚本失败」写进日志文件
+#
+# ★ 落点由 Chief 定：/var/log/xwPF/health-regenerate.log
+#   （产品此前没有日志约定，这条是第一条）
+# ★ 只在失败时写；带时间戳 + 失败原因，便于事后判断。
+# ★ **写日志本身失败不许影响主流程**：
+#   日志写不进去（目录不可写 / 磁盘满 / 权限不足）时静默返回 0，
+#   不能因为「记个日志失败」把安装或升级带崩。
+# ★ 日志目录不存在要先 mkdir -p（失败也不致命）。
+health_regenerate_log_failure() {
+    local reason="${1:-未知原因}"
+    local log_dir="/var/log/xwPF"
+    local log_file="${log_dir}/health-regenerate.log"
+
+    mkdir -p "$log_dir" 2>/dev/null || true
+    {
+        echo "$(date '+%Y-%m-%d %H:%M:%S') [FAIL] 健康探测脚本重新生成失败：${reason}"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') [FAIL] 影响：/etc/realm/health/health_check.sh 仍是旧产物 → 权重 10,0 主备的切换会静默失效（探测端不再更新状态）"
+    } >> "$log_file" 2>/dev/null || true
+
+    return 0
+}
+
 # 重新生成健康检查脚本（**只生成**，不碰 systemd）
 #
 # ★ 唯一真源 = 本文件（lib/health.sh）。
