@@ -1688,15 +1688,21 @@ systemctl list-unit-files | grep -E 'xwpf-failover' && echo "★FAIL: 卸载后�
    - `/usr/local/bin/xwpf-failover`（守护二进制）
    - `/etc/systemd/system/xwpf-failover.service`（守护 unit）
    - `/etc/systemd/system/xwpf-failover.service.d/`（守护 drop-in 目录，**整目录**）
-   - `/etc/xwpf/failover.json`（池配置）—— ⚠️ **实现是「改名留档」**：`lib/ui.sh` 的 `_cleanup_legacy_failover_daemon` 把它 `mv` 成 `failover.json.disabled` ⇒ **原路径不存在** ⇒ 这条判据成立，但**`.disabled` 留档文件会留下**（属用户数据，不删）⇒ **必须在验收记录里登记留档文件名**
+   - `/etc/xwpf/failover.json`（池配置）—— ⚠️ **实现是「改名留档」**：`lib/ui.sh` 的 `_cleanup_legacy_failover_daemon` 把它 `mv` 成 `failover.json.disabled` ⇒ **原路径不存在** ⇒ 这条判据成立，但**`.disabled` 留档文件会留下**（属用户数据，不删）⇒ **必须在验收记录里登记**（见第 5 条）
    - `/etc/xwpf/failover-state.json`（守护状态文件）—— 同上，`mv` 成 `failover-state.json.disabled`
    - `/usr/local/bin/.xwpf-failover-version`（版本指纹）
    - `/usr/local/bin/cmd/xwpf-failover.py` / `.service`（守护源文件副本）
 2. **`ss -lntp` 里 18443 / 18444 不再有人监听**（守护进程已停，端口释放）。
 3. **无残留守护进程**：`pgrep -af 'xwpf-failover'` 无输出。
 4. **卸载后**同样全部为空，且 `systemctl list-unit-files | grep xwpf-failover` 无输出。
-5. **不得影响保留路径**：升级/卸载过程中，`realm-health-check.timer`、`/etc/realm/health/`、权重主备的规则与 `config.json` **不受损**（若被清掉 ⇒ 保留路径被误伤，是**阻断级**问题）。
-6. ⚠️ **真机 103 的特别提醒**：该机现在跑两个池（`18443` 旧池 / `18444` 直连池），**守护进程一旦不再监听，依赖这两个端口的转发就会断** ⇒ **必须先把流量迁到「同端口多目标 + 权重」路径**，再删守护。**顺序错了 = 真机断转发。**
+5. **池配置三条验收判据**（与「删 / 不删」这类产品决策**无关**，只钉行为；与 `docs/install-and-upgrade.md` 同一口径）：
+   1. **不得有活配置** —— 生效中的 `/etc/xwpf/failover.json` **不存在**。
+   2. **留档允许，但须登记** —— 改名留档的 `.disabled` 文件**允许存在**
+      （产品现状 = 既不删文件，也不删目录），但**必须在验收记录里登记**：**文件名 + 大小 + 时间**。
+   3. **`/etc/xwpf` 目录保留不删**。
+   ⇒ 反例：`/etc/xwpf` 目录被整个删掉、或 `failover.json` 仍以原名存在并生效 ⇒ **判红**。
+6. **不得影响保留路径**：升级/卸载过程中，`realm-health-check.timer`、`/etc/realm/health/`、权重主备的规则与 `config.json` **不受损**（若被清掉 ⇒ 保留路径被误伤，是**阻断级**问题）。
+7. ⚠️ **真机 103 的特别提醒**：该机现在跑两个池（`18443` 旧池 / `18444` 直连池），**守护进程一旦不再监听，依赖这两个端口的转发就会断** ⇒ **必须先把流量迁到「同端口多目标 + 权重」路径**，再删守护。**顺序错了 = 真机断转发。**
 
 **失败判据与排查方向**
 
@@ -2538,7 +2544,7 @@ done
 | A-12 | 保留路径二：负载均衡 5,5 | ☐PASS ☐FAIL ☐BLOCKED | | 权重序列 = 5,5 / 两后端都收到请求 = |
 | A-13 | 保留路径三：权重 10,0 主备（**重心**） | ☑PASS ☐FAIL ☐BLOCKED | | active-standby + FAILOVER_ENABLED=true / timer enabled+active / **R1 切换耗时（实测，写来源）** / R2 备未跟着挂 / R3 冷却期生效 / R4 无需人工干预 ｜ **本轮真机沙箱化实测（A-13.5）全链通**：形态 ✔ / 探测 ✔ / 状态文件两条组合键互不覆盖 ✔ / 权重 `1,0`→`0,1`→`1,0` ✔ / **实连 3/3 落主 → 3/3 落备 → 3/3 落回主** ✔ / 冷却期 120s 实测等满才切回 ✔ / 全程健康探测驱动、无人工干预 ✔ |
 | A-14 | 健康探测端确实在探测 | ☐PASS ☐FAIL ☐BLOCKED | | **两次读取的最后检查时间必须不同** / 生成物与真源一致 / 无已删规则残留行 |
-| A-15 | 老机器残留清理 | ☐PASS ☐FAIL ☐BLOCKED | | **7 个路径全部不存在** / 18443+18444 不再被监听 / 无残留进程 / **保留路径未被误伤** |
+| A-15 | 老机器残留清理 | ☐PASS ☐FAIL ☐BLOCKED | | **7 个路径全部不存在** / 18443+18444 不再被监听 / 无残留进程 / **保留路径未被误伤** ｜ **池配置三条判据**（与「删 / 不删」的产品决策无关，与 `docs/install-and-upgrade.md` 同口径）：① **无活配置**（生效中的 `/etc/xwpf/failover.json` 不存在）② **`.disabled` 留档允许但须登记**（文件名 + 大小 + 时间）③ **`/etc/xwpf` 目录保留不删** ｜ ⚠️ **先迁流量再卸守护**（顺序反了 = 真机断转发） |
 | A-16 | 删规则后状态不残留、不过户 | ☐PASS ☐FAIL ☐BLOCKED | | **孤儿行数 = 0** / 不跨地址继承 / **① 跨轮继承：同目标不同 RULE_ID ⇒ 不得继承（FAIL）** / **② 重编号过户：规则号变、目标同 ⇒ 状态跟过去（PASS）** / **同一 (RULE_ID,TARGET) 不得两行** / 取样前探测端**已跑过一轮** ｜ **判据 7（同一 (RULE_ID,TARGET) 不得两行）已修 ✅（`84fe096`；`3ad2535` 重构后重核仍成立）** ｜ **判据 6 读端归属 = 已修 ✅（`63fc923`）**（修复前 rc=1 双向误切复现 / 修复后 rc=0，复现脚本见 A-16.3） ｜ **判据 5 迁移端过户 = 已修 ✅**（`84fe096` 认领一对一 + `bc7fe32` 门槛；**latency 丢列一条系审稿误报、已撤回**） |
 | A-17 | ★ **`balance` 形态合法 · realm 存活** | ☐PASS ☐FAIL ☐BLOCKED | | `remote`=string / `extra_remotes`=array / `balance`=**`strategy: w1, w2`** / **权重数 == 目标数** / **`systemctl is-active realm` = active** / 日志**无 panic** / **实连有响应** ｜ **权重 0 × iphash 组合 = 未覆盖**（不判 PASS）｜ **生成器护栏已落地 `6b324b4`**（三道防线）⇒ **判据 5 四条要求均成立** ｜ ⚠️ **负向对照只在「有 jq」的机器上成立**（手改路径只靠 jq 层拦） |
 | A-18 | ⚠️ **待产品修复后验证** | ☐PASS ☐FAIL ☐BLOCKED | | ① 继承键：**写端 ✅ / 跨轮读端 ✅ / 读端 ❌**（`lib/realm.sh` 建键未带 RULE_ID）**/ 迁移端 ❌**（`sync_health_status_ids` 没用行首 `old_rule_id`）② 产物重生成 fail fast **✅ 已修** ③ 超时预算抬到 10 **✅ 已修**（`05b5ebb`）｜ **① 的迁移端已修 `84fe096`（🟡 只修一半：写回丢两列 + 未开故障转移的规则能抢认领）** / **① 的读端 ❌ 且已实测确认为缺陷（双向误切）** ｜ **③ 已修 ⇒ 30 秒那个实测值已过期，真机需重测** |
