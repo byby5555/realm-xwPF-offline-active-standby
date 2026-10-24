@@ -52,6 +52,13 @@ else
     exit 1
 fi
 
+# read_rule_file / check_connectivity 的唯一实现在 lib/health.sh。
+# 装的 lib/health.sh 版本过旧时（升级前遗留），明确报错而不是让调用处报 command not found。
+if ! declare -F read_rule_file >/dev/null 2>&1; then
+    echo -e "${RED}错误: lib/health.sh 版本过旧（缺少 read_rule_file），请先执行 pf install 更新脚本${NC}" >&2
+    exit 1
+fi
+
 check_root() {
     if [[ $EUID -ne 0 ]]; then
         echo -e "${RED}错误: 此脚本需要 root 权限运行。${NC}"

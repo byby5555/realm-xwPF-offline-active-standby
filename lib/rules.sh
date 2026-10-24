@@ -208,10 +208,11 @@ if ! declare -F read_rule_file >/dev/null 2>&1; then
     if [ -f "${_REALM_RULES_LIB_DIR}/health.sh" ]; then
         # shellcheck disable=SC1091
         . "${_REALM_RULES_LIB_DIR}/health.sh"
-    else
-        echo "错误: 缺少 lib/health.sh（read_rule_file 的唯一实现所在），请先执行 pf install 更新脚本" >&2
     fi
     unset _REALM_RULES_LIB_DIR
+fi
+if ! declare -F read_rule_file >/dev/null 2>&1; then
+    echo "错误: 缺少 lib/health.sh，或其版本过旧（没有 read_rule_file），请先执行 pf install 更新脚本" >&2
 fi
 
 get_balance_info_display() {
