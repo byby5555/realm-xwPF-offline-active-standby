@@ -68,14 +68,14 @@ Alpine 必须用 `musl` 后缀的包，脚本已自动区分（`lib/realm.sh` �
 
 ### 1.4 规则文件里有非法内容
 
-规则解析走白名单 + 不用 `eval`（`lib/rules.sh:204`、`lib/rules.sh` 的 `read_rule_file`）。
+规则解析走白名单 + 不用 `eval`（`lib/health.sh` 的 `read_rule_file`）。
 但**字段名写错**（不在白名单里）会被**静默忽略**，表现为配置项没生效。
 
 排查：
 
 ```bash
 cat /etc/realm/rules/rule-1.conf
-# 逐条对照 lib/rules.sh:204 的白名单
+# 逐条对照 `lib/health.sh` 的 `read_rule_file` 里的白名单（`_allowed`）
 ```
 
 ### 1.5 同一个端口混了中转和服务端规则

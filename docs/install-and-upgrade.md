@@ -370,8 +370,8 @@ pf
 | `2` | 服务端服务器（双端 realm 架构） | `LISTEN_PORT` / `FORWARD_TARGET` |
 
 规则落盘在 `/etc/realm/rules/rule-N.conf`，一条规则一个文件。
-文件解析走 `read_rule_file`（`lib/rules.sh` 的 `read_rule_file`），**只接受白名单里的 KEY**
-（`lib/rules.sh:204`），并且**不使用 `source` / `eval`** —— 手工往规则文件里塞
+文件解析走 `read_rule_file`（`lib/health.sh` 的 `read_rule_file`），**只接受白名单里的 KEY**
+（白名单变量 `_allowed` 就定义在这个函数里），并且**不使用 `source` / `eval`** —— 手工往规则文件里塞
 `$(cmd)` 或反引号不会被执行。
 
 规则创建后规则目录会被打上初始化标记 `/etc/realm/rules/.initialized`（`lib/rules.sh` 的 `init_rules_dir`）。
