@@ -11,12 +11,15 @@
 > 健康检查服务逻辑的**唯一真源是 `lib/health.sh`**。
 > 不要在其它地方实现第二份健康检查脚本生成逻辑；需要复用就 `source` 它。
 >
-> **当前状态（待落盘）**：健康检查脚本目前仍由 `xwFailover.sh` 的 `start_health_check_service`
-> 内联生成（`xwFailover.sh:442-630`，一段 heredoc）。`lib/health.sh` 正在由另一条会话从
-> `xwFailover.sh` 抽出来，**尚未落盘**。
+> **当前状态（已落盘）**：健康检查脚本由 `lib/health.sh` 的 `health_check_script_body`
+> 生成（`lib/health.sh` 内的一段 heredoc），`xwFailover.sh` 与 `pf` 主脚本
+> 都 `source` 同一个文件，不再各写一份。
 >
-> 本文档描述的是**当前 `main` 分支的实际行为**。等 `lib/health.sh` 落盘后，
-> 行为应保持一致；若不一致，以 `lib/health.sh` 为准。
+> 例外只有一处：生成的 `/etc/realm/health/health_check.sh` 是一份**独立可执行**的脚本
+> （systemd 直接调用它，不能依赖 pf 的安装目录），
+> 所以它的探测逻辑在 `lib/health.sh` 里另有一份内联副本。
+> **改动 `check_connectivity` 时两处必须同步**——
+> `tests/test_connectivity.sh` 的 C 组用例专门盯这一条。
 
 ---
 
@@ -41,16 +44,16 @@
 
 | 参数 | 含义 | 默认值 | 合法范围 | 源码位置 |
 |------|------|--------|----------|----------|
-| `HEALTH_CHECK_INTERVAL` | 探测间隔（秒） | `4` | `1`-`60` | 默认 `lib/rules.sh:2718`、`xwFailover.sh:52`；范围 `xwFailover.sh:724` |
-| `FAILURE_THRESHOLD` | 连续失败多少次判定为故障 | `2` | `1`-`10` | 默认 `lib/rules.sh:2719`、`xwFailover.sh:53`；范围 `xwFailover.sh:725` |
-| `SUCCESS_THRESHOLD` | 连续成功多少次判定为恢复 | `2` | `1`-`10` | 默认 `lib/rules.sh:2720`、`xwFailover.sh:54`；范围 `xwFailover.sh:726` |
-| `CONNECTION_TIMEOUT` | 单次 TCP 连接超时（秒） | `3` | `1`-`10` | 默认 `lib/rules.sh:2721`、`xwFailover.sh:55`；范围 `xwFailover.sh:727` |
-| `RECOVERY_COOLDOWN` | 恢复冷却期（秒） | `120` | `10`-`3600` | 默认 `lib/rules.sh:2722`、`xwFailover.sh:56`；范围 `xwFailover.sh:728` |
+| `HEALTH_CHECK_INTERVAL` | 探测间隔（秒） | `4` | `1`-`60` | 默认 `lib/rules.sh:2718`、`lib/health.sh` 的 `get_port_failover_params`；范围 `xwFailover.sh` 的 `validate_int_range` |
+| `FAILURE_THRESHOLD` | 连续失败多少次判定为故障 | `2` | `1`-`10` | 默认 `lib/rules.sh:2719`、`lib/health.sh` 的 `get_port_failover_params`；范围 `xwFailover.sh` 的 `validate_int_range` |
+| `SUCCESS_THRESHOLD` | 连续成功多少次判定为恢复 | `2` | `1`-`10` | 默认 `lib/rules.sh:2720`、`lib/health.sh` 的 `get_port_failover_params`；范围 `xwFailover.sh` 的 `validate_int_range` |
+| `CONNECTION_TIMEOUT` | 单次 TCP 连接超时（秒） | `3` | `1`-`10` | 默认 `lib/rules.sh:2721`、`lib/health.sh` 的 `get_port_failover_params`；范围 `xwFailover.sh` 的 `validate_int_range` |
+| `RECOVERY_COOLDOWN` | 恢复冷却期（秒） | `120` | `10`-`3600` | 默认 `lib/rules.sh:2722`、`lib/health.sh` 的 `get_port_failover_params`；范围 `xwFailover.sh` 的 `validate_int_range` |
 
 取值非法时：
 
-- 读参数时（`validate_positive_int`，`xwFailover.sh:17-26`）：非数字或 `<= 0` → **回退到默认值**，不报错。
-- 改参数时（`validate_int_range`，`xwFailover.sh:28-45`）：超范围 → **直接报错并拒绝保存**。
+- 读参数时（`validate_positive_int`，`lib/health.sh` 的 `validate_positive_int`）：非数字或 `<= 0` → **回退到默认值**，不报错。
+- 改参数时（`validate_int_range`，`xwFailover.sh` 的 `validate_int_range`）：超范围 → **直接报错并拒绝保存**。
 
 ### 2.2 修改参数
 
@@ -61,7 +64,7 @@ pf
 # → 3. 开启/关闭故障转移 → 进入 xwFailover.sh 的 config 子命令
 ```
 
-`configure_failover_params`（`xwFailover.sh:676-815`）逐项提示，回车表示保持当前值：
+`configure_failover_params`（`xwFailover.sh` 的 `configure_failover_params`）逐项提示，回车表示保持当前值：
 
 ```
 检查间隔秒数 [当前 4]:
@@ -72,7 +75,7 @@ pf
 ```
 
 保存后会重启 realm，并**按新间隔刷新健康检查定时器**
-（`xwFailover.sh:808-812`）。
+（`xwFailover.sh` 的 `configure_failover_params`）。
 
 命令行等价用法：
 
@@ -87,7 +90,7 @@ bash /etc/realm/xwFailover.sh config
 ### 3.1 TCP 端口探测，不是 ping
 
 健康检查探测的是**目标的 TCP 端口**（`REMOTE_HOST:REMOTE_PORT`），**不是 ping**。
-探测函数（`xwFailover.sh:487-515`）有两条路：
+探测函数（`lib/health.sh` 的 `check_connectivity`）有两条路：
 
 ```bash
 # 方式1: netcat（需支持 -z 探测模式）
@@ -117,14 +120,14 @@ fi
 
 ### 3.2 探测范围
 
-只探测满足以下**全部**条件的规则（`xwFailover.sh:554-557`）：
+只探测满足以下**全部**条件的规则（`lib/health.sh` 的 `health_check_script_body`）：
 
 - `RULE_ROLE = 1`（中转服务器）
 - `ENABLED = true`
 - `FAILOVER_ENABLED = true`
 
 每条规则的 `REMOTE_HOST` 按逗号展开成多个目标，每个目标用该规则的 `REMOTE_PORT`
-（`xwFailover.sh:559-580`）。
+（`lib/health.sh` 的 `health_check_script_body`）。
 
 ---
 
@@ -132,7 +135,7 @@ fi
 
 ### 4.1 `realm-health-check.service`
 
-由 `start_health_check_service` 生成（`xwFailover.sh:635-651`）：
+由 `start_health_check_service` 生成（`lib/health.sh` 的 `start_health_check_service`）：
 
 ```ini
 [Unit]
@@ -154,7 +157,7 @@ WantedBy=multi-user.target
 
 ### 4.2 `realm-health-check.timer`
 
-（`xwFailover.sh:654-666`）
+（`lib/health.sh` 的 `start_health_check_service`）
 
 ```ini
 [Unit]
@@ -177,7 +180,7 @@ WantedBy=timers.target
 > **所有「中转 + 已启用 + 已开启故障转移」的规则的 `HEALTH_CHECK_INTERVAL` 里的最小值**，
 > 没有这类规则时用 `4`。
 
-（`get_effective_health_check_interval`，`xwFailover.sh:65-80`）
+（`get_effective_health_check_interval`，`lib/health.sh` 的 `get_effective_health_check_interval`）
 
 所以只要有一个端口组把间隔设成 1 秒，整个定时器就按 1 秒跑。
 
@@ -190,7 +193,7 @@ journalctl -u realm-health-check.service -f     # 实时日志
 journalctl -t realm-health -f                    # 按 SyslogIdentifier 看
 ```
 
-停止并清理（`stop_health_check_service`，`xwFailover.sh:817-832`）：
+停止并清理（`stop_health_check_service`，`lib/health.sh` 的 `stop_health_check_service`）：
 
 ```bash
 systemctl stop realm-health-check.timer
@@ -206,7 +209,7 @@ systemctl daemon-reload
 ### 4.5 并发保护
 
 健康检查脚本用 `flock` 抢独占锁，避免上一轮没跑完就叠加下一轮
-（`xwFailover.sh:479-484`）：
+（`lib/health.sh` 的 `health_check_script_body`）：
 
 ```bash
 exec 200>"$LOCK_FILE"          # /var/lock/realm-health-check.lock
@@ -222,9 +225,9 @@ fi
 
 ### 5.1 路径与格式
 
-主路径：`/etc/realm/health/health_status.conf`（`xwFailover.sh:13`）
+主路径：`/etc/realm/health/health_status.conf`（`lib/health.sh` 的 `HEALTH_STATUS_FILE`）
 
-生成脚本会在几个候选路径里找已有的（`xwFailover.sh:450-462`）：
+生成脚本会在几个候选路径里找已有的（`lib/health.sh` 的 `health_check_script_body`）：
 
 ```
 /etc/realm/health/health_status.conf
@@ -234,7 +237,7 @@ fi
 
 都找不到就默认用第一个。
 
-**行格式**（`xwFailover.sh:537`、`xwFailover.sh:584`）：
+**行格式**（`lib/health.sh` 的 `health_check_script_body`、`lib/health.sh` 的 `health_check_script_body`）：
 
 ```
 RULE_ID|TARGET|STATUS|FAIL_COUNT|SUCCESS_COUNT|LAST_CHECK|FAILURE_START_TIME
@@ -250,7 +253,7 @@ RULE_ID|TARGET|STATUS|FAIL_COUNT|SUCCESS_COUNT|LAST_CHECK|FAILURE_START_TIME
 | `LAST_CHECK` | 上次检查的 Unix 时间戳 |
 | `FAILURE_START_TIME` | 本次故障开始时间戳（未故障为 `0`） |
 
-文件头两行是注释（`xwFailover.sh:535-538`）：
+文件头两行是注释（`lib/health.sh` 的 `health_check_script_body`）：
 
 ```
 # Realm健康状态文件
@@ -259,7 +262,7 @@ RULE_ID|TARGET|STATUS|FAIL_COUNT|SUCCESS_COUNT|LAST_CHECK|FAILURE_START_TIME
 
 ### 5.2 原子更新
 
-每次更新都是「删掉旧行 → 写临时文件 → `mv` 覆盖」（`xwFailover.sh:612-615`）：
+每次更新都是「删掉旧行 → 写临时文件 → `mv` 覆盖」（`lib/health.sh` 的 `health_check_script_body`）：
 
 ```bash
 grep -v "^${target_key}|" "$HEALTH_STATUS_FILE" > "$HEALTH_STATUS_FILE.tmp"
@@ -271,8 +274,8 @@ mv "$HEALTH_STATUS_FILE.tmp" "$HEALTH_STATUS_FILE"
 
 | 触发条件 | 行为 | 源码位置 |
 |----------|------|----------|
-| 文件 > 5 MB | 按行截断，保留最后 2000 行 | `xwFailover.sh:464-471` |
-| 每小时的整点（分钟 = `00`） | `journalctl --vacuum-time=7d` 清 7 天前的 journal | `xwFailover.sh:473-477` |
+| 文件 > 5 MB | 按行截断，保留最后 2000 行 | `lib/health.sh` 的 `health_check_script_body` |
+| 每小时的整点（分钟 = `00`） | `journalctl --vacuum-time=7d` 清 7 天前的 journal | `lib/health.sh` 的 `health_check_script_body` |
 
 ### 5.4 规则重排时同步
 
@@ -288,8 +291,8 @@ mv "$HEALTH_STATUS_FILE.tmp" "$HEALTH_STATUS_FILE"
 
 | 探测结果 | 变化 | 源码位置 |
 |----------|------|----------|
-| 成功 | `success_count++`，`fail_count = 0` | `xwFailover.sh:583-586` |
-| 失败 | `fail_count++`，`success_count = 0` | `xwFailover.sh:599-601` |
+| 成功 | `success_count++`，`fail_count = 0` | `lib/health.sh` 的 `health_check_script_body` |
+| 失败 | `fail_count++`，`success_count = 0` | `lib/health.sh` 的 `health_check_script_body` |
 
 ### 6.2 判定为故障
 
@@ -299,7 +302,7 @@ status == healthy  且  fail_count >= FAILURE_THRESHOLD
     → failure_start_time = 当前时间戳
 ```
 
-（`xwFailover.sh:603-609`）
+（`lib/health.sh` 的 `health_check_script_body`）
 
 ### 6.3 判定为恢复
 
@@ -310,7 +313,7 @@ status == failed  且  success_count >= SUCCESS_THRESHOLD
     → failure_start_time = 0
 ```
 
-（`xwFailover.sh:587-597`）
+（`lib/health.sh` 的 `health_check_script_body`）
 
 **冷却期是必需的**：连续成功达标但冷却期没到，状态**保持 failed**。
 这是防止节点抖动导致频繁切换的关键。
@@ -318,7 +321,7 @@ status == failed  且  success_count >= SUCCESS_THRESHOLD
 ### 6.4 旧格式兼容
 
 早期版本的状态文件没有 `FAILURE_START_TIME` 字段，这时会拿 `LAST_CHECK` 顶替
-（`xwFailover.sh:569-572`）。
+（`lib/health.sh` 的 `health_check_script_body`）。
 
 ---
 
@@ -340,7 +343,7 @@ systemd timer（每 effective_interval 秒）
                  └→ svc_restart（重启 realm）
 ```
 
-`pf --restart-service` 的调用点：`xwFailover.sh:619-627`。
+`pf --restart-service` 的调用点：`lib/health.sh` 的 `health_check_script_body`。
 `service_restart` 的实现：`lib/realm.sh:1042-1062`。
 
 > 注意：健康检查**直接**调 `pf --restart-service`，不走标记文件。
@@ -383,7 +386,7 @@ pf
 # → 3. 开启/关闭故障转移 → 选端口组
 ```
 
-开启时可以选择模式（`xwFailover.sh:330-346`）：
+开启时可以选择模式（`xwFailover.sh` 的 `toggle_failover_mode`）：
 
 ```
 1. 剔除模式（原有） - 故障目标从负载均衡列表中移除
@@ -391,14 +394,14 @@ pf
 ```
 
 开启「主备模式」会把该端口下所有规则的 `BALANCE_MODE` 设为 `active-standby`
-（`xwFailover.sh:363-371`），并启动健康检查服务。
+（`xwFailover.sh` 的 `toggle_failover_mode`），并启动健康检查服务。
 
 关闭时：如果**没有其它规则**还在用故障转移，才会停掉健康检查服务
-（`xwFailover.sh:405-425`）。
+（`xwFailover.sh` 的 `toggle_failover_mode`）。
 
 ### 7.5 故障转移的前提条件
 
-菜单里只有满足以下**全部**条件的端口组才会出现（`xwFailover.sh:193-194`、`xwFailover.sh:254`）：
+菜单里只有满足以下**全部**条件的端口组才会出现（`xwFailover.sh` 的 `toggle_failover_mode`、`xwFailover.sh` 的 `toggle_failover_mode`）：
 
 1. 规则类型为中转服务器（`RULE_ROLE=1`）
 2. 已启用（`ENABLED=true`）
@@ -409,17 +412,17 @@ pf
 
 ## 8. 命令行接口
 
-`/etc/realm/xwFailover.sh`（`xwFailover.sh:892-903`、`xwFailover.sh:914-945`）：
+`/etc/realm/xwFailover.sh`（`xwFailover.sh` 的 `main`）：
 
 | 子命令 | 作用 |
 |--------|------|
-| `toggle` | 交互式开关故障转移（默认） |
-| `config` | 配置间隔 / 阈值 / 超时 / 冷却 |
-| `status` | 查看健康状态 |
-| `start` | 启动健康检查服务 |
-| `stop` | 停止并清理健康检查服务 |
-| `restart-realm` | 调 `pf --restart-service` 重启 realm |
-| `help` / `-h` / `--help` | 帮助 |
+| `xwFailover.sh toggle` | 交互式开关故障转移（默认） |
+| `xwFailover.sh config` | 配置间隔 / 阈值 / 超时 / 冷却 |
+| `xwFailover.sh status` | 查看健康状态 |
+| `xwFailover.sh start` | 启动健康检查服务 |
+| `xwFailover.sh stop` | 停止并清理健康检查服务 |
+| `xwFailover.sh restart-realm` | 调 `pf --restart-service` 重启 realm |
+| `xwFailover.sh help` | 帮助（`-h` / `--help` 同义） |
 
 ```bash
 bash /etc/realm/xwFailover.sh status
@@ -427,14 +430,19 @@ bash /etc/realm/xwFailover.sh status
 
 > `xwFailover.sh` 是**按需下载**的，进「故障转移管理」菜单时才会拉到 `/etc/realm/xwFailover.sh`
 > （`lib/ui.sh:701`）。没进过菜单的话这个文件不存在。
+>
+> 它启动时会 `source` `lib/health.sh`（唯一真源）：
+> 依次找 `/usr/local/bin/lib/health.sh` → `/etc/realm/lib/health.sh` → 脚本同目录的 `lib/health.sh`。
+> 找不到就直接报错退出——**健康检查逻辑只有一份实现**，不存在两份各自漂移的可能。
 
 ---
 
-## 9. 待验证项
+## 9. 已知边界
 
 | 项 | 说明 |
 |----|------|
-| `lib/health.sh` 尚未落盘 | 当前健康检查脚本仍由 `xwFailover.sh` 内联 heredoc 生成（`xwFailover.sh:442-630`）。`lib/health.sh` 落盘后行为应一致；如有差异以 `lib/health.sh` 为准 |
-| 主备优先级是否按权重排序 | `lib/realm.sh` 有未提交改动，把主目标判定改为按权重降序。详见 [端口组与权重 §5.3](port-groups-and-weights.md#53-主备优先级与权重的关系) |
+| `lib/health.sh` 已落盘 | 健康检查脚本由 `lib/health.sh` 的 `health_check_script_body` 生成，`xwFailover.sh` 与 `pf` 共用同一份实现。生成的 `health_check.sh` 是独立可执行脚本，其探测逻辑另有一份内联副本（两处必须同步，`tests/test_connectivity.sh` C 组盯着） |
+| 主备优先级按权重排序 | 已实现：主目标 = 权重最大的健康目标（同权重保持原始顺序）。详见 [端口组与权重 §5.3](port-groups-and-weights.md#53-主备优先级与权重的关系) |
+| 探测只到 TCP 握手 | 端口通但业务已死、或故障发生在「客户端 → 中转机」这一段，探测都发现不了 |
 | `realm-health-check.service` 是否需要 `After=network-online.target` | 当前只写了 `After=network.target`。开机后立刻探测可能在网络就绪前失败（表现为开机瞬间误判故障）。是否调整待确认 |
 | `journalctl --vacuum-time=7d` 的影响范围 | 该命令清理的是**全系统** journal（不限本服务），在有其它业务日志的机器上影响面较大。是否收窄待确认 |

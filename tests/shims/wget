@@ -1,0 +1,55 @@
+#!/bin/bash
+# wget 替身：离线下载桩，行为同 curl 替身。
+# 每次调用都记录 URL，便于断言「下载地址是否指向本 fork」。
+
+LOG="${SBX_LOG_DIR:-/tmp}/wget.log"
+[ -n "$LOG" ] && echo "wget url=$1" >> "$LOG"
+
+url=""
+out=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -O)
+            out="${2:-}"
+            shift 2
+            ;;
+        -O*)
+            out="${1#-O}"
+            shift
+            ;;
+        -*)
+            shift
+            ;;
+        *)
+            case "$1" in
+                http://*|https://*) url="$1" ;;
+            esac
+            shift
+            ;;
+    esac
+done
+
+[ -n "$LOG" ] && echo "wget resolved_url=$url out=$out" >> "$LOG"
+
+case "$url" in
+    *gh-proxy.org/*) url="${url#*gh-proxy.org/}" ;;
+esac
+
+rel=""
+case "$url" in
+    *"/main/"*) rel="${url#*/main/}" ;;
+    *"/raw/"*) rel="${url#*/raw/}" ;;
+esac
+
+mirror="${SBX_MIRROR:-}"
+if [ -z "$rel" ] || [ -z "$mirror" ] || [ ! -f "${mirror}/${rel}" ]; then
+    echo "wget-shim: 404 (rel=${rel:-none})" >&2
+    exit 8
+fi
+
+if [ -n "$out" ]; then
+    cp "${mirror}/${rel}" "$out"
+else
+    cat "${mirror}/${rel}"
+fi
+exit 0

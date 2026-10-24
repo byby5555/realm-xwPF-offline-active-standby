@@ -1085,6 +1085,10 @@ main() {
         # 重启服务接口（供外部调用）
         service_restart
         exit $?
+    elif [ "$1" = "--help" ] || [ "$1" = "-h" ] || [ "$1" = "help" ]; then
+        # 打印用法，不进入交互菜单
+        show_usage
+        exit 0
     fi
 
     check_root

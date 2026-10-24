@@ -345,7 +345,7 @@ generate_endpoints_from_rules() {
 
     # 健康状态读取（直接读取健康状态文件）
     declare -A health_status
-    local health_status_file="/etc/realm/health/health_status.conf"
+    local health_status_file="${HEALTH_STATUS_FILE}"
 
     if [ -f "$health_status_file" ]; then
         while read -r line; do
@@ -394,6 +394,10 @@ generate_endpoints_from_rules() {
                     # 检测到同一端口有不同角色的规则，跳过此规则
                     echo -e "${YELLOW}警告: 端口 $port_key 已被角色 ${port_roles[$port_key]} 的规则占用，跳过角色 $RULE_ROLE 的规则${NC}" >&2
                     continue
+                elif [[ "$WEIGHTS" == *","* ]] && [[ "${port_weights[$port_key]}" != *","* ]]; then
+                    # 本规则带完整权重列表，优先用它作为端口组的权重序列
+                    # （第一个启用的规则可能只存了单个权重）
+                    port_weights[$port_key]="$WEIGHTS"
                 fi
 
                 # 收集目标：根据规则角色使用不同的字段
@@ -473,45 +477,81 @@ generate_endpoints_from_rules() {
             if [ "$port_balance_mode" = "active-standby" ]; then
                 # 主备模式（active-standby）：保留所有目标在列表中
                 # （健康检查对所有目标独立探测，不依赖权重，因此列表需保持 REMOTE_HOST 原始顺序）
-                # 按顺序找第一个 status=healthy 的目标，权重置 1，其他全 0
-                # 严格主备：主恢复后会自动切回主
-                local first_healthy_index=-1
-                for i in "${!all_targets[@]}"; do
-                    local target="${all_targets[i]}"
-                    local host="${target%:*}"
-                    local node_status="${health_status[$host]:-healthy}"
+                #
+                # 主备优先级：按用户在「权重配置管理」里填的权重从高到低排列，
+                # 权重大的目标当主、权重 0 的目标当备。
+                #   例："10,0" → 第一个是主、第二个是备
+                #       "0,10" → 第二个是主
+                # 权重相同则保持原始顺序（稳定排序）。
+                # 没有有效权重信息时退化为原始顺序。
+                local priority_targets=("${all_targets[@]}")
 
-                    if [ "$node_status" != "failed" ]; then
-                        first_healthy_index=$i
+                local user_weights="${port_weights[$port_key]}"
+                if [ -n "$user_weights" ]; then
+                    IFS=',' read -ra _prio_w <<< "$user_weights"
+                    if [ "${#_prio_w[@]}" -eq "${#all_targets[@]}" ]; then
+                        local _has_zero=false
+                        for _w in "${_prio_w[@]}"; do
+                            if [ "$_w" -eq 0 ]; then
+                                _has_zero=true
+                            fi
+                        done
+
+                        if [ "$_has_zero" = true ]; then
+                            # 稳定降序：权重大的排前面
+                            for ((_pi=0; _pi<${#all_targets[@]}; _pi++)); do
+                                for ((_pj=_pi+1; _pj<${#all_targets[@]}; _pj++)); do
+                                    if [ "${_prio_w[$_pj]}" -gt "${_prio_w[$_pi]}" ]; then
+                                        _tw="${_prio_w[$_pi]}"; _prio_w[$_pi]="${_prio_w[$_pj]}"; _prio_w[$_pj]="$_tw"
+                                        _tt="${priority_targets[$_pi]}"; priority_targets[$_pi]="${priority_targets[$_pj]}"; priority_targets[$_pj]="$_tt"
+                                    fi
+                                done
+                            done
+                        fi
+                    fi
+                    unset _prio_w
+                fi
+
+                # 按优先级找第一个健康目标作为主
+                local primary_target=""
+                for _t in "${priority_targets[@]}"; do
+                    local _host="${_t%:*}"
+                    if [ "${health_status[$_host]:-healthy}" != "failed" ]; then
+                        primary_target="$_t"
                         break
                     fi
                 done
 
-                # 主备模式下：所有目标保留在 port_groups 中
-                # 重新生成 0/1 权重列表
+                # 重新生成 0/1 权重列表（按 all_targets 原始顺序，保证与端点顺序一一对应）
                 local flipped_weights=""
-                for i in "${!all_targets[@]}"; do
-                    if [ "$i" -eq "$first_healthy_index" ]; then
-                        if [ -n "$flipped_weights" ]; then
-                            flipped_weights="$flipped_weights,1"
-                        else
-                            flipped_weights="1"
-                        fi
+                for _t in "${all_targets[@]}"; do
+                    local _w=0
+                    if [ "$_t" = "$primary_target" ]; then
+                        _w=1
+                    fi
+                    if [ -n "$flipped_weights" ]; then
+                        flipped_weights="$flipped_weights,$_w"
                     else
-                        if [ -n "$flipped_weights" ]; then
-                            flipped_weights="$flipped_weights,0"
-                        else
-                            flipped_weights="0"
-                        fi
+                        flipped_weights="$_w"
                     fi
                 done
 
-                # 若全部目标都故障（first_healthy_index=-1），上面循环会输出全 0，
-                # 即生成的 realm 配置中所有节点都没有流量——为避免完全断流，强制将第一个目标置 1
-                if [ "$first_healthy_index" -lt 0 ] && [ "${#all_targets[@]}" -gt 0 ]; then
-                    flipped_weights="1"
-                    for ((i=1; i<${#all_targets[@]}; i++)); do
-                        flipped_weights="$flipped_weights,0"
+                # 若全部目标都故障（primary_target 为空），上面会输出全 0，
+                # 即生成的 realm 配置中所有节点都没有流量——为避免完全断流，
+                # 强制将优先级最高的目标置 1
+                if [ -z "$primary_target" ] && [ "${#all_targets[@]}" -gt 0 ]; then
+                    local _fallback="${priority_targets[0]}"
+                    flipped_weights=""
+                    for _t in "${all_targets[@]}"; do
+                        local _w=0
+                        if [ "$_t" = "$_fallback" ]; then
+                            _w=1
+                        fi
+                        if [ -n "$flipped_weights" ]; then
+                            flipped_weights="$flipped_weights,$_w"
+                        else
+                            flipped_weights="$_w"
+                        fi
                     done
                 fi
 

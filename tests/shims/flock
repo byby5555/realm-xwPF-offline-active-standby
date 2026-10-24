@@ -1,0 +1,5 @@
+#!/bin/bash
+# flock 替身：装上就能跑的假锁（Git Bash 没有 flock）。
+LOG="${SBX_LOG_DIR:-/tmp}/flock.log"
+[ -n "$LOG" ] && echo "flock $*" >> "$LOG"
+exit 0

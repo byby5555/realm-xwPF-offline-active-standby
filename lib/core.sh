@@ -76,6 +76,9 @@ CONFIG_DIR="/etc/realm"
 CONFIG_PATH="${CONFIG_DIR}/config.json"
 SYSTEMD_PATH="/etc/systemd/system/realm.service"
 RULES_DIR="${CONFIG_DIR}/rules"
+# 健康状态文件：故障转移的探测结果落盘处（主备切换据此翻转权重）
+# 用变量统一，避免各处硬编码路径不一致（lib/rules.sh 之前引用过未定义的 $HEALTH_STATUS_FILE）
+HEALTH_STATUS_FILE="${HEALTH_STATUS_FILE:-${CONFIG_DIR}/health/health_status.conf}"
 
 # 默认tls和host域名（加密解密需要相同SNI）
 DEFAULT_SNI_DOMAIN="www.tesla.com"
@@ -100,6 +103,20 @@ is_valid_port() {
     local port="$1"
     [[ "$port" =~ ^[0-9]+$ ]] || return 1
     [ "$port" -ge 1 ] && [ "$port" -le 65535 ]
+}
+
+# 打印用法说明（--help / -h / help）
+show_usage() {
+    echo -e "${GREEN}用法:${NC} pf [命令]"
+    echo -e "${WHITE}Usage:${NC} pf [command]"
+    echo ""
+    echo -e "  ${GREEN}install${NC}                  安装/更新脚本（等价于 bash xwPF.sh install）"
+    echo -e "  ${GREEN}--restart-service${NC}        仅重启 realm 服务（供健康检查调用）"
+    echo -e "  ${GREEN}--generate-config-only${NC}   仅重新生成配置文件，不进入菜单"
+    echo -e "  ${GREEN}--help, -h, help${NC}         显示本帮助"
+    echo ""
+    echo "不带参数进入交互菜单。"
+    echo "Run without arguments to enter the interactive menu."
 }
 
 
@@ -288,16 +305,8 @@ check_port_usage() {
     return 0
 }
 
-check_connectivity() {
-    local target="$1"
-    local port="$2"
-    local timeout="${3:-3}"
-
-    [ -z "$target" ] || [ -z "$port" ] && return 1
-
-    # bash /dev/tcp（全平台通用）
-    timeout "$timeout" bash -c "echo >/dev/tcp/$target/$port" 2>/dev/null
-}
+# 连通性探测 check_connectivity 已移入 lib/health.sh（与故障转移共用同一份实现，
+# 优先 nc，缺 nc 时回退 bash /dev/tcp）——health.sh 在本文件之后加载。
 
 validate_port() {
     [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]

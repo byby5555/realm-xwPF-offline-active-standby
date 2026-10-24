@@ -245,8 +245,8 @@ rm -f /usr/local/bin/xwPF.sh /usr/local/bin/lib/*.sh
 |------|----------|----------|
 | realm | `journalctl -u realm -f --no-pager` | `lib/realm.sh:31` |
 | realm（OpenRC） | `tail -f /var/log/messages` | `lib/realm.sh:28-30` |
-| 健康检查 | `journalctl -u realm-health-check.service -f` | `xwFailover.sh:645-646` |
-| 健康检查（按 tag） | `journalctl -t realm-health -f` | `xwFailover.sh:647` |
+| 健康检查 | `journalctl -u realm-health-check.service -f` | `lib/health.sh` 的 `start_health_check_service` |
+| 健康检查（按 tag） | `journalctl -t realm-health -f` | `lib/health.sh` 的 `start_health_check_service` |
 | xwpf-failover 守护 | `journalctl -fu xwpf-failover` | `lib/failover.sh:805` |
 
 菜单里也能直接看：`pf` → `5. 查看日志`（realm，实时）、`9. 主备 active/passive` 菜单里的
@@ -263,7 +263,7 @@ bash /etc/realm/xwFailover.sh status
 ```
 
 格式：`RULE_ID|TARGET|STATUS|FAIL_COUNT|SUCCESS_COUNT|LAST_CHECK|FAILURE_START_TIME`
-（`xwFailover.sh:537`）。
+（`lib/health.sh` 的 `health_check_script_body`）。
 
 ---
 
@@ -296,7 +296,7 @@ command -v pf || ls -l /usr/local/bin/pf
 ### 6.3 目标数不够
 
 主备至少要有 2 个目标。菜单里只有目标数 > 1 的端口组才会出现
-（`xwFailover.sh:254`、`lib/rules.sh:1845`）。
+（`xwFailover.sh` 的 `toggle_failover_mode`、`lib/rules.sh:1845`）。
 
 ### 6.4 `FAILOVER_ENABLED` 没开
 
@@ -399,8 +399,8 @@ ss -tulnp | grep ":8080 "
 | 场景 | 要求 | 源码位置 |
 |------|------|----------|
 | `pf` / `xwPF.sh install` | root | `lib/core.sh:146-151`、`xwPF.sh:123` |
-| `xwFailover.sh` | root（`check_root`） | `xwFailover.sh:82-87` |
-| 健康检查脚本 | `User=root`（unit 里写死） | `xwFailover.sh:613` |
+| `xwFailover.sh` | root（`check_root`） | `xwFailover.sh` 的 `check_root` |
+| 健康检查脚本 | `User=root`（unit 里写死） | `lib/health.sh` 的 `start_health_check_service` |
 
 非 root 执行会直接退出：
 

@@ -1,0 +1,5 @@
+#!/bin/bash
+# journalctl 替身：只记录，不输出。
+LOG="${SBX_LOG_DIR:-/tmp}/journalctl.log"
+[ -n "$LOG" ] && echo "journalctl $*" >> "$LOG"
+exit 0

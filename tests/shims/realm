@@ -1,0 +1,6 @@
+#!/bin/bash
+# realm 替身：只记录调用，不真的起转发。
+
+LOG="${SBX_LOG_DIR:-/tmp}/realm.log"
+[ -n "$LOG" ] && echo "realm $*" >> "$LOG"
+exit 0

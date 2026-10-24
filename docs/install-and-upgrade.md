@@ -142,9 +142,9 @@ curl -fsSL https://v6.gh-proxy.org/https://raw.githubusercontent.com/byby5555/re
 | 路径 | 何时下载 | 源码位置 |
 |------|----------|----------|
 | `/etc/realm/xwFailover.sh` | 进入「故障转移管理」菜单 | `lib/ui.sh:701` |
-| `/etc/realm/health/health_check.sh` | 开启故障转移时生成 | `xwFailover.sh:417`、`xwFailover.sh:427` |
-| `/etc/systemd/system/realm-health-check.service` / `.timer` | 开启故障转移时生成 | `xwFailover.sh:418-419` |
-| `/etc/realm/health/health_status.conf` | 健康检查首次运行时创建 | `xwFailover.sh:535-538` |
+| `/etc/realm/health/health_check.sh` | 开启故障转移时生成 | `lib/health.sh` 的 `start_health_check_service`、`lib/health.sh` 的 `start_health_check_service` |
+| `/etc/systemd/system/realm-health-check.service` / `.timer` | 开启故障转移时生成 | `lib/health.sh` 的 `start_health_check_service` |
+| `/etc/realm/health/health_status.conf` | 健康检查首次运行时创建 | `lib/health.sh` 的 `health_check_script_body` |
 | `/etc/realm/speedtest.sh` | 进入「中转网络链路测试」 | `lib/ui.sh:719` |
 | `/usr/local/bin/port-traffic-dog.sh` | 进入「端口流量狗」 | `lib/ui.sh:939` |
 | `/etc/realm/xw_realm_OCR.sh` | 进入配置识别导入 | `lib/ui.sh:5` |
@@ -350,7 +350,7 @@ pf
 | `pf --generate-config-only` | 只生成 `/etc/realm/config.json`，不重启、不显示菜单 | `lib/ui.sh:1080-1083` |
 | `pf --restart-service` | 重排序规则 → 重新生成配置 → 重启 realm | `lib/ui.sh:1084-1088`、`lib/realm.sh:1042-1062` |
 | `xwPF.sh install` | 一键安装（需 root） | `xwPF.sh:122-129` |
-| `xwFailover.sh toggle\|config\|status\|start\|stop\|restart-realm\|help` | 故障转移管理，见 [健康检查与故障转移](health-check-and-failover.md) | `xwFailover.sh:892-903` |
+| `xwFailover.sh toggle\|config\|status\|start\|stop\|restart-realm\|help` | 故障转移管理，见 [健康检查与故障转移](health-check-and-failover.md) | `xwFailover.sh` 的 `main` |
 
 ---
 

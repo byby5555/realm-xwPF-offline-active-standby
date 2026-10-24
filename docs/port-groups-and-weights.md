@@ -12,10 +12,10 @@
 
 | 要素 | 定义 | 源码位置 |
 |------|------|----------|
-| 分组键 | `LISTEN_PORT` | `lib/rules.sh:1800`、`xwFailover.sh:51` |
-| 参与分组 | `RULE_ROLE=1`（中转服务器），`RULE_ROLE=2`（服务端）不参与 | `lib/rules.sh:1800`、`xwFailover.sh:51` |
-| 目标表示 | `REMOTE_HOST:REMOTE_PORT` | `xwFailover.sh:222`、`xwFailover.sh:231` |
-| 可见条件 | 该端口目标数 **> 1** 才算「端口组」并出现在菜单里 | `lib/rules.sh:1845`、`xwFailover.sh:254` |
+| 分组键 | `LISTEN_PORT` | `lib/rules.sh:1800`、`xwFailover.sh` 的 `toggle_failover_mode` |
+| 参与分组 | `RULE_ROLE=1`（中转服务器），`RULE_ROLE=2`（服务端）不参与 | `lib/rules.sh:1800`、`xwFailover.sh` 的 `toggle_failover_mode` |
+| 目标表示 | `REMOTE_HOST:REMOTE_PORT` | `xwFailover.sh` 的 `toggle_failover_mode`、`xwFailover.sh` 的 `toggle_failover_mode` |
+| 可见条件 | 该端口目标数 **> 1** 才算「端口组」并出现在菜单里 | `lib/rules.sh:1845`、`xwFailover.sh` 的 `toggle_failover_mode` |
 
 ### 1.1 两种加目标的方式
 
@@ -29,7 +29,7 @@ REMOTE_PORT="8080"
 **方式 B：拆成多条规则，同一个 `LISTEN_PORT`，不同 `REMOTE_HOST`**
 
 两种方式产生的端口组完全等价。菜单里展开 `REMOTE_HOST` 的逗号列表
-（`lib/rules.sh:1812-1833`、`xwFailover.sh:231-228`），并按 `host:port` 去重。
+（`lib/rules.sh:1812-1833`、`xwFailover.sh` 的 `toggle_failover_mode`），并按 `host:port` 去重。
 
 > ⚠️ **同一端口不允许混角色。** `lib/realm.sh:393-396`：同一 `LISTEN_PORT` 上出现不同
 > `RULE_ROLE` 的规则时，后来的规则会被**跳过**并打印警告。中转与服务端必须用不同的监听端口。
@@ -217,7 +217,7 @@ pf
 # → 3. 开启/关闭故障转移 → 选端口组 → 2. 主备模式
 ```
 
-（`lib/rules.sh:2107`、`xwFailover.sh:330-346`）
+（`lib/rules.sh:2107`、`xwFailover.sh` 的 `toggle_failover_mode`）
 
 ### 5.2 主备的运行语义
 
