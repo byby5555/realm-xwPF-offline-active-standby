@@ -31,15 +31,24 @@ Stdlib-only (asyncio). Logs go to stdout (journald-friendly when run as systemd 
 
 # 守护进程版本号：lib/failover.sh 用它判断已安装版本是否落后（不一致则自动重装）。
 # 修改本文件的功能时记得同步递增。
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 import argparse
 import asyncio
+import errno
 import json
 import logging
 import signal
 import sys
 import time
+
+
+class ListenAddressInUse(RuntimeError):
+    """监听地址不可用 —— 端口已被占用（EADDRINUSE）等 bind 失败。
+
+    单独一个类型，是为了让「端口被占用」在日志里一眼可辨，
+    而不是淹没在 task 异常的 repr 里。
+    """
 
 
 class Pool:
@@ -187,7 +196,22 @@ class Pool:
     async def serve(self):
         host, port_s = self.listen_addr.rsplit(":", 1)
         port = int(port_s)
-        server = await asyncio.start_server(self._handle_one, host, port)
+        try:
+            server = await asyncio.start_server(self._handle_one, host, port)
+        except OSError as exc:
+            # ★ 端口被占用 = 守护进程「起不来」的头号原因（事故根因）。
+            #   只把 task 的 repr 抛给用户看不懂，这里翻译成人话：
+            #   listen 地址 + 端口 + errno + 处置建议。
+            #   异常继续往外抛 → _main 记非 0 退出码 → systemd 按
+            #   Restart=always + StartLimit 限流处理（不会无限重启）。
+            if exc.errno == errno.EADDRINUSE:
+                raise ListenAddressInUse(
+                    "listen address already in use: %s (pool '%s', errno %s EADDRINUSE) "
+                    "- port %s is already bound; change the listen port, or stop "
+                    "the service holding it"
+                    % (self.listen_addr, self.name, exc.errno, port)
+                ) from exc
+            raise
         sa = server.sockets[0].getsockname()
         logging.info(
             "[%s] listening on %s:%s → primary=%s backups=%s",
@@ -245,33 +269,51 @@ async def _main():
     # `stop` future was orphaned and SIGTERM left us hanging until systemd
     # SIGKILL'd us at the 90s timeout.
     waitable = {stop} | set(tasks)
+    # ★ 退出码语义（事故修复的核心）：
+    #   0 = 收到 SIGTERM/SIGINT，干净退出
+    #   非 0 = 有 serve/probe task 抛异常（守护进程起不来 / 崩了）
+    # 之前这里无论如何都返回 None → asyncio.run 正常返回 → 进程退出码 0 →
+    # systemd 以为一切正常 → 配上 Restart=always 就是无限重启循环。
+    exit_code = 0
     try:
         done, pending = await asyncio.wait(
             waitable, return_when=asyncio.FIRST_COMPLETED
         )
         if stop in done:
             logging.info("stop signal received, shutting down...")
-        else:
-            # Some task ended unexpectedly - inspect which
-            for t in done:
-                if t is stop:
-                    continue
-                try:
-                    t.result()
-                except Exception as exc:
-                    logging.error("task %r raised: %s", t, exc)
+        # 无论是否同时收到停止信号，都要检查 task 的异常：
+        # 停止信号到达的同时某个 task 已经炸了 → 仍然算异常退出（非 0）。
+        for t in done:
+            if t is stop:
+                continue
+            try:
+                t.result()
+            except asyncio.CancelledError:
+                logging.warning("task %r was cancelled", t)
+            except Exception as exc:
+                exit_code = 1
+                logging.error(
+                    "task %r raised %s: %s",
+                    t, type(exc).__name__, exc,
+                    exc_info=True,
+                )
     finally:
         for t in tasks:
             if not t.done():
                 t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+    return exit_code
 
 
 def main():
     try:
-        asyncio.run(_main())
+        code = asyncio.run(_main())
     except KeyboardInterrupt:
-        pass
+        # Ctrl+C 等价于干净停止 → 退出码 0
+        code = 0
+    # ★ 把退出码真正交给进程（之前 asyncio.run 正常返回 = 退出码 0，
+    #   内部异常被系统当成「正常结束」）。
+    sys.exit(code)
 
 
 if __name__ == "__main__":

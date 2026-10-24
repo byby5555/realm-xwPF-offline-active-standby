@@ -227,7 +227,7 @@ bash /usr/local/bin/xwPF.sh
 - **搭建隧道** - 双端realm架构支持 TLS,ws,wss,搭建隧道
 - **负载均衡** - 支持轮询、IP哈希、主备（active-standby）等策略，可配置权重分配
 - **故障转移** - 使用系统工具,完成自动故障检测,保持轻量化。支持主备模式（1 主 N 备按顺序接替，权重翻转）
-- **主备 active/passive** - 进程级主备热切换（独立守护 xwpf-failover，详见 `cmd/README-failover.md`）
+- **主备 active/passive** - 进程级主备热切换（独立守护 xwpf-failover，详见 `cmd/README-failover.md`；守护进程崩溃循环、systemd 限流、端口被占用的处理见 `cmd/README-failover.md` 的「Crash loop」一节）
 - **规则备注** - 清晰的备注功能,不再需要额外记忆
 
 - **端口流量犬** - 统计端口流量，控制端口限速，限流，可设置通知方式

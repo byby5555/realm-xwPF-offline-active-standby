@@ -14,6 +14,8 @@ XWPF_FAILOVER_CONF_DIR="/etc/xwpf"
 XWPF_FAILOVER_CONF="${XWPF_FAILOVER_CONF_DIR}/failover.json"
 # 已安装 daemon 的版本记录（用于判断是否需要重装升级）
 XWPF_FAILOVER_VERSION_FILE="/usr/local/bin/.xwpf-failover-version"
+# 端口占用探测结果（failover_check_port_listening 写入，调用方打印原因用）
+FAILOVER_PORT_PROBE_DETAIL=""
 
 # Loopback port range used by realm listeners backing each failover pool.
 XWPF_FAILOVER_PORT_BASE=10443
@@ -86,19 +88,84 @@ failover_validate_addr() {
 }
 
 # === Port-collision check (TCP bind probe) ===
+# 退出码：0 = 端口空闲；1 = 确认被占用；2 = 无法判定（探测环境不可用）
+# 占用详情放在全局 FAILOVER_PORT_PROBE_DETAIL（供调用方打印原因）。
+#
+# ★ 单一真源：端口占用的**事前校验**逻辑只有这一份（socket 试绑）。
+#   cmd/xwpf-failover.py 不另写一份探测 —— 它只在真实 bind 失败时把
+#   EADDRINUSE 翻译成人话（运行时兜底），不做事前校验。
+#
+# ★ 旧实现有个洞：socket() 创建失败（协议族不可用，例如内核禁用 IPv6）
+#   也走 except OSError → 一律判「端口被占用」。查不到占用者却下结论，
+#   比直接报错更误导运维。现在三态：不可用 → 「无法判定」。
 failover_check_port_listening() {
     local port="${1:?port required}"
-    python3 -c "
-import socket
-for fam, addr in [(socket.AF_INET, ('0.0.0.0', $port)),
-                  (socket.AF_INET6, ('::', $port))]:
+    local out=""
+    FAILOVER_PORT_PROBE_DETAIL=""
+    command -v python3 >/dev/null 2>&1 || return 2
+    out="$(python3 - "$port" 2>/dev/null <<'PY'
+import socket, sys
+try:
+    port = int(sys.argv[1])
+except (IndexError, ValueError):
+    sys.exit(2)
+for fam, addr in ((socket.AF_INET, ("0.0.0.0", port)),
+                  (socket.AF_INET6, ("::", port))):
     try:
         s = socket.socket(fam, socket.SOCK_STREAM)
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.bind(addr); s.close()
     except OSError:
-        raise SystemExit(1)
-" 2>/dev/null
+        # 该协议族不可用（例如内核禁用 IPv6）→ 跳过，
+        # 不能据此判定「端口被占用」。
+        continue
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(addr)
+    except OSError as e:
+        print("BUSY %s:%d %s" % (addr[0], port, e.strerror or str(e)))
+        sys.exit(0)
+    finally:
+        try:
+            s.close()
+        except OSError:
+            pass
+print("FREE")
+PY
+)" || return 2
+    case "$out" in
+        FREE*)
+            return 0 ;;
+        BUSY*)
+            FAILOVER_PORT_PROBE_DETAIL="${out#BUSY }"
+            return 1 ;;
+    esac
+    return 2
+}
+
+# === 写配置前的 listen 端口前置校验（单一真源） ===
+# 端口被占用 → daemon 必然绑不上 → 起不来就退出 → 崩溃循环。
+# 所以必须在**写 failover.json 之前**拦下来，并打印原因 + 处置建议。
+# 退出码：0 = 端口可用；非 0 = 不可用（调用方必须拒绝写入并返回非 0）。
+failover_require_listen_port_free() {
+    local port="$1" probe_rc=0
+    failover_check_port_listening "$port" || probe_rc=$?
+    if [ "$probe_rc" -eq 0 ]; then
+        return 0
+    fi
+    if [ "$probe_rc" -eq 1 ]; then
+        # 确认被占用：说清楚占用者 + 处置办法
+        echo -e "${RED}端口 ${port} 已被占用 (listen address already in use) — 拒绝写入 ${XWPF_FAILOVER_CONF}${NC}"
+        if [ -n "$FAILOVER_PORT_PROBE_DETAIL" ]; then
+            echo -e "  原因: ${FAILOVER_PORT_PROBE_DETAIL}"
+        fi
+        ss -tlnp 2>/dev/null | grep -E "[:.]${port}[[:space:]]" | head -3
+        echo -e "${YELLOW}处置: 改 listen 端口，或停掉占用该端口的服务后重试${NC}"
+    else
+        # 无法判定：**不能**写「已被占用」——
+        # 查不到占用者却下结论，比直接报错更误导运维。
+        echo -e "${RED}无法确认端口 ${port} 是否空闲 (探测环境不可用: 缺 python3 或探测失败) — 拒绝写入 ${XWPF_FAILOVER_CONF}${NC}"
+        echo -e "${YELLOW}处置: 装好 python3 后重试；或先用 ss -lntp 确认端口状态${NC}"
+    fi
+    return 1
 }
 
 # === TCP-reachability probe ===
@@ -364,11 +431,9 @@ failover_pool_create_direct() {
     fi
 
     local public_port="${public_listen##*:}"
-    if ! failover_check_port_listening "$public_port"; then
-        echo -e "${RED}端口 ${public_port} 已被占用 - daemon 会绑定失败${NC}"
-        ss -tlnp 2>/dev/null | grep -E "[:.]${public_port}[[:space:]]" | head -3
-        return 1
-    fi
+    # 写 failover.json 之前必须先确认 listen 端口可用：
+    # 端口被占用 → daemon 必然起不来 → 崩溃循环。
+    failover_require_listen_port_free "$public_port" || return 1
 
     local unreachable=()
     for addr_target in "$primary_addr" "${backups[@]}"; do
@@ -484,12 +549,10 @@ failover_pool_create() {
     fi
 
     # === C: pre-check listen port is free (TCP bind probe) ===
+    # 写 failover.json 之前必须先确认 listen 端口可用：
+    # 端口被占用 → daemon 必然起不来 → 崩溃循环。
     local public_port="${public_listen##*:}"
-    if ! failover_check_port_listening "$public_port"; then
-        echo -e "${RED}端口 ${public_port} 已被占用 — daemon 会绑定失败${NC}"
-        ss -tlnp 2>/dev/null | grep -E "[:.]${public_port}[[:space:]]" | head -3
-        return 1
-    fi
+    failover_require_listen_port_free "$public_port" || return 1
 
     # === D: probe reachability of primary + backups (ufw gate) ===
     local unreachable=()
@@ -792,7 +855,39 @@ failover_install_files() {
     echo -e "${GREEN}已安装${NC}"
 }
 
+# === 守护启动前置校验（单一真源） ===
+# 守护必须有可用的 failover.json（至少一个池）才能起来。
+# 没有配置就启动 → 守护 exit 1 → Restart=always 每 RestartSec 拉一次 → 崩溃循环。
+# 所以在 enable 之前拦下来，并说清楚怎么办。
+# 退出码：0 = 可以启动；非 0 = 不能启动。
+failover_config_ready() {
+    [ -s "${XWPF_FAILOVER_CONF}" ] || return 1
+    local py="" c
+    for c in python3 python; do
+        if command -v "$c" >/dev/null 2>&1 && "$c" --version >/dev/null 2>&1; then py="$c"; break; fi
+    done
+    if [ -n "$py" ]; then
+        "$py" - "${XWPF_FAILOVER_CONF}" >/dev/null 2>&1 <<'PY'
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        d = json.load(f)
+except Exception:
+    sys.exit(1)
+sys.exit(0 if isinstance(d, list) and d else 1)
+PY
+        return $?
+    fi
+    # 没有可用解释器 → 退化为结构启发式：至少有一个 pool 对象（每个池都有 "name"）
+    grep -q '"name"' "${XWPF_FAILOVER_CONF}"
+}
+
 failover_service_enable() {
+    if ! failover_config_ready; then
+        echo -e "${RED}没有可用的主备池配置 (${XWPF_FAILOVER_CONF}) —— 守护启动后会立刻退出${NC}"
+        echo -e "${YELLOW}处置: 先用「建立主备池」建至少一个池，再启动守护${NC}"
+        return 1
+    fi
     systemctl enable --now "${XWPF_FAILOVER_SERVICE}" 2>/dev/null         || (systemctl daemon-reload && systemctl enable --now "${XWPF_FAILOVER_SERVICE}")
 }
 

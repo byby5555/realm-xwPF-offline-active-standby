@@ -233,7 +233,7 @@ Select **1. Install & Configure**, then:
 - **Tunnel Building** — Dual-Realm architecture with TLS, WS, WSS tunnel support
 - **Load Balancing** — Round-robin, IP hash, and active-standby strategies, with configurable weight distribution
 - **Failover** — Automatic failure detection using native system tools, keeping things lightweight. Supports strict active-standby mode (1 primary + N standbys taking over in order, weights flipped to 0/1)
-- **Active/Passive Hot Standby** — Process-level primary/standby hot switching via the independent `xwpf-failover` daemon (see `cmd/README-failover.md`)
+- **Active/Passive Hot Standby** — Process-level primary/standby hot switching via the independent `xwpf-failover` daemon (see `cmd/README-failover.md`; for crash-loop triage, systemd rate limiting and port conflicts see the "Crash loop" section of `cmd/README-failover.md`)
 - **Rule Annotations** — Clear labeling for every rule — no more memorizing port mappings
 
 - **Port Traffic Dog** — Per-port traffic stats, rate limiting, throttling, with configurable notifications

@@ -390,6 +390,8 @@ uninstall_realm_stage_one() {
     # 清理 xwpf-failover systemd unit 和配置
     [ -f "/lib/systemd/system/xwpf-failover.service" ] && rm -f "/lib/systemd/system/xwpf-failover.service"
     [ -f "/etc/systemd/system/xwpf-failover.service" ] && rm -f "/etc/systemd/system/xwpf-failover.service"
+    # drop-in 目录随 unit 一起清掉（含历史上人工创建的 10-crash-loop-guard.conf）
+    [ -d "/etc/systemd/system/xwpf-failover.service.d" ] && rm -rf "/etc/systemd/system/xwpf-failover.service.d"
     [ -f "/etc/xwpf/failover.json" ] && rm -f "/etc/xwpf/failover.json"
 
     # 清理系统配置

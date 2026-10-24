@@ -126,8 +126,17 @@ case "${1:-}" in
         _bootstrap || exit 1
         _load_libs || exit 1
         _SKIP_SCRIPT_UPDATE=1 smart_install
-        # 安装 active/passive 主备故障转移守护（幂等：已装跳过）
-        failover_install_check && failover_service_enable
+        # 安装 active/passive 主备故障转移守护（幂等：已装跳过）。
+        # ★ 只装不启：守护启动时必须有 /etc/xwpf/failover.json，
+        #   而这个文件只有「建池」流程才会写。装完就启 = 守护必然 exit 1
+        #   → systemd 按 Restart=always 每 RestartSec 拉一次 → 崩溃循环。
+        #   启守护交给「主备池管理 → 启停守护」，与菜单文案一致。
+        if failover_install_check; then
+            echo -e "${_YELLOW}提示: 主备守护已安装但未启动。${_NC}"
+            echo -e "${_YELLOW}      请先建立主备池，再在「主备池管理 → 启停守护」中启动。${_NC}"
+        else
+            echo -e "${_RED}警告: 主备守护安装失败（不影响 realm 转发功能，可稍后在主备池管理里重试）。${_NC}"
+        fi
         ;;
     help|--help|-h)
         # 打印用法（与 pf --help 一致）
