@@ -66,6 +66,36 @@ check_root() {
     fi
 }
 
+# === 交互菜单读入：stdin EOF 安全（无人值守场合的硬要求）===
+# ★ 交互菜单若直接用 `read`，在 stdin 是 EOF 时（管道 / 后台 / cron / systemd /
+#   无人值守执行 / 终端关闭）`read` 会立刻返回非 0 → 变量为空 → case 不匹配 →
+#   回到 while 顶部 → 无限重绘 + 忙循环 + 无界输出。
+#   实机后果：/tmp 是 tmpfs，无界输出灌满它 → 内存+swap 耗尽 → sshd 握不上手。
+#   修法：菜单读入统一走下面两个 helper，读到 EOF 就干净退出（退出码 0）。
+#
+# 用法：ui_read_into "提示语" 变量名   —— 把读到的内容放进指定变量
+ui_read_into() {
+    local __prompt="$1" __name="$2" __val
+    if ! read -r -p "$__prompt" __val; then
+        exit 0
+    fi
+    printf -v "$__name" '%s' "$__val"
+}
+
+# 用法：ui_pause "提示语"   —— 「按回车键继续 / 返回」类读入
+ui_pause() {
+    read -p "$1" || exit 0
+}
+
+# 用法：ui_require_tty   —— 菜单入口护栏：stdin 不是终端就不进菜单
+ui_require_tty() {
+    if [ ! -t 0 ]; then
+        echo "检测到标准输入不是终端（管道 / 后台 / 无人值守执行），已退出交互菜单。"
+        echo "Interactive menu requires a terminal on stdin; exiting."
+        exit 0
+    fi
+}
+
 # 连通性检查
 
 # 读取规则文件：read_rule_file 由 lib/health.sh 提供（白名单逐行解析）。
@@ -121,6 +151,7 @@ find_file_path() {
 
 # 故障转移切换功能（按端口分组管理）
 toggle_failover_mode() {
+    ui_require_tty
     while true; do
         clear
         echo -e "${YELLOW}=== 开启/关闭故障转移 ===${NC}"
@@ -219,14 +250,14 @@ toggle_failover_mode() {
             echo -e "${BLUE}  2. 已启用负载均衡模式（轮询/IP哈希/主备）${NC}"
             echo -e "${BLUE}  3. 有多个目标服务器${NC}"
             echo ""
-            read -p "按回车键返回..."
+            ui_pause "按回车键返回..."
             return
         fi
 
         echo ""
         echo -e "${WHITE}注意: 故障转移功能会自动检测节点健康状态并动态调整负载均衡${NC}"
         echo ""
-        read -p "请输入规则编号 [1-${#rule_ports[@]}] (或按回车返回): " choice
+        ui_read_into "请输入规则编号 [1-${#rule_ports[@]}] (或按回车返回): " choice
 
         if [ -z "$choice" ]; then
             return
@@ -234,7 +265,7 @@ toggle_failover_mode() {
 
         if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt ${#rule_ports[@]} ]; then
             echo -e "${RED}无效的选择，请输入 1-${#rule_ports[@]} 之间的数字${NC}"
-            read -p "按回车键继续..."
+            ui_pause "按回车键继续..."
             continue
         fi
 
@@ -262,7 +293,7 @@ toggle_failover_mode() {
             echo -e "${GREEN}1.${NC} 剔除模式（原有） - 故障目标从负载均衡列表中移除"
             echo -e "${BLUE}2.${NC} 主备模式 (active-standby) - 严格主备：1 主 N 备按顺序接替，主恢复后切回主"
             echo ""
-            read -p "请选择 [1-2] (默认 1): " failover_type_choice
+            ui_read_into "请选择 [1-2] (默认 1): " failover_type_choice
 
             case "$failover_type_choice" in
                 2)
@@ -363,7 +394,7 @@ toggle_failover_mode() {
 
         echo -e "${GREEN}✓ 故障转移设置已生效${NC}"
         echo ""
-        read -p "按回车键继续..."
+        ui_pause "按回车键继续..."
         # 重新显示菜单以显示更新的状态
     done
 }
@@ -418,7 +449,7 @@ configure_failover_params() {
     fi
 
     echo ""
-    read -p "请选择规则编号 [1-${#selectable_ports[@]}] (回车返回): " choice
+    ui_read_into "请选择规则编号 [1-${#selectable_ports[@]}] (回车返回): " choice
     [ -z "$choice" ] && return 0
     if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt ${#selectable_ports[@]} ]; then
         echo -e "${RED}无效的编号${NC}"
@@ -435,11 +466,11 @@ configure_failover_params() {
 
     echo ""
     echo -e "${BLUE}当前规则组:${NC} ${selected_name} (端口: ${selected_port})"
-    read -p "检查间隔秒数 [当前 ${current_interval}]: " input_interval
-    read -p "失败阈值(连续失败次数) [当前 ${current_failure}]: " input_failure
-    read -p "成功阈值(连续成功次数) [当前 ${current_success}]: " input_success
-    read -p "连接超时秒数 [当前 ${current_timeout}]: " input_timeout
-    read -p "恢复冷却秒数 [当前 ${current_cooldown}]: " input_cooldown
+    ui_read_into "检查间隔秒数 [当前 ${current_interval}]: " input_interval
+    ui_read_into "失败阈值(连续失败次数) [当前 ${current_failure}]: " input_failure
+    ui_read_into "成功阈值(连续成功次数) [当前 ${current_success}]: " input_success
+    ui_read_into "连接超时秒数 [当前 ${current_timeout}]: " input_timeout
+    ui_read_into "恢复冷却秒数 [当前 ${current_cooldown}]: " input_cooldown
 
     local new_interval="${input_interval:-$current_interval}"
     local new_failure="${input_failure:-$current_failure}"
