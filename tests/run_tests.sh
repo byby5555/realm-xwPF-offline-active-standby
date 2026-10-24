@@ -73,7 +73,22 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #           (c) 扫描层真违规行在两种 ambient locale 下都必须抓到
 #         · 负向对照 7 必须做在扫描层：正则层是**故意**两种 locale 各跑一遍的，
 #           拿它比判定会判红自己
-HARNESS_VERSION="v2.9.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive + negctl-selfcheck + t45-portable-equiv + t45-win-mv-truth + t32-locale-pin)"
+# v2.10.0：第 9 轮 —— T53 交互菜单 EOF 忙循环护栏
+#         · 第一层 · helper 契约：读到 EOF 时 helper 必须**终止调用方**（4 处实现：
+#           lib/core.sh + 3 个独立脚本各内置一份）—— 判据用**哨兵**（调用后打印的
+#           AFTER-CALLBACK-SENTINEL 不出现），**不能断退出码**：helper 坏掉时脚本
+#           会继续往下跑、照样 rc=0 → 恒绿。这层不能省：入口的 ui_require_tty 护栏
+#           会先 exit，走不到 helper —— 只测入口的话，把 helper 回退/删掉都抓不到。
+#         · 第二层 · 入口端到端：菜单入口在 stdin 非终端（EOF）下必须**自己**退出：
+#           不得忙循环、不得无界输出（真机事故：旧实现 5.7 小时灌满 479MB tmpfs →
+#           内存+swap 耗尽 → sshd 握不上手）。三腿断言：① 超时前自己退出（≠124）
+#           ② 输出字节数有上限 ③ 退出码 0
+#         · 防空过护栏：输出必须命中入口标志（入口提示语**或**菜单标题 —— 两种机制都算，
+#           只钉行为不钉实现）且输出非空，否则「根本没进菜单 → 立刻退出」会让三条恒绿
+#         · 负向对照：helper 层用注入式退化（helper 是新引入的，修复前没有等价形态，
+#           如实标注）；入口层用**真实修复前实现**（d0366b3 的 lib/）复现忙循环，
+#           断言的是「坏情况确实发生」（124 + 输出膨胀），不是「坏情况没发生」
+HARNESS_VERSION="v2.10.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive + negctl-selfcheck + t45-portable-equiv + t45-win-mv-truth + t32-locale-pin + t53-menu-eof)"
 
 # shellcheck source=lib/harness.sh
 . "$SCRIPT_DIR/lib/harness.sh"
@@ -192,6 +207,8 @@ CASES=(
     "T51:case_T51_latency_merged"
     # —— 第 7 轮收尾：健康状态 TARGET 口径（host:port）——
     "T52:case_T52_health_target_scope"
+    # —— 第 9 轮：交互菜单 EOF 忙循环护栏 ——
+    "T53:case_T53_menu_eof_no_busy_loop"
 )
 
 for f in "$SCRIPT_DIR"/cases/*.sh; do
