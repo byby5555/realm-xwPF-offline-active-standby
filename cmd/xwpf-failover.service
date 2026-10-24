@@ -37,14 +37,16 @@ ExecStart=/usr/bin/python3 -u /usr/local/bin/xwpf-failover -c /etc/xwpf/failover
 #   always 会自愈，on-failure 不会。
 Restart=always
 RestartSec=5s
-# Run as root to bind privileged ports (e.g. 443). Read-only state dir.
+# Run as root to bind privileged ports (e.g. 443).
 WorkingDirectory=/etc/xwpf
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=xwpf-failover
 
-# Hardening: read-only config, no new privileges, protect clock.
-ReadOnlyPaths=/etc/xwpf
+# Hardening: config dir is writable **for one reason only** — the daemon
+# persists its runtime state there (failover-state.json: current primary,
+# probe target, forward target, consecutive failure counts, last switch time).
+# Everything else on the box stays read-only (ProtectSystem=strict).
 ReadWritePaths=/etc/xwpf
 ProtectSystem=strict
 ProtectHome=yes
