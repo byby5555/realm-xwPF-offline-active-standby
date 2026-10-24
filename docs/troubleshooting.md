@@ -189,13 +189,13 @@ https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-active-standby/mai
 
 | 文件 | 下载 URL | 源码位置 |
 |------|----------|----------|
-| `xwPF.sh` + `lib/*.sh` | `.../main/xwPF.sh`、`.../main/lib/<f>` | `xwPF.sh:12`、`xwPF.sh` 的 `_bootstrap` |
+| `xwPF.sh` + `lib/*.sh` | `.../main/xwPF.sh`、`.../main/lib/<f>` | `xwPF.sh` 的 `REPO_RAW_URL`、`xwPF.sh` 的 `_bootstrap` |
 | `cmd/*` | `.../main/cmd/<f>` | `xwPF.sh` 的 `_bootstrap` |
 | `xwFailover.sh` | `.../main/xwFailover.sh` | `lib/ui.sh` 的 `download_failover_script` |
 | `speedtest.sh` | `.../main/speedtest.sh` | `lib/ui.sh` 的 `download_speedtest_script` |
 | `port-traffic-dog.sh` | `.../main/port-traffic-dog.sh` | `lib/ui.sh` 的 `port_traffic_dog_menu` |
 | `xw_realm_OCR.sh` | `.../main/xw_realm_OCR.sh` | `lib/ui.sh` 的 `download_realm_ocr_script` |
-| `notifications/*` | `.../main/notifications` | `port-traffic-dog.sh:2390` |
+| `notifications/*` | `.../main/notifications` | `port-traffic-dog.sh` 的 `download_notification_modules` |
 
 ### 4.2 主脚本 404 的排查顺序
 
@@ -217,7 +217,7 @@ curl -fsSL https://v6.gh-proxy.org/https://raw.githubusercontent.com/byby5555/re
 
 | 失败对象 | 后果 | 源码位置 |
 |----------|------|----------|
-| `xwPF.sh` 或任一 `lib/*.sh` | `_bootstrap` 返回 1 → **整个安装中止** | `xwPF.sh` 的 `_bootstrap`、`xwPF.sh` 的 `_bootstrap`、`xwPF.sh:125` |
+| `xwPF.sh` 或任一 `lib/*.sh` | `_bootstrap` 返回 1 → **整个安装中止** | `xwPF.sh` 的 `_bootstrap` |
 | `cmd/*` | **不阻断安装**，只是打印黄色警告 | `xwPF.sh` 的 `_bootstrap` |
 
 `cmd/` 下载失败会在安装守护进程时由 `failover_install_files` 从 GitHub raw 兜底
@@ -226,7 +226,7 @@ curl -fsSL https://v6.gh-proxy.org/https://raw.githubusercontent.com/byby5555/re
 ### 4.4 下载不完整 / 文件损坏
 
 下载是**原子化**的：先下到 `.tmp.$$`，校验非空，再 `mv -f` 覆盖
-（`xwPF.sh:30-50`、`lib/realm.sh` 的 `download_from_sources`）。
+（`xwPF.sh` 的 `_download`、`lib/realm.sh` 的 `download_from_sources`）。
 **故意不用 `curl -C -` / `wget -c`** —— 断点续传只校验 HTTP Range 起点，不校验本地内容，
 远端变长时会把新版本追加到旧内容后面，产出「大小正常但内容损坏」的文件。
 
@@ -434,7 +434,7 @@ ss -tulnp | grep ":8080 "
 
 | 场景 | 要求 | 源码位置 |
 |------|------|----------|
-| `pf` / `xwPF.sh install` | root | `lib/core.sh` 的 `generate_complete_config`、`xwPF.sh:123` |
+| `pf` / `xwPF.sh install` | root | `lib/core.sh` 的 `generate_complete_config`、`xwPF.sh` 的主入口 install 分支 |
 | `xwFailover.sh` | root（`check_root`） | `xwFailover.sh` 的 `check_root` |
 | 健康检查脚本 | `User=root`（unit 里写死） | `lib/health.sh` 的 `start_health_check_service` |
 

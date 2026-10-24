@@ -417,7 +417,7 @@ All dependencies are **native Linux lightweight tools** — keeping the system c
 | `iproute2` | MPTCP endpoint mgmt | `nftables` | Per-port traffic stats |
 | `tc` | Traffic shaping | | |
 
-Auto-installed by the installer (`lib/core.sh:24`): `curl` `wget` `tar` `grep` `cut` `bc` `jq` `openssl` `python3`
+Auto-installed by the installer (`lib/core.sh`'s `REQUIRED_TOOLS`): `curl` `wget` `tar` `grep` `cut` `bc` `jq` `openssl` `python3`
 
 > ℹ️ **`nc` is NOT auto-installed, but the health check no longer depends on it.**
 > The probe prefers `nc -z -w`; when `nc` is missing (or does not support `-z`, e.g. busybox),

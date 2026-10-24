@@ -109,7 +109,7 @@ if command -v timeout >/dev/null 2>&1; then
 fi
 ```
 
-`nc` 不在 `REQUIRED_TOOLS` 里（`lib/core.sh:24`）不会被自动安装，
+`nc` 不在 `lib/core.sh` 的 `REQUIRED_TOOLS` 里，不会被自动安装，
 但**没有 `nc` 也能正常探测** —— 会自动回退到 `bash /dev/tcp`。
 旧版本没有回退，系统没装 `nc` 时会把所有目标标记为故障、触发不必要的切换。
 

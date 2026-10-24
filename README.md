@@ -388,7 +388,7 @@ IP地址：MPTCP协议需要知道可以使用哪些IP地址建立子流
 | `iproute2` | MPTCP端点管理  | `nftables`  | 端口流量统计     |
 | `tc`       | 流量控制限制   |             |                  |
 
-自动安装的工具（`lib/core.sh:24`）：`curl` `wget` `tar` `grep` `cut` `bc` `jq` `openssl` `python3`
+自动安装的工具（`lib/core.sh` 的 `REQUIRED_TOOLS`）：`curl` `wget` `tar` `grep` `cut` `bc` `jq` `openssl` `python3`
 
 > ℹ️ **`nc` 不在自动安装清单里，但健康检查已经不再依赖它。**
 > 探测优先走 `nc -z -w`；系统没装 `nc`（或 `nc` 不支持 `-z`，例如 busybox 的 nc）时，

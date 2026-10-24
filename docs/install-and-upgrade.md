@@ -22,7 +22,7 @@
 
 ### 1.2 必备工具
 
-`REQUIRED_TOOLS`（`lib/core.sh:24`）：
+必备工具清单（`lib/core.sh` 的 `REQUIRED_TOOLS`）：
 
 ```
 curl  wget  tar  grep  cut  bc  jq  openssl  python3
@@ -33,7 +33,7 @@ curl  wget  tar  grep  cut  bc  jq  openssl  python3
 
 ### 1.3 `nc` 不在自动安装清单里 —— 可选，但建议装
 
-- `REQUIRED_TOOLS` 里**没有** `nc`（`lib/core.sh:24`）。
+- `lib/core.sh` 的 `REQUIRED_TOOLS` 里**没有** `nc`。
 - 健康检查（故障转移 / 主备自动切换）做的是 **TCP 端口探测**，
   优先用 `nc -z -w`；**没有 `nc`（或 `nc` 不支持 `-z`，如 busybox）会自动回退到
   `bash /dev/tcp` + `timeout`**，不再把全部目标误判成故障。
@@ -60,10 +60,10 @@ command -v nc && nc -h 2>&1 | head -1
 
 | 项目 | 值 | 源码位置 |
 |------|-----|----------|
-| 安装路径 | `/usr/local/bin/realm` | `lib/core.sh:74` |
+| 安装路径 | `/usr/local/bin/realm` | `lib/core.sh` 的 `REALM_PATH` |
 | 支持架构 | `x86_64` / `aarch64` / `armv7` | `lib/realm.sh` 的 `install_realm` |
 | libc 区分 | Alpine 用 `musl`，其余 `gnu` | `lib/realm.sh` 的 `install_realm` |
-| 兜底版本 | `v2.9.3`（`REALM_VERSION`，取版本失败时使用） | `lib/core.sh:4` |
+| 兜底版本 | `v2.9.3`（`REALM_VERSION`，取版本失败时使用） | `lib/core.sh` 的 `REALM_VERSION` |
 
 realm 主程序来自 **官方仓库** `zhboner/realm` 的 release，不在本 fork 内 —— 这是上游二进制，与本项目的
 脚本分发是两回事：
@@ -96,25 +96,25 @@ curl -fsSL https://v6.gh-proxy.org/https://raw.githubusercontent.com/byby5555/re
 
 ### 2.1 `install` 子命令做了什么
 
-`xwPF.sh:122-129`：
+`xwPF.sh` 的主入口 install 分支：
 
 | 步骤 | 动作 | 源码位置 |
 |------|------|----------|
-| 1 | 校验 root 权限 | `xwPF.sh:123` |
-| 2 | `_bootstrap`：拉取脚本文件 | `xwPF.sh:53-100` |
-| 3 | `_load_libs`：source 全部模块 | `xwPF.sh:103-118` |
-| 4 | `smart_install`（带 `_SKIP_SCRIPT_UPDATE=1`，**不再询问**是否更新脚本） | `xwPF.sh:126`、`lib/realm.sh` 的 `smart_install` |
-| 5 | `failover_install_check`：安装/升级 `xwpf-failover` 守护进程 | `xwPF.sh:128`、`lib/failover.sh` 的 `failover_install_check` |
-| 6 | `failover_service_enable`：`systemctl enable --now xwpf-failover` | `xwPF.sh:129`、`lib/failover.sh` 的 `failover_service_enable` |
+| 1 | 校验 root 权限 | `xwPF.sh` 的主入口 install 分支（root 校验写在该分支内） |
+| 2 | `_bootstrap`：拉取脚本文件 | `xwPF.sh` 的 `_bootstrap` |
+| 3 | `_load_libs`：source 全部模块 | `xwPF.sh` 的 `_load_libs` |
+| 4 | `smart_install`（带 `_SKIP_SCRIPT_UPDATE=1`，**不再询问**是否更新脚本） | `lib/realm.sh` 的 `smart_install` |
+| 5 | `failover_install_check`：安装/升级 `xwpf-failover` 守护进程 | `lib/failover.sh` 的 `failover_install_check` |
+| 6 | `failover_service_enable`：`systemctl enable --now xwpf-failover` | `lib/failover.sh` 的 `failover_service_enable` |
 
 `_bootstrap` 下载的文件清单（`xwPF.sh` 的 `_bootstrap`）：
 
 - `xwPF.sh` → `/usr/local/bin/xwPF.sh`
-- `lib/{core,rules,server,realm,failover,ui}.sh` → `/usr/local/bin/lib/`（加载顺序见 `xwPF.sh:16`）
+- `lib/{core,rules,server,realm,failover,ui}.sh` → `/usr/local/bin/lib/`（加载顺序见 `xwPF.sh` 的 `LIB_FILES`）
 - `cmd/{xwpf-failover.py,xwpf-failover.service}` → `/usr/local/bin/cmd/`
 - 创建软链 `/usr/local/bin/pf` → `/usr/local/bin/xwPF.sh`（`xwPF.sh` 的 `_bootstrap`）
 
-下载是**原子化**的（`xwPF.sh:30-50`）：先下到 `.tmp.$$`，校验非空，再 `mv -f` 覆盖目标。
+下载是**原子化**的（`xwPF.sh` 的 `_download`）：先下到 `.tmp.$$`，校验非空，再 `mv -f` 覆盖目标。
 **故意不使用 `curl -C -` / `wget -c`** —— 断点续传只校验 HTTP Range 起点，不校验本地内容，
 远端变长时会把新版本追加到旧内容后面，产出「大小正常但内容损坏」的文件。
 
@@ -125,18 +125,18 @@ curl -fsSL https://v6.gh-proxy.org/https://raw.githubusercontent.com/byby5555/re
 
 | 路径 | 说明 | 源码位置 |
 |------|------|----------|
-| `/usr/local/bin/xwPF.sh` | 主入口 | `xwPF.sh:7` |
-| `/usr/local/bin/lib/*.sh` | 6 个模块 | `xwPF.sh:8` |
+| `/usr/local/bin/xwPF.sh` | 主入口 | `xwPF.sh` 的 `INSTALL_DIR` |
+| `/usr/local/bin/lib/*.sh` | 6 个模块 | `xwPF.sh` 的 `LIB_DIR` |
 | `/usr/local/bin/cmd/` | 守护进程源文件副本 | `xwPF.sh` 的 `_bootstrap` |
-| `/usr/local/bin/pf` | 快捷命令（软链） | `xwPF.sh:9` |
-| `/usr/local/bin/realm` | realm 主程序 | `lib/core.sh:74` |
-| `/etc/realm/config.json` | realm 工作配置 | `lib/core.sh:76` |
-| `/etc/realm/rules/` | 转发规则目录 | `lib/core.sh:78` |
-| `/etc/systemd/system/realm.service` | realm systemd unit | `lib/core.sh:77`、`lib/realm.sh` 的 `depend` |
-| `/usr/local/bin/xwpf-failover` | 主备守护进程（0755） | `lib/failover.sh:10`、`lib/failover.sh` 的 `failover_install_files` |
-| `/etc/systemd/system/xwpf-failover.service` | 守护进程 unit（0644） | `lib/failover.sh:12`、`lib/failover.sh` 的 `failover_install_files` |
-| `/usr/local/bin/.xwpf-failover-version` | 已装版本指纹（用于判断要不要重装） | `lib/failover.sh:16` |
-| `/etc/xwpf/` | 守护进程配置目录 | `lib/failover.sh:13` |
+| `/usr/local/bin/pf` | 快捷命令（软链） | `xwPF.sh` 的 `SHORTCUT_PATH` |
+| `/usr/local/bin/realm` | realm 主程序 | `lib/core.sh` 的 `REALM_PATH` |
+| `/etc/realm/config.json` | realm 工作配置 | `lib/core.sh` 的 `CONFIG_PATH` |
+| `/etc/realm/rules/` | 转发规则目录 | `lib/core.sh` 的 `RULES_DIR` |
+| `/etc/systemd/system/realm.service` | realm systemd unit | `lib/core.sh` 的 `SYSTEMD_PATH`、`lib/realm.sh` 的 `depend` |
+| `/usr/local/bin/xwpf-failover` | 主备守护进程（0755） | `lib/failover.sh` 的 `XWPF_FAILOVER_BIN`、`lib/failover.sh` 的 `failover_install_files` |
+| `/etc/systemd/system/xwpf-failover.service` | 守护进程 unit（0644） | `lib/failover.sh` 的 `XWPF_FAILOVER_UNIT`、`lib/failover.sh` 的 `failover_install_files` |
+| `/usr/local/bin/.xwpf-failover-version` | 已装版本指纹（用于判断要不要重装） | `lib/failover.sh` 的 `XWPF_FAILOVER_VERSION_FILE` |
+| `/etc/xwpf/` | 守护进程配置目录 | `lib/failover.sh` 的 `XWPF_FAILOVER_CONF_DIR` |
 
 **按需下载**（用到才拉，不占安装体积）：
 
@@ -287,7 +287,7 @@ curl -fsSL https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-active-
 - 已安装且版本指纹一致 → 跳过
 - 版本指纹不一致（fork 更新了 `cmd/xwpf-failover.py`）→ 重新下载并 `install -m 0755` / `install -m 0644`
 
-版本指纹是文件内容哈希（`lib/failover.sh:652-676`），记录在 `/usr/local/bin/.xwpf-failover-version`。
+版本指纹是文件内容哈希（`lib/failover.sh` 的 `failover_file_fingerprint`），记录在 `/usr/local/bin/.xwpf-failover-version`。
 
 ### 4.3 升级后必做
 
@@ -389,7 +389,7 @@ pf
 | `pf` | 交互式主菜单 | `lib/ui.sh` 的 `show_menu` |
 | `pf --generate-config-only` | 只生成 `/etc/realm/config.json`，不重启、不显示菜单 | `lib/ui.sh` 的 `main` |
 | `pf --restart-service` | 重排序规则 → 重新生成配置 → 重启 realm | `lib/ui.sh` 的 `main`、`lib/realm.sh` 的 `service_restart` |
-| `xwPF.sh install` | 一键安装（需 root） | `xwPF.sh:122-129` |
+| `xwPF.sh install` | 一键安装（需 root） | `xwPF.sh` 的主入口 install 分支 |
 | `xwFailover.sh toggle\|config\|status\|start\|stop\|restart-realm\|help` | 故障转移管理，见 [健康检查与故障转移](health-check-and-failover.md) | `xwFailover.sh` 的 `main` |
 
 ---
