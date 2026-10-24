@@ -406,7 +406,9 @@ CASES=(
     "T94:case_T94_sync_claim_one_to_one_six_scenarios"
     "T95:case_T95_sync_negative_control_old_impl"
     "T96:case_T96_sync_old_vs_current_must_differ"
+    "T114:case_T114_readend_collapse_same_target_two_rows"
 )
+
 
 for f in "$SCRIPT_DIR"/cases/*.sh; do
     # shellcheck source=/dev/null
@@ -694,8 +696,28 @@ run_one() {
     RESULT_CMDS+=("$(awk -F'\t' '{print $4}' "$SBX_ROOT/cases/$id.meta" 2>/dev/null)")
     RESULT_EXPECTS+=("$(awk -F'\t' '{print $5}' "$SBX_ROOT/cases/$id.meta" 2>/dev/null)")
     RESULT_ACTUALS+=("$actual")
+
+    # ★ 已知缺陷 / 预期红（审稿第 18 次修订 ⑤）
+    #   用例可在 h_case_begin 之后调 h_case_expect_fail "<理由>"，声明
+    #   「本条在当前冻结点预期为 FAIL（产品缺陷还没修）」。
+    #   · 声明了且**确实判红** ⇒ 记 EXPECT_FAIL：不算「台架失败」，
+    #     但汇总行与退出码都要单独体现 —— 否则整批红会被误读成「台架坏了」，
+    #     或者缺陷被悄悄放过（假绿）。
+    #   · 声明了却**判绿** ⇒ 记 FAIL：要么缺陷修好了（该撤标注），
+    #     要么用例被改废了（恒绿）—— 两种都必须报出来，绝不默默放过。
+    local expect_fail_reason=""
+    if [ -s "$SBX_ROOT/cases/$id.expect_fail" ]; then
+        expect_fail_reason=$(head -1 "$SBX_ROOT/cases/$id.expect_fail")
+    fi
     if [ "$nfail" = "0" ]; then
-        RESULT_VERDICTS+=("PASS")
+        if [ -n "$expect_fail_reason" ]; then
+            RESULT_ACTUALS[${#RESULT_ACTUALS[@]}-1]="本条声明为「已知缺陷预期红」但这次**判绿**了 ⇒ 缺陷可能已修好（请撤掉 h_case_expect_fail），或用例被改废了（恒绿）—— 两者都要人工确认"
+            RESULT_VERDICTS+=("FAIL")
+        else
+            RESULT_VERDICTS+=("PASS")
+        fi
+    elif [ -n "$expect_fail_reason" ]; then
+        RESULT_VERDICTS+=("EXPECT_FAIL")
     else
         RESULT_VERDICTS+=("FAIL")
     fi
@@ -774,13 +796,28 @@ main() {
         echo "各轮结果向量: $(printf '%s' "$vectors" | tr '\n' ' ')"
     fi
 
-    local pass=0 fail=0 i
+    local pass=0 fail=0 expectfail=0 i
     for i in "${!RESULT_VERDICTS[@]}"; do
-        if [ "${RESULT_VERDICTS[$i]}" = "PASS" ]; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
+        case "${RESULT_VERDICTS[$i]}" in
+            PASS)        pass=$((pass + 1)) ;;
+            FAIL)        fail=$((fail + 1)) ;;
+            EXPECT_FAIL) expectfail=$((expectfail + 1)) ;;
+            *)           fail=$((fail + 1)) ;;
+        esac
     done
 
     echo
-    echo "汇总: 总计 $((pass + fail)) 条，通过 $pass，失败 $fail"
+    echo "汇总: 总计 $((pass + fail + expectfail)) 条，通过 $pass，失败 $fail，预期红 $expectfail"
+    if [ "$expectfail" -gt 0 ]; then
+        echo "★ 「预期红 $expectfail」= **已知缺陷未修**（用例显式声明 h_case_expect_fail）"
+        echo "  · 不计入「失败」—— 它是产品缺陷在位，不是台架坏了"
+        echo "  · 缺陷修好后该条目会**转绿**，届时必须撤掉 h_case_expect_fail（否则台架会判红提醒）"
+        for i in "${!RESULT_VERDICTS[@]}"; do
+            if [ "${RESULT_VERDICTS[$i]}" = "EXPECT_FAIL" ]; then
+                echo "    · ${RESULT_IDS[$i]}：$(head -1 "$SBX_ROOT/cases/${RESULT_IDS[$i]}.expect_fail" 2>/dev/null)"
+            fi
+        done
+    fi
     echo "多轮一致性（$REPEAT 轮）: $stable"
     echo "★ 冻结点 BASE_SHA : $BASE_SHA"
     echo "★ 台架版本        : $HARNESS_VERSION"
@@ -808,7 +845,18 @@ main() {
         echo "沙箱已清理"
     fi
 
-    [ "$fail" -eq 0 ] || return 1
+    # ── 退出码口径 ─────────────────────────────────────────────
+    #   0 = 全过
+    #   1 = 有真失败（用例失败或台架失败）
+    #   2 = 台架自身或参数错（另外 3=历史对象缺失 / 4=--only 点名未登记）
+    #   5 = **有已知缺陷未修**（预期红在位）—— 与「真失败」分开，
+    #       免得整批红被误读成「台架坏了」，也免得缺陷被悄悄放过。
+    if [ "$fail" -ne 0 ]; then
+        return 1
+    fi
+    if [ "$expectfail" -ne 0 ]; then
+        return 5
+    fi
     return 0
 }
 

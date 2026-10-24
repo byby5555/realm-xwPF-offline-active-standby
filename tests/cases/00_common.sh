@@ -28,6 +28,7 @@ inherit-ok    f59e389  T87/T88「老实现本来是对的」：老实现用 grep
 n4-del        2beb7bd  删除进程级主备池整块的那一版（补历史文件时取它的父提交）
 sync-pre      75379aa  T95/T96 负向对照：迁移端 sync_health_status_ids 只按目标地址认领、没改一对一的那一版（= 84fe096^）
 static3-pre   b9db576  T89/T93 负向对照：加 xwpf:noninteractive-io 标记**之前**的实现（循环头行上有无标记、无 EOF 收口的读入 ⇒ 静态 3 判红）
+readend-pre   63b6ec9  T114 负向对照：读端 generate_endpoints_from_rules 建 map 键**不含 RULE_ID** 的那一版（同 target 两行 ⇒ 塌缩成一行 ⇒ 双向误切）
 EOF
 }
 
@@ -202,6 +203,10 @@ time.sleep(30)
 #   写端每行的 RULE_ID 都是「归属规则」的 ID（一条规则的多个目标 ⇒ 行行相同），
 #   读端按 **(RULE_ID, 目标地址) 组合键**查状态 ⇒ 这一列写错 ⇒ 精确键查不到
 #   ⇒ 目标被判成「无记录 = 健康」⇒ 该切不切。
+#   ★ 新格式（host:port）**同样看这一列**：lib/realm.sh 读健康状态文件时
+#     建键是 "${_row_rule_id}|${_row_target}"（_row_rule_id = 文件第 1 列），
+#     消费端按「端口组里该目标的归属规则|目标」查 ⇒ 两边必须对得上。
+#     （曾有一版注释说「新格式不看这一列」——那是错的，会把写错的 fixture 放过去。）
 #   本 helper 按**位置顺序**编号 ⇒ 只适用于「每个目标各属一条规则、
 #   且规则 ID 与位置序号一致」的形态；**一条规则带多个目标**的用例
 #   必须改用 _write_health_for_rule（显式给归属规则 ID）。
