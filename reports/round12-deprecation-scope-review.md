@@ -16,11 +16,11 @@
 |---|---|---|---|---|
 | **转发与建池** | 规则级路径完好（单端口中转 / 多端口负载均衡 / 权重 10,0 主备）；`lib/rules.sh` 的 `auto_enable_active_standby` 在 | 无 | 无 | 🟢 |
 | **主备守护与切换** | 进程级主备池**已整块删除**（`cmd/xwpf-failover.py` / `.service` / `cmd/README-failover.md` / `lib/failover.sh` 整文件 / `failover.json` 池 / `failover_proxy_menu`） | 删除干净（8 个 `failover_*` 符号全仓 0 命中于代码） | 无 | 🟢 |
-| **健康探测端** | **保留**（`lib/health.sh` 真源 + `health_check.sh` 生成物 + `lib/realm.sh` 的 `generate_endpoints_from_rules` 读端）；`xwFailover.sh` 是它的**规则级 CLI**，**不删** | 探测端产物在装/升级时不重新生成（= 静默失效）—— **在飞 N4 正在治** | 提交前改两处（`pkill` 自杀风险 / `failover.json` 改名与验收冲突） | 🟠 |
-| **安装升级** | 在飞的 `xwPF.sh` 已把 `failover.sh` 移出模块清单、install/uninstall 都调 `_cleanup_legacy_failover_daemon` | 清理**机制**已在，**真机没跑过** | 真机 103 先迁流量再验残留 | 🔴 |
-| **崩溃循环防护** | 随守护进程整块删除（systemd 限流 / drop-in / `Restart` 语义 / 退出码语义） | 文档仍在讲它 | `docs/` 清理 | 🟠 |
-| **交互菜单** | `failover_management_menu`（调 `xwFailover.sh`）**保留**；`failover_proxy_menu`（主备池）已删 | 菜单标题写「**故障转移管理 (旧)**」—— 「(旧)」会让人以为是废弃项 | 建议改口径（见第五节） | 🟡 |
-| **文档与验收** | 两份守护崩溃报告已加「⛔已废弃」声明；验收清单已重做（A-10 废弃 + A-11~A-15 新增） | `docs/` 131 处 + README 19 处 + 死链 | 按第二节返工单清理 | 🟠 |
+| **健康探测端** | **保留**（`lib/health.sh` 真源 + `health_check.sh` 生成物 + `lib/realm.sh` 的 `generate_endpoints_from_rules` 读端）；`xwFailover.sh` 是它的**规则级 CLI**，**不删** | ⚠️ **Chief 核出 3 处产品侧待修**（**继承键只按目标地址、`target_key` 是死变量** / **产物重生成失败没 fail fast、升级路径不写日志不返非 0** / **新建规则超时预算仍是 3 秒**）—— 审稿**逐条独立复核，三条全部成立** | 已返工给小编；验收侧已建 **A-18「待产品修复后验证」**（§5.13 / §5.14） | 🔴 |
+| **安装升级** | `xwPF.sh` 已把 `failover.sh` 移出模块清单、install/uninstall 都调 `_cleanup_legacy_failover_daemon`（**改名留档**） | 清理**机制**已在，**真机没跑过** | 真机 103 先迁流量再验残留 | 🔴 |
+| **崩溃循环防护** | 随守护进程整块删除（systemd 限流 / drop-in / `Restart` 语义 / 退出码语义） | ✅ **文档已清**（复核：docs/ 剩余命中全是「⛔已废弃」声明或「老机器残留清理步骤」，无过时功能描述） | 无 | 🟢 |
+| **交互菜单** | `failover_management_menu`（调 `xwFailover.sh`）**保留**；`failover_proxy_menu`（主备池）已删 | 菜单标题写「**故障转移管理 (旧)**」 | ✅ **Chief 已裁定 (b)** ⇒ 改成 `=== 故障转移管理（规则级） ===`（**只改 1 个字符串** + 1 处代码注释；屏幕上无第二处「旧」）—— §5.8 | 🟡 |
+| **文档与验收** | 两份守护崩溃报告已加「⛔已废弃」声明；验收清单已重做（A-10 废弃 + A-11~A-17 新增，含 Chief 真机 103 完整跑通的主备切换数据） | ✅ **`docs/` 已清完**（复核：无死链、无过时功能段落）；`docs/local-unverifiable-checklist.md` 当前是「整体下线」版，与 Chief 裁定的 (b) 不符 | **按 `reports/docs-local-unverifiable-checklist-rewrite.md` 整份替换**（Chief 指定的 5 条） | 🟡 |
 
 ---
 
@@ -204,23 +204,35 @@ Chief 的删除清单里有一项：「讲『守护进程』这个程序本身�
 
 ---
 
-## 五、docs/ 删除清单（交小编的返工单）
+## 五、docs/ 删除清单（交小编的返工单 —— 按文件组织）
 
 > **纪律**：文档引用写「**文件 的 符号**」，禁「文件:行号」；**不要留两套说法**；删完后**全局搜一遍**关键词确认零残留。
-> **本清单基于 HEAD `2631637` + 在飞改动**；在飞改动正在改同样的段落 ⇒ **以本清单为准，在飞那部分直接丢弃**（它写的是 N3 方向）。
+> **本清单基于 HEAD `2beb7bd` + 在飞改动**；在飞改动正在改同样的段落 ⇒ **以本清单为准，在飞那部分直接丢弃**（它写的是 N3 方向）。
+> **状态**：删除面已被 Chief 裁定收敛（见 §1）。**代码侧已删完，只剩文档。**
 
-### 5.1 `docs/health-check-and-failover.md`（13 处命中）
+### 5.0 ⭐ 显式声明：`xwFailover.sh` **不删**（Chief 已裁定，审稿三方独立核实一致）
 
-| 动作 | 位置（符号） | 说明 |
+| 项 | 结论 |
+|---|---|
+| **`xwFailover.sh`** | **保留，不删。** 它是**规则级**故障转移 CLI —— 服务的是**「剔除模式」**与**「主备模式 active-standby」**这两个**保留能力**（设 `FAILOVER_ENABLED` / `BALANCE_MODE`）。 |
+| **它不碰什么** | **不碰 `failover.json`、不碰 pool、不持有公开监听口** ⇒ 与被删的进程级主备池是两回事 |
+| **谁在用** | `lib/rules.sh` 的菜单调 `lib/ui.sh` 的 `failover_management_menu`；`lib/ui.sh` 的 `download_failover_script` 把它拉到 `/etc/realm/xwFailover.sh`；`lib/ui.sh` 卸载段用 `xwFailover.sh stop` 停健康检查服务；台架 `tests/cases/04_legacy_merged.sh` 拿它当夹具 |
+| **「故障转移管理 (旧)」菜单** | **保留**（Chief 裁定：「也不含『故障转移管理(旧)』菜单」）。⚠️ 但**标题的「(旧)」建议改口径** —— 见 §5.8 |
+| **顺带澄清** | Chief 原删除面里的 `failover_proxy_menu` = **主备池菜单**（已随 `lib/failover.sh` 删除）⇒ **该删**；`failover_management_menu` = **规则级故障转移菜单**（`xwFailover.sh`）⇒ **该留**。**两者名字相近，是本次最容易混的一处** |
+
+### 5.1 `docs/health-check-and-failover.md`（22 处命中）
+
+| 动作 | 位置（符号） | 依据 |
 |---|---|---|
-| **删** | §1「两种『故障转移』不是一回事」整节 | 讲的是「负载均衡故障转移」vs「主备 active/passive（进程级）」两套对照 ⇒ 后者删除 ⇒ 整节无意义 |
-| **删** | §1.1「主备的两种转发路径：默认 = 直连」整节 | 讲直连 vs realm 回环 ⇒ 两种建池方式随主备池删除 ⇒ **整节删**。<br>⚠️ **本节是最高优先级的一处**：它现在**完整保留着 N3 双地址的叙述**（「新池用双地址把这个问题修掉了」「解析口径只有一处：`cmd/xwpf-failover.py` 的 `split_target()`」「守护进程的运行状态落在 `/etc/xwpf/failover-state.json`」）—— **全部指向已删除的文件**，是「作废方向被写进产品文档」的实例 |
-| **改** | §0「唯一真源约定」 | 保留，但**删掉**其中讲 `xwFailover.sh` 与「故障转移脚本」并列为两份实现的表述 ⇒ 改成只讲 `lib/health.sh` 一份 |
+| **删** | §1「两种『故障转移』不是一回事」整节 | 讲「负载均衡故障转移」vs「主备 active/passive（进程级）」两套对照 ⇒ 后者已删 ⇒ 整节无意义 |
+| **删** | §1.1「主备的两种转发路径：默认 = 直连」整节 | 讲直连 vs realm 回环两种**建池方式** ⇒ 随主备池删除。<br>⚠️ **最高优先级的一处**：它现在**完整保留着 N3 双地址叙述**（「新池用双地址把这个问题修掉了」「解析口径只有一处：`cmd/xwpf-failover.py` 的 `split_target()`」「守护进程的运行状态落在 `/etc/xwpf/failover-state.json`」）—— **全部指向已删文件**，是「作废方向被写进产品文档」的实例 |
+| **改** | §0「唯一真源约定」 | 保留，但**删掉**其中把 `xwFailover.sh` 与「故障转移脚本」并列为两份实现的表述 ⇒ 改成只讲 `lib/health.sh` 一份真源。⚠️ **`xwFailover.sh` 本身不删**，只是不再与 `lib/health.sh` 并列为「两份实现」 |
 | **留** | §2 健康检查参数 / §3 探测方式 / §4 systemd unit（`realm-health-check.*`）/ §5 健康状态文件 / §6 状态机 / §7 切换与回切 / §8 命令行接口 / §9 已知边界 | **全部保留** —— 这是健康探测端 + 权重主备的正文 |
-| **核** | §7.2「主备模式（`active-standby`）的切换」 | 确认讲的是**权重主备**（`TARGET_STATES` / `WEIGHTS` 翻转）⇒ **保留**；若混入了守护进程描述 ⇒ 只删那部分 |
-| **核** | §7.3「剔除模式（legacy）的切换」 | 这里的「legacy」指**剔除模式**（旧版 LB 模式），**不是**主备池旧模式 ⇒ **保留**。⚠️ **防误伤**：与 `tests/cases/04_legacy_merged.sh` 的「legacy」同理，**都不许删** |
+| **核** | §7.2「主备模式（`active-standby`）的切换」 | 确认讲的是**权重主备**（`TARGET_STATES` / `WEIGHTS` 翻转）⇒ **保留**；若混入守护进程描述 ⇒ 只删那部分 |
+| **核** | §7.3「剔除模式（legacy）的切换」 | 这里的「legacy」指**剔除模式**，**不是**主备池旧模式 ⇒ **保留**。⚠️ **防误伤**：与 `tests/cases/04_legacy_merged.sh` 的「legacy」同理，**都不许删** |
+| **核** | §8 命令行接口（讲 `xwFailover.sh` 的那几行） | `xwFailover.sh` **保留** ⇒ 它的子命令说明**保留**；但要**删掉**任何提到 `xwpf-failover` 的行 |
 
-### 5.2 `docs/install-and-upgrade.md`（58 处命中 —— 最多的一个）
+### 5.2 `docs/install-and-upgrade.md`（47 处命中 —— 最多的一个）
 
 | 动作 | 位置（符号） | 说明 |
 |---|---|---|
@@ -236,79 +248,103 @@ Chief 的删除清单里有一项：「讲『守护进程』这个程序本身�
 | **改** | §5「卸载」 | **必须保留并加强**「清理老机器残留」：守护 unit、drop-in 目录、`/etc/xwpf`、`/usr/local/bin/cmd/`、版本指纹文件。⚠️ 这条**不能因为功能删除就一起删掉** —— 见 §5.5 |
 | **留** | §1 前置依赖 / §2.0 一键安装 / §4.0 更新中心 / §4.1 升级脚本 / §6 首次初始化 / §7 命令行接口 / §8 相关文档 | 保留 |
 
-### 5.3 `docs/troubleshooting.md`（31 处命中）
+### 5.3 `docs/troubleshooting.md`（28 处命中）
 
-| 动作 | 位置（符号） | 说明 |
+| 动作 | 位置（符号） | 依据 |
 |---|---|---|
-| **删** | §6.8「主备池不切换 —— 先看池是不是『旧格式』」整节 | 讲池的目标串 `|`、守护日志、状态页 ⇒ 随功能删除 |
-| **删** | §6.9「守护进程一直 failed / 起不来（systemd 限流）」整节 | 讲 `NRestarts` / `reset-failed` / 限流 ⇒ 随功能删除 |
-| **改** | §8.1「主备池的 listen 端口：写配置之前就拦下来」 | 讲主备池的 listen 端口前置校验 ⇒ 随功能删除。**但**：端口冲突本身是通用问题，§8 的其它小节（§8.2 误报端口占用）⇒ **保留** |
-| **留** | §1~§6.7、§7（权重）、§8.2、§9、§10、§11、§12 | 保留。⚠️ §11「更新失败」里提到 `ETXTBSY` —— 那是**realm 二进制**的替换（不是守护二进制）⇒ **保留** |
+| **删** | §6.8「主备池不切换 —— 先看池是不是『旧格式』」整节 | 讲池的目标串 `|`、守护日志、守护状态页 ⇒ 随主备池删除 |
+| **删** | §6.9「守护进程一直 failed / 起不来（systemd 限流）」整节 | 讲 `NRestarts` / `reset-failed` / 限流 ⇒ 随崩溃循环防护删除 |
+| **删** | §8.1「主备池的 listen 端口：写配置之前就拦下来」 | 讲**主备池**的 listen 端口前置校验 ⇒ 随主备池删除。⚠️ §8 的**其它**小节（§8.2 误报端口占用）是通用问题 ⇒ **保留** |
+| **留** | §1~§6.7、§7（权重）、§8.2、§9、§10、§11、§12 | **保留**。⚠️ §6 大节标题里的「主备」指的是**权重主备**（保留）⇒ **大节保留**；§11 提到的 `ETXTBSY` 是**realm 二进制**的替换（不是守护二进制）⇒ **保留** |
 | **改** | 「快速索引」表 | 删掉指向 §6.8 / §6.9 / §8.1 守护专章的条目 |
-| ⚠️ **核** | §6「主备不切换或切错目标」整节 | 标题里的「主备」指的是**权重主备**（保留）⇒ **大节保留**；但要核清小节里有没有混守护进程的内容 |
+| ⚠️ **核** | §6 大节内的小节 | 确认没有混进守护进程内容（§6.8 / §6.9 已整节删） |
 
 ### 5.4 `docs/README.md`（5 处命中）
 
 - 目录 / 索引里指向已删章节的链接**清掉**；
 - 保留健康探测与权重相关条目的链接。
 
-### 5.5 ⚠️ 必补（**删除功能时最容易漏的一条**）：卸载要清理老机器残留
+### 5.5 ⭐ 必补（**删除功能时最容易漏的一条**）：卸载要清理老机器残留
 
-用户裁定删功能 ⇒ **删除动作本身必须覆盖「老机器上还留着的东西」**。否则真机上会留下**占着端口的僵尸**。
+删除功能最容易出的事故不是「删不掉」，而是**「删了一半」** —— 老机器上守护进程还在跑、还占着监听端口，界面却已经显示「该功能已移除」⇒ 端口冲突 + 僵尸进程 + 用户以为产品坏了。
 
-**必须清理的清单**（交小编写进卸载流程）：
+**Chief 已给小编的判据（审稿把它写成可勾选、可判 PASS/FAIL 的验收项）**：
 
-| 对象 | 路径 | 备注 |
+| 对象 | 路径 | 判据 |
 |---|---|---|
-| 守护 unit | `/etc/systemd/system/xwpf-failover.service` | |
-| 守护 drop-in 目录 | `/etc/systemd/system/xwpf-failover.service.d/` | **整目录删**（含历史人工文件） |
-| 守护二进制 | `/usr/local/bin/xwpf-failover` | |
-| 守护源文件副本 | `/usr/local/bin/cmd/xwpf-failover.py` / `.service` | |
-| 版本指纹文件 | `/usr/local/bin/.xwpf-failover-version` | |
-| 池配置目录 | `/etc/xwpf/`（含 `failover.json`、`failover-state.json`） | |
-| 正在跑的进程 | `xwpf-failover` 进程 | **必须先 `stop` + `disable`，再删文件** |
-| 占用的监听端口 | 真机 `18443` / `18444` | ⚠️ 见第八节：**删之前必须先把流量迁走** |
+| 守护二进制 | `/usr/local/bin/xwpf-failover` | **不存在** |
+| 守护 unit | `/etc/systemd/system/xwpf-failover.service` | **不存在** |
+| 守护 drop-in 目录 | `/etc/systemd/system/xwpf-failover.service.d/` | **不存在**（整目录） |
+| 池配置 | `/etc/xwpf/failover.json` | **不存在** |
+| 守护状态文件 | `/etc/xwpf/failover-state.json` | **不存在** |
+| 监听端口 | `ss -lntp` 里的 **18443 / 18444** | **不再有人监听** |
+| 守护进程 | `pgrep` 匹配 `xwpf-failover` | **无残留进程** |
+| 版本指纹 | `/usr/local/bin/.xwpf-failover-version` | **不存在** |
+| 守护源文件副本 | `/usr/local/bin/cmd/xwpf-failover.py` / `.service` | **不存在** |
 
-**⇒ 对应验收项**：已写入 `reports/real-machine-acceptance.md` 的 **A-15**。
+⚠️ **两条不能省**：
+1. **顺序不可颠倒** —— 先 `stop` + `disable` **再**删文件；否则删了 unit 但进程还在跑，端口照样被占。
+2. **不得误伤保留路径** —— 清理只碰守护相关的路径，**不许**动 `/etc/realm/health/`、`realm-health-check.*` unit、权重主备的规则与 `config.json`。**若保留路径的东西被一起清了，是阻断级问题。**
 
-### 5.6 `cmd/README-failover.md`（75 处命中）与 `cmd/xwpf-failover.service` / `cmd/xwpf-failover.py`
+**⇒ 对应验收项**：`reports/real-machine-acceptance.md` 的 **A-15**（已写入）。
 
-> **⚠️ 事实更新（2026-10-24 21:45）**：这三个文件**已在 `2beb7bd` 里删除**（`cmd/README-failover.md` −423 行、`cmd/xwpf-failover.py` −579 行、`cmd/xwpf-failover.service` −64 行）⇒ **本小节不再是「要删」，而是「确认删干净 + 清理引用」**。
+### 5.6 `cmd/README-failover.md` / `cmd/xwpf-failover.py` / `cmd/xwpf-failover.service`
 
-- **删除已完成** ✅：`git ls-files` 确认 `cmd/` 下已无 `xwpf-failover*`；`cmd/README-failover.md` 也已删。
-- **仍要做（清理引用）**：
+> **⚠️ 事实（2026-10-24 21:50）**：这三个文件**已在 `2beb7bd` 里删除**（−423 / −579 / −64 行）⇒ **本小节不再是「要删」，而是「确认删干净 + 清理引用」**。
+
+- **删除已完成** ✅：`git ls-files` 确认 `cmd/` 下已无 `xwpf-failover*`。
+- **仍要做**：
   1. 全局搜 `README-failover` / `xwpf-failover` 的**残留引用**（§5.9 死链表）并清理；
   2. ⚠️ **`tests/` 里若有断言引用这些文件**（例如文档一致性用例断言「`cmd/README-failover.md` 含某段」）⇒ **那些断言会红** ⇒ **交阿测核并同步删断言**。
-  3. ⚠️ **`xwPF.sh` 的 `_bootstrap` 与 `lib/update.sh` 的 `UPDATE_CMD_FILES`** 已由在飞改动处理（不再下载 `cmd/`）—— **确认没有别处还在下载或引用 `cmd/`**。
-- **`xwFailover.sh` 不在此列** —— 它**保留**（见第四节）。
+  3. ⚠️ `xwPF.sh` 的 `_bootstrap` 与 `lib/update.sh` 的 `UPDATE_CMD_FILES` 已由在飞改动处理（不再下载 `cmd/`）—— **确认没有别处还在下载或引用 `cmd/`**。
+- **`xwFailover.sh` 不在此列** —— 它**保留**（见 §5.0）。
 
 ### 5.7 根目录 `README.md` / `README_EN.md`（19 / 9 处命中）
 
-- **重画两处目录树**（`README.md` 的「~/ 目录结构」与「安装后落盘结构」）：
-  - 删 `lib/failover.sh`、整个 `cmd/` 目录、`xwpf-failover` 二进制、`.xwpf-failover-version`、整个 `/etc/xwpf/` 目录、`xwpf-failover.service`；
-  - ⚠️ **同时确认新目录树与实际落盘一致** —— `lib/` 现在是 **6 个**模块（原 7 个，删了 `failover.sh`）；`cmd/` 目录**不再存在**。
-- 删「主备 active/passive —— 进程级主备热切换（独立守护 xwpf-failover，详见 `cmd/README-failover.md`；守护进程崩溃循环、systemd 限流……）」整条特性；
-- 删「相关文档」表里的「主备 active/passive 守护进程」行（**死链**）；
-- **保留**「负载均衡」「故障转移（权重翻转）」「主备模式状态转换推演」三条；
-- ⚠️ **README_EN.md 必须同步改**（否则中英两版说法不一致）。
+| 动作 | 位置 | 依据 |
+|---|---|---|
+| **重画两处目录树** | `README.md` 的「~/ 目录结构」与「安装后落盘结构」 | 删 `lib/failover.sh`、整个 `cmd/` 目录、`xwpf-failover` 二进制、`.xwpf-failover-version`、整个 `/etc/xwpf/` 目录、`xwpf-failover.service`。⚠️ **同时确认新目录树与实际落盘一致** —— `lib/` 现在是 **6 个**模块（原 7 个，删了 `failover.sh`）；`cmd/` 目录**不再存在** |
+| **删** | 「主备 active/passive —— 进程级主备热切换（独立守护 xwpf-failover，详见 `cmd/README-failover.md`；守护进程崩溃循环、systemd 限流……）」整条特性 | 描述的是已删功能 |
+| **删** | 「相关文档」表里的「主备 active/passive 守护进程」行 | **死链**（文件已删） |
+| **留** | 「负载均衡」「故障转移（权重翻转）」「主备模式状态转换推演」三条 | 保留功能 |
+| ⚠️ **核** | `/etc/realm/xwFailover.sh` 那行 | **保留** —— `xwFailover.sh` 不删（§5.0） |
+| ⚠️ **同步** | `README_EN.md` | **中英两版必须同步改** |
+
+### 5.8 ✅ 已裁定：「故障转移管理 (旧)」标题口径 → **(b)**
+
+**现状**：`lib/ui.sh` 的 `failover_management_menu` 的菜单首行是 `=== 故障转移管理 (旧) ===`，函数上方注释写「故障转移管理菜单（旧版 LB-mode failover，xwFailover.sh）」。
+
+**问题**：功能是**保留的**（手动开关故障转移 + 参数配置 + 看健康状态，服务的是**剔除模式**与**主备模式**）。标题带「(旧)」⇒ 用户看到会以为这是废弃项、或以为该去别处找新入口 ⇒ **而实际没有新入口**（权重菜单是另一条路）。
+
+**审稿的建议（三选一，请 Chief 定）**：
+
+| 方案 | 改成 | 优点 | 代价 |
+|---|---|---|---|
+| **(a) 去掉「(旧)」** | `=== 故障转移管理 ===` | 最小改动；与「这是保留功能」一致 | 与「负载均衡管理」菜单的功能边界仍不直观（两个菜单都管故障转移） |
+| **(b) 换成能力名（推荐）** | `=== 故障转移管理（规则级） ===` | 一眼区分「规则级」与已删的「进程级」；**与用户裁定的边界用词一致**，且不会让人误以为是废弃项 | 略长 |
+| **(c) 换成用户视角** | `=== 故障转移开关与参数 ===` | 完全不提「旧/新」，讲的是它能干什么 | 与「剔除模式/主备模式」两个概念的对应关系变弱 |
+
+**⇒ 审稿推荐 (b)**：理由是本次裁定的核心就是**「规则级 vs 进程级」**这条边界（Chief 的裁定原文就是这么分的），菜单标题沿用同一套词，用户在菜单里看到的口径和文档口径就一致了；而且**只改一个字符串**，不动逻辑。
+
+> **顺带建议**：`lib/ui.sh` 里 `failover_management_menu` 上方那句注释「（旧版 LB-mode failover，xwFailover.sh）」里的「旧版」也一并改掉 —— 注释是下一个读代码的人的口径来源。
+
+#### ✅ Chief 第 12 轮裁定：选 **(b)**，并追加一条
+
+**裁定**：菜单标题改成 `=== 故障转移管理（规则级） ===`（与审稿推荐一致）。
+**追加要求**：「顺带在菜单里那行说明文字也把『旧』去掉（**如果有**），避免同一屏里既叫『规则级』又写『旧版』。」
+
+**审稿复核结论（对着 HEAD `1190d4c` 核过）**：
+
+| # | 位置 | 当前内容 | 要改成 | 性质 |
+|---|---|---|---|---|
+| 1 | `lib/ui.sh` 的 `failover_management_menu` 的菜单首行 | `echo -e "${YELLOW}=== 故障转移管理 (旧) ===${NC}"` | `echo -e "${YELLOW}=== 故障转移管理（规则级） ===${NC}"` | **用户可见**，必改 |
+| 2 | `lib/ui.sh` 同函数上方的注释 | `# 故障转移管理菜单（旧版 LB-mode failover，xwFailover.sh）` | 去掉「旧版」措辞（例如 `# 故障转移管理菜单（规则级故障转移：剔除模式 + 主备模式，xwFailover.sh）`） | 代码注释，非用户可见，但**同屏语义要一致** |
+
+✅ **Chief 那条「说明文字如果有『旧』」的前提已核实：屏幕上没有。**
+`failover_management_menu` 渲染的菜单项只有四条 —— `1. 开启/关闭故障转移` / `2. 参数配置（间隔/阈值/超时/冷却）` / `3. 查看健康状态` / `0. 返回主菜单` —— **没有其它含「旧」字的说明行**。
+⇒ ⇒ **全仓「旧版」命中复核**（`lib/**` / `docs/**` / 根 README / `xwPF.sh` / `xwFailover.sh`）：与本菜单相关的**只有上面那 2 处**；其余「旧版本 / 旧版 health.sh」等命中都是**别的语境**（升级回滚语义、兼容性说明、`docker-web-auth-feasibility.md` 的 Web 化对齐矩阵），**与本菜单无关，不要一起改**。
 
 ---
-
-### 5.8 删除后必须做的三步自检（交小编/阿测）
-
-```bash
-# 1) 全局搜残留关键词（应 0 命中；reports/ 与 tests/BASELINE* 是历史留档，可排除）
-grep -rn -E 'xwpf-failover|failover\.json|StartLimit|RestartSec|crash-loop-guard|守护进程|主备池' \
-  --include='*.md' --include='*.sh' --include='*.service' --include='*.py' \
-  . | grep -v '^./reports/' | grep -v '^./tests/BASELINE'
-
-# 2) 保留项必须在（应有命中）
-grep -rn -E 'health_check_script_body|generate_endpoints_from_rules|auto_enable_active_standby' --include='*.sh' .
-
-# 3) 台架全过（唯一门禁 tests/run_tests.sh；须引 BASE_SHA + 汇总 + 用例数 + 退出码）
-```
-
-> **⚠️ 第 1 步的现状（2026-10-24 21:45 实测）**：`docs/` **131 处** + `README.md` **19 处** + `docs/README.md` **5 处**仍命中；`cmd/README-failover.md` / `cmd/xwpf-failover.py` / `cmd/xwpf-failover.service` 已从 `git ls-files` 消失 ⇒ **代码 0 命中，文档大量命中**。
 
 ### 5.9 🟠 新增必做：死链与「菜单 / 文档口径分裂」
 
@@ -326,9 +362,9 @@ grep -rn -E 'health_check_script_body|generate_endpoints_from_rules|auto_enable_
 
 **② 口径分裂：代码已删，菜单入口还在**
 
-`lib/ui.sh` 的 `failover_management_menu` **仍然存在**（`git show HEAD:lib/ui.sh` 可证），它由 `lib/rules.sh` 的菜单调用，作用是调 `xwFailover.sh` 的 `toggle` / `config` / `status` —— 这三个是**保留路径**（开关故障转移 / 改配置 / 看状态），**功能上是对的**。
+`lib/ui.sh` 的 `failover_management_menu` **仍然存在**（`git show HEAD:lib/ui.sh` 可证），它由 `lib/rules.sh` 的菜单调用，作用是调 `xwFailover.sh` 的 `toggle` / `config` / `status` —— 这三个是**保留路径**（开关故障转移 / 改参数 / 看状态），**功能上是对的**。
 
-⚠️ **但它的名字与文案会造成误解**：菜单里若仍出现「**主备池管理**」字样，用户会以为那个池功能还在（已经没了）。⇒ **建议**（交小编核）：把该菜单项的**名称与提示文案**改成不含「主备池」的说法，例如「**故障转移（权重主备）**」或「**负载均衡与故障转移**」。
+⚠️ **唯一的问题是它的标题带「(旧)」** ⇒ 会让人以为这是废弃项（而实际没有新入口）。**修法见 §5.8（建议改成「故障转移管理（规则级）」）** —— **只改标题，不删菜单**。
 
 ⇒ **判据**：菜单里**不得**再出现「主备池」「建池」「删池」「启停守护」「守护日志」等字样；**「权重主备」的字样要保留**（那是保留功能）。
 
@@ -344,10 +380,94 @@ grep -rn -E 'health_check_script_body|generate_endpoints_from_rules|auto_enable_
 | `xwPF.sh` / `lib/update.sh` 调 `health_check_script_regenerate` | **装/升级后重新生成探测端产物** | ✅ **正确** —— 正是 N4「生成物不重新生成 = 静默失效」的治法 |
 | `health_migrate_connection_timeout`（探测超时预算 3 → 10） | 抬高探测预算 | ✅ 与团队记忆「探测预算 3s 余量仅 24% → 放宽 10s」一致 |
 
-> **⚠️ 但有三处要提请注意（交小编核，审稿未复跑）**：
+> **⚠️ 三处要提请注意（交小编核，审稿未复跑）**：
 > 1. **`pkill -f "xwpf-failover"` 有自杀风险** —— 若该命令行的**自身**含 `xwpf-failover` 字样，`pkill -f` 会匹配到自己 ⇒ shell 被自己杀掉。⇒ 建议改用**精确 PID**（`pgrep -f` 拿 PID 后 `kill`），或用**不含目标串**的模式。
-> 2. **`failover.json` 改名留档**（`.disabled`）与「老池仍能在菜单里列出与删除」这条验收项**可能冲突** —— 改名后菜单就读不到它了。⇒ 二者必须对齐：要么改成**内容保留但不再被守护读取**，要么保留原名。**建议**：保留原文件名（守护已不存在，不会有人误读），只删守护相关进程与 unit。
-> 3. **在飞改动尚未提交** ⇒ 上面第 1、2 条应在**提交前**改掉，否则就固化了。
+>    ⚠️ **复核时状态：仍未改** —— HEAD `1190d4c` 的 `lib/ui.sh` 的 `_cleanup_legacy_failover_daemon` 里仍是 `pgrep -f "xwpf-failover"` + `pkill -f "xwpf-failover"` + `pkill -9 -f "xwpf-failover"`。⇒ **建议仍有效，但风险等级是「模式过宽」而非「必然自杀」**（正常路径下 `pf` 的命令行是 `xwPF.sh`，不含目标串）⇒ 属于**该改但不阻断上线**。
+> 2. **🔄 更正（审稿撤回原建议）** —— 原建议是「`failover.json` **保留原文件名**，理由是改名 `.disabled` 会与『老池仍能在菜单里列出与删除』冲突」。
+>    **该建议的前提已不存在，予以撤回。** 复核 HEAD `1190d4c` 的事实：① `lib/ui.sh` 的 `failover_management_menu` **仍然存在**（保留路径 ✅）；② 但**池管理入口 `failover_proxy_menu`（建池 / 列池 / 删池）已随 `2beb7bd` 整块删除** ⇒ **「老池能在菜单里列出与删除」这个能力本身已经不存在了** ⇒ 「改名会不会破坏它」已不是问题。
+>    ⇒ **现状（改名留档 `.disabled`）是站得住的**，且**与 Chief 给的 7 路径判据一致**（原路径 `failover.json` / `failover-state.json` **确实不存在** ⇒ 7 路径全清成立），也**与 `docs/install-and-upgrade.md` 的老机器残留清理表一致**（「留档不删（改名保留），用户可自己回查」—— 措辞准确，因为菜单里本就管不了它）。
+>    ⇒ **唯一要改的是验收清单**（A-15 的两处措辞会假红）—— 审稿已改，见 `reports/real-machine-acceptance.md` 的 A-15。
+> 3. **在飞改动已提交**（`9dc5b56`）⇒ 上面第 1 条仍在代码里（见第 1 条的复核状态），**第 2 条已被现状取代**。
+
+### 5.11 ✅ 已裁定：`docs/local-unverifiable-checklist.md` → **(b) 重写**（不是删）
+
+**审稿已查清归属**：
+
+| 项 | 结论 |
+|---|---|
+| **是谁的** | **小编的**（`docs/**` 归小编）。该文件在提交 `7c5f147`（`docs(failover): 双地址口径 / 状态字段 / reset-failed 处置 / 本机不可验项清单`）里被加进来 |
+| **原内容是什么** | 6 条「本机不可验、须真机验」的条目：**建池端口占用判定**（IPv6-only 主机的 errno）、**ETXTBSY 覆盖守护二进制**、**systemd 限流后 unit 状态**、**守护以 systemd 身份写状态文件**、**状态文件跨重启不丢** 等 |
+| **原问题** | **6 条里有 5 条守的是已删功能**（建池、守护二进制、守护 unit 限流、守护写状态文件、守护状态文件跨重启）⇒ 随主备池删除，这些条目**全部失去验的对象** |
+
+#### ✅ Chief 第 12 轮裁定：选 **(b) 重写为只写保留路径的不可验项**
+
+**Chief 原话**：「这个文件的价值是提醒接手的人『这几点本地台架验不到、必须上真机』—— 而这些点**现在依然存在**，删了就丢信息。」
+
+**Chief 指定重写后必须包含的 5 条**（全部来自他这次真机实测，缺一条就名不副实）：
+
+| # | 条目 | 关键数字 / 后果 |
+|---|---|---|
+| 1 | **故障检测耗时** | **30 秒**（精确值：kill epoch `1792850569` → `[FAILURE]` epoch `1792850599`）；探测间隔不固定（实测 **4/6/9/10/11/12/18/30 秒**，标称 4 秒）；⚠️ **该值是在超时预算 = 3 秒的口径下测的**，预算抬到 10 秒后必然更慢 |
+| 2 | **回切间隔** | **119 秒**（精确值：恢复 epoch `1792850599` → `[RECOVERY]` epoch `1792850718`；回切后 `balance` = `"roundrobin: 1, 0"`，实连 3 次全落主）⇒ 口径 + 判据已落位，**不写「待补」** |
+| 3 | **探测准入三条件** | `RULE_ROLE=1` + `ENABLED=true` + `FAILOVER_ENABLED=true` —— 不满足则切换**完全不工作且完全静默** |
+| 4 | **`balance` 字段格式** | `$strategy: $w1, $w2`；`remote` 必须 string、`extra_remotes` 必须数组 —— 写错 ⇒ **realm 整个 panic ⇒ 全站转发断** |
+| 5 | **切换会重启 realm** | ⇒ 切换瞬间有几秒转发中断（**机制固有代价、不是缺陷**，但必须写明） |
+
+**归属与落地方式**：文件仍属 `docs/**`（**小编的地盘**）；**内容由审稿重写**（审稿持有 docs 口径的最终解释权）；**由小编在阶段 1 收尾那笔里一起落地并提交**。
+
+**⇒ 审稿已产出完整重写稿**：`reports/docs-local-unverifiable-checklist-rewrite.md`
+（**该文件内含 `docs/local-unverifiable-checklist.md` 的完整新正文，可整份替换**；含上述 5 条 + 格式说明 + 同名异义提醒 + 保留路径的「本机已验项对照」附录。）
+
+> **⚠️ 顺带记录一个与首席裁定的差异（已核，供参考）**：审稿原建议是 (a) 删除，理由是「主体已随功能废弃」；Chief 裁定 (b) 重写，理由是「这些点现在依然存在，删了就丢信息」⇒ **Chief 的理由更成立**（文件形式的**信息价值**独立于功能是否下线）⇒ 审稿**接受该裁定**，并已按 (b) 产出重写稿。
+>
+> **⚠️ 另注**：当前 `docs/` 里的版本是「原 8 条**整体下线** + 指向验收清单的指针」—— 那是**「删」的变体**，不是 (b)。⇒ **必须整份替换**（只改几行会漏掉 5 条）。
+
+### 5.12 删除后必须做的三步自检（交小编/阿测）
+
+```bash
+# 1) 全局搜残留关键词（应 0 命中；reports/ 与 tests/BASELINE* 是历史留档，可排除）
+grep -rn -E 'xwpf-failover|failover\.json|StartLimit|RestartSec|crash-loop-guard|守护进程|主备池' \
+  --include='*.md' --include='*.sh' --include='*.service' --include='*.py' \
+  . | grep -v '^./reports/' | grep -v '^./tests/BASELINE'
+
+# 2) 保留项必须在（应有命中）
+grep -rn -E 'health_check_script_body|generate_endpoints_from_rules|auto_enable_active_standby' --include='*.sh' .
+grep -rn 'xwFailover' --include='*.sh' --include='*.md' .   # xwFailover.sh 仍在，引用应保留
+
+# 3) 台架全过（唯一门禁 tests/run_tests.sh；须引 BASE_SHA + 汇总 + 用例数 + 退出码）
+```
+
+> **⚠️ 第 1 步的现状（2026-10-24 22:1x 复核）**：命中已从 **164 处（131+19+9+5）降到 **36 处**，且 **全部是合法内容**：①「⛔ 已废弃」声明段 （`health-check-and-failover.md` / `README.md` × 2 / `troubleshooting.md` / `local-unverifiable-checklist.md`）；② 「老机器残留清理」步骤（`install-and-upgrade.md`）—— 后者正是 **A-15 要求保留**的内容。
+> ⇒ **无死链**（markdown 链接指向已删文件：0 处）、**无过时功能段落**。但本步命中 **仍非 0** ⇒ 因为命中的是上面两类合法内容 ⇒ **这一步的「应 0 命中」需改成「除授权外的两类合法内容外、不得命中」**。仍命中；`cmd/README-failover.md` / `cmd/xwpf-failover.py` / `cmd/xwpf-failover.service` 已从 `git ls-files` 消失 ⇒ **代码 0 命中，文档大量命中**。
+
+
+### 5.13 🔴 Chief 核出的产品侧 3 处待修项（审稿已独立复核 —— 三条全部成立）
+
+> **来源**：Chief 在冻结点 `1190d4c` 上独立核出（已返工给小编）。**审稿逐条对着代码复核过，结论与 Chief 一致。**
+> ⇒ **验收侧处置**：凡依赖这三项的判据，在**修复落地前只登记现象、不判 PASS/FAIL** —— 已写进 `reports/real-machine-acceptance.md` 的 **A-18「待产品修复后验证」**。
+
+| # | 待修项 | **审稿的独立复核** | 影响的验收判据 |
+|---|---|---|---|
+| **1** | **状态继承键**：正确口径是 **(RULE_ID, 目标地址) 组合键** | 🟡 **已修一半** —— `43c135a` 已修**跨轮读端**（审稿逐端核过：`health_status_find_row` 4 参、匹配处比对 `rule_id`、调用点传参、生成物副本一致 ⇒ 原「死变量」缺陷已消除 ✅）。<br>🔴 **但读端没跟上**：`lib/realm.sh` 的 `generate_endpoints_from_rules` 建键仍是 `health_status["${_row_target}:${_row_port}"]`（**不含 RULE_ID**）⇒ **两条规则共用同一后端时同一个 key 被后读覆盖** ⇒ 切换判断可能拿到别处的 failed ⇒ **误继承 = 误切**（危险方向）⇒ **请小编把读端一并对齐**（验收侧已加 A-16 判据 5） | **A-16 判据 3**（🔄 已改向：同地址但不同 RULE_ID ⇒ 不继承）、**A-16 判据 5**（读端归属，**新增**）、A-14 |
+| **2** | **探测产物重生成失败没 fail fast** | ✅ **已修** —— 安装路径 `xwPF.sh`：醒目错误 + **可执行修复步骤** + **写日志**（`health_regenerate_log_failure` → `/var/log/xwPF/health-regenerate.log`）+ 「安装中断」+ **`exit 1`**；升级路径 `lib/update.sh`：**先用 grep 判「能力是否存在」**（老版本/降级不算失败，避免误判），失败时同样写日志 + 修复步骤。⇒ 原「失败不中断」的注释口径已随代码一并改掉 | A-14、A-13.1 判据 3、A-3 |
+| **3** | **探测超时预算**：新建规则仍是 3 秒，要抬到 10 | ✅ **已修** —— `05b5ebb`（`fix(rules): 新建规则的探测超时预算统一到 10 秒（规则模板 + 探测调用 + OCR 脚本）`）。审稿复核：`lib/server.sh` 两处模板、`lib/rules.sh` 的探测调用、`xw_realm_OCR.sh` 全为 10；`lib/health.sh` 侧本来就是 10 ⇒ **全仓再无 3 秒落点**（剩下四处是**老规则文件 3→10 的迁移模式**，保留对）；顺手同步了 3 份 docs 口径。<br>⚠️ **直接后果**：预算 3→10 ⇒ **失败判定必然更慢** ⇒ **「检测耗时 30 秒」是旧口径下的过期实测值 ⇒ 真机必须重测** | **A-6.1 ①**（实测值需重测）、**A-13.2 R1** |
+
+> **⚠️ 审稿补一条 Chief 没提、但会踩到的推论**：**实测值与前提必须一起记。**
+> 「故障检测耗时 30 秒」是在**超时预算 = 3 秒**时测的；产品把预算抬到 10 秒后，**失败判定必然更慢**（要等预算耗尽）⇒ **30 秒在新代码下可能不再成立**。
+> ⇒ 验收记录里**必须连同当时的 `CONNECTION_TIMEOUT` 一起写**；**不得拿 30 秒当判据**（判据仍是「> 60 秒才排查」）。
+> ⇒ **同理**：A-6.1 ② 的「回切 119 秒」也是**一次实测值**（故障持续 30 秒 < 冷却 120 秒 ⇒ 冷却期主导）⇒ 故障若持续更久，回切会**显著更短** ⇒ **不把「必须是 119 秒」当判据**。
+
+### 5.14 ✅ 验收侧的「待产品修复后验证」机制（已落地）
+
+`reports/real-machine-acceptance.md` 新增 **A-18**：
+
+| 要素 | 内容 |
+|---|---|
+| **A-18.1** | 三处待修项 + 审稿的独立复核结论 + 各自影响哪些判据 |
+| **A-18.2** | **验收处置口径**：依赖待修项的判据**只登记现象**，**不判 PASS 也不判 FAIL**；与待修项无关的明显违背（如同 target 出现两行、realm 不 active、`balance` 形态非法）**照常判 FAIL**；实测值必须连同前提记；待修项落地后**重跑再判** |
+| **A-18.3** | 三条待修项落地后的**复验命令** |
+
+> **纪律**：「**产品还没修 ≠ 验收不通过**。」判 FAIL 之前先问：这一条依赖的是「已修好」还是「还在修」？
 
 ---
 
@@ -357,7 +477,8 @@ grep -rn -E 'health_check_script_body|generate_endpoints_from_rules|auto_enable_
 |---|---|---|
 | `reports/round3-crashloop-review.md` | **文首加状态声明**：主题功能已废弃删除、仅作历史留档、结论不适用于现版本、**不要**当成待办派工；**并保留一条可迁移的方法论**（异常退出必须非 0） | ✅ 已改 |
 | `reports/round3-failover-restart-storm-status.md` | **文首加状态声明**（同上）；**第三节 / 第四节各加「已迁出」指引**；**2.1 小节加「缺陷随功能删除而作废」处置说明**（并把它降格为「静默失败」方法论样本，不留悬空派工） | ✅ 已改 |
-| `reports/real-machine-acceptance.md` | **A-5 迁入五步状态迁移链**；**新增 A-6.1 两条时间特性 / A-6.2 取证命令**；**A-10 整节废弃**；**新增 A-11~A-15**；A-1 危险动作移除守护引用；结果记录模板同步 | ✅ 已改 |
+| `reports/real-machine-acceptance.md` | **A-5 迁入五步状态迁移链**；**A-6.1 两条时间特性 / A-6.2 取证命令**；**A-10 整节废弃**；**新增 A-11~A-18**；A-1 危险动作移除守护引用；结果记录模板同步 | ✅ 已改 |
+| `reports/docs-local-unverifiable-checklist-rewrite.md` | **新增**：`docs/local-unverifiable-checklist.md` 的**完整重写稿**（Chief 裁定 (b)，含他指定的 5 条：检测耗时 / 回切间隔 / 探测准入三条件 / `balance` 格式 / 切换重启 realm 的中断窗口） | ✅ 已产出，待小编落地 |
 
 **迁入内容的两条纪律**：
 1. **每个数写来源**：五步迁移链标了证据目录 `/root/xwpf-evidence-20261024-190720-lb/` 与锚点 `a9102c1`；两个实测数字标「**待补**」并给取证命令。
@@ -375,10 +496,16 @@ grep -rn -E 'health_check_script_body|generate_endpoints_from_rules|auto_enable_
 | **A-13** | **新增**：权重 10,0 主备（`active-standby` + `FAILOVER_ENABLED=true` + **timer enabled+active** + 杀主翻备 / 恢复翻回 / 回切冷却） |
 | **A-14** | **新增**：健康探测端确实在探测（★ **两次读取状态文件、最后检查时间必须不同** / 生成物与真源一致 / 状态文件无已删规则残留行） |
 | **A-15** | **新增**：老机器残留清理（守护 / unit / drop-in / 进程 / 占用端口 / `/etc/xwpf` 全清；★ **保留路径不得被误伤**；★ **老池仍能列出与删除**） |
+| **A-16** | **新增**：删规则后健康状态**不残留、不过户给别的规则**（★ **孤儿行数 = 0** / 不跨地址继承 / **同一条规则对同一 target 不得两行** / 取样前探测端**已跑过一轮**） |
+| **A-17** | **新增（★ 阻断级，全清单最高风险项）**：**`balance` 形态非法 → realm panic → 全站转发断**（`remote`=string / `extra_remotes`=array / `balance`=**`strategy: w1, w2`** / **权重数 == 目标数** / **realm 必须 active** / 日志无 panic / 实连有响应） |
 | **A-1** | 「危险动作」里移除 `systemctl enable xwpf-failover` |
-| **结果记录模板** | A-10 标废弃；补 A-11~A-15 五行 |
+| **结果记录模板** | A-10 标废弃；补 A-11~A-17 七行 |
 
 **为什么 A-14 要独立成条**：用户保留的三条路径中，**只有权重主备依赖健康探测** ⇒ 探测端不工作 ⇒ 主备永不切换 ⇒ **静默失效**（不是失败）⇒ 不能并进 A-3 顺带看一眼。
+
+**为什么 A-16 要独立成条**：状态文件是权重主备的**唯一判据来源** ⇒ 里面一旦有**孤儿行**（指向已不存在的目标）或**重复行**（**同一条规则**对同一 target 两行；两条**不同**规则共用同一后端时两行是**合法形态**），界面会把健康规则显示成「故障」、故障转移会拿**不属于这条规则**的失败计数当判据 ⇒ 同样是**静默失效**。⚠️ **判据按代码事实写成三档，不是一刀切**：`lib/health.sh` 的 `health_status_find_row` 是**按目标地址**继承的（代码注释写明「RULE_ID 会被复用」，属**刻意设计**）⇒ **同地址状态被继承不算失败**；真正的 FAIL 是「同一地址出现两行」与「跨地址继承」。⇒ Chief 真机那「4 行里 3 行孤儿」的根因是**探测端从未工作**（规则形态不对，见 A-13.0）⇒ **归因 A-13.0，不另开缺陷单**。
+
+**为什么 A-17 是全清单最高风险项**：Chief 真机 103 实测 —— `config.json` 里 `"remote"` 写成**数组**、或 `"balance"` **不带权重** ⇒ **realm 直接 panic**（realm 2.9.6 内 `realm_lb-0.1.1` 的 `balancer.rs`）⇒ **不是只断那一个 endpoint，是所有 endpoint 全断（全站断流）**。⇒ 审稿已对着 HEAD 核过 `lib/realm.sh` 的生成器：**当前不会产出这两种非法形态**（`remote` 恒为 string、`balance` 恒带 `: 权重`、三条路径都保证权重个数 == 目标数）⇒ **风险来自「手改 `config.json`」与「生成器回归」**，而**当前没有运行时护栏** ⇒ Chief 已同步给阿测（加断言）与小编（加生成器保险）⇒ 验收侧对应 **A-17**。⇒ **判据里加了一条红线：任何一次配置生成后必须确认 realm 仍 `active`，不能只看「配置生成成功」。**
 
 ---
 
@@ -404,8 +531,8 @@ grep -rn -E 'health_check_script_body|generate_endpoints_from_rules|auto_enable_
 
 1. **先**在真机上把这两个端口的流量**迁到保留路径**（同端口多目标 + 权重 `10,0`）—— 用**保留功能的菜单**做，不依赖任何被删功能；
 2. 验证转发正常（连打几次，确认落到后端）；
-3. **再**删守护进程功能 + 跑卸载清理（对应 A-15）；
-4. 验证：`18443` / `18444` 不再被占、`/etc/xwpf` 与 unit / drop-in 清空、**保留路径的 timer 与规则仍正常**。
+3. **再**跑升级/卸载，触发 `_cleanup_legacy_failover_daemon`（对应 A-15）；
+4. 验证 A-15 的判据全过：`/usr/local/bin/xwpf-failover`、`/etc/systemd/system/xwpf-failover.service`、`/etc/systemd/system/xwpf-failover.service.d/`、`/etc/xwpf/failover.json`、`/etc/xwpf/failover-state.json` **全部不存在**；`ss -lntp` 里 **18443 / 18444 不再有人监听**；**且保留路径的 timer 与规则仍正常**（这条是「不得误伤」的守卫）。
 
 ### 8.4 严重级
 
@@ -416,7 +543,7 @@ grep -rn -E 'health_check_script_body|generate_endpoints_from_rules|auto_enable_
 ## 九、边界与未覆盖（审稿本轮的能力边界）
 
 1. **本轮全程只读**：仓库侧只做 `git show` / `git diff` / `git grep` / `git status` / `git log`（**未改** `lib/`、`tests/`、`docs/`、`cmd/`、`xwFailover.sh`，**未做任何 git 写操作**）；本轮唯一写入的是 `reports/**`。
-2. **在飞改动由他人同时进行**：本轮读 `docs/` 与 `cmd/` 时，工作区正在被编辑（7 个文件）。⇒ 本报告所有「docs/ 现状」判断基于 **HEAD `2631637` + 在飞 diff 的合并观察**；**在飞那部分的方向已被判为作废**（见第三节），不作为删除清单的依据。
+2. **在飞改动由他人同时进行**：本轮读 `docs/` 与 `cmd/` 时，工作区正在被编辑。⇒ 本报告所有「docs/ 现状」判断基于 **HEAD `2beb7bd` + 在飞 diff 的合并观察**；**在飞那部分的方向已被判为作废**（见第三节），不作为删除清单的依据。**写完本报告后，删除已由 `2beb7bd` 落地** ⇒ 第五节以落地后的状态为准。
 3. **【无 VPS 凭据】** 审稿本轮**没有连上 VPS** —— 凭据环境变量在会话压缩后丢失、无 SSH 私钥与 agent、免密登录被拒（`Permission denied (password)`，22 端口可达）⇒ 第三节与第四节的代码级结论**全部在仓库侧完成**，**没有一条是实机结论**。
    ⇒ **两个时间特性的实测数字仍标「待补」**，补齐方式见 `reports/real-machine-acceptance.md` 的 **A-6.2**（在 VPS 上跑一条命令即可）。
    ⇒ 补齐二选一：(a) 用户/Chief 在 VPS 上跑 A-6.2 的命令并贴回；(b) 给审稿一次 VPS 访问（密码走**用户级**环境变量 `VPS_PASS`，审稿只读不改）。
