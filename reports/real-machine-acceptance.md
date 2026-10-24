@@ -2,6 +2,7 @@
 
 > 产出：审稿（bot_263632b9af01）　｜　生成时间：2026-10-24　｜　基线 SHA：`a9102c1`
 > **修订（2026-10-24，第 2 次）**：**A-4 一节按 N1 落地后的口径改写** —— 字段数 **7 → 9**（`LATENCY_MS` / `LATENCY_HISTORY` 是后加的）；「TARGET 只有 host、没有端口」由「不判 FAIL，但要登记」改为**判 FAIL**；新增 **A-4.1 旧格式兼容登记**（升级瞬间的老文件**不必手工删**）。A-3 / A-5 两处引用同一旧事实的表述一并更正。**A-4 一节的锚点推进到 `bfc99d3`（N1-R1）**，其余各节仍以 `a9102c1` 为基线。
+> **修订（2026-10-24，第 3 次）**：按 Chief 派单复核 A-4 判据 —— ① 字段数判据确认为 **9**（以冻结态 `a7e23fc` 的 `lib/health.sh` 的 `health_check_script_body` 为准，第 2 次修订已改到位）；② 「末字段是时间戳」已改到第 6/7 字段，并区分「时延历史为空」与「时延历史是数字列表」两种合法形态；③ **TARGET 判据由「一律判 FAIL」改为三档分级**（裸 host 是**旧格式**不是设计：归属已失效的孤儿行**有条件接受 + 登记**；归属可确定却没迁移、或裸 host 占多数，仍**判 FAIL**），并补「裸 host 残留对同 host 多端口场景的影响」对照表。**新增 A-X（旧格式状态文件 + 新代码 → 仍能正确切换）与 A-Y（同 host 两个端口 → 状态互不覆盖）两节**。全文的「文件:行号」引用按纪律改成「文件 的 符号」。**本节锚点：`a7e23fc`**（消费端与展示端的行为以 `bfc99d3` 为准，见 A-4 锚点说明）。
 > 适用范围：本机无 WSL / Docker / systemd / realm，下列全部项**只能在真实 Linux VPS 上验**。
 > 本清单只做**验收**，不修改 `lib/`、`tests/`、`docs/`、`xwFailover.sh`；发现问题登记缺陷单交 Chief 路由。
 
@@ -94,7 +95,7 @@ done
 | 出现 `FAIL-CRLF:` | 安装源被 CRLF 污染（Windows 打包的离线包）。查 `curl -sI <raw url> \| grep -i content-length` 与下载字节；**这是第 1 轮报告 B3 的残余风险**，`4558e65` 只归一了 heredoc 生成物，没归一落盘文件 |
 | `lib/` 少文件 | 看安装日志里哪一行 `✗ lib/xxx.sh 下载失败`；多半是 raw 路径拼错或分支不含该文件 |
 | `bash -n` 报错 | 同样是 CRLF 或文件被截断（`_download` 的原子替换失败） |
-| `MISSING: jq` | `jq` 在 `lib/core.sh:24 REQUIRED_TOOLS` 里，应由安装器自动装；自动装失败要走 `docs/install-and-upgrade.md` 的离线装法 |
+| `MISSING: jq` | `jq` 在 `lib/core.sh` 的 `REQUIRED_TOOLS` 里，应由安装器自动装；自动装失败要走 `docs/install-and-upgrade.md` 的离线装法 |
 
 **危险动作**：`install` 会覆盖 `/usr/local/bin/lib/*`、重建 `pf` 软链、**触发 `smart_install`（可能改 `/etc/realm` 配置）并 `systemctl enable xwpf-failover`**。业务机先备份 `/etc/realm`。
 
@@ -219,13 +220,13 @@ jq -r '.endpoints[] | select(.listen_port==8443 or .listen==8443) | .balance' /e
 4. `systemctl is-enabled realm-health-check.timer` → `enabled`；`is-active` → `active`。
 5. `OnUnitActiveUSec` ≈ `4s`（默认 `HEALTH_CHECK_INTERVAL=4`；改过则按规则文件里的值）。
 6. `ExecStart=` 指向 `/etc/realm/health/health_check.sh`（**路径里不能有 `\r`**）。
-7. `config.json` 里该端点的 `balance` 形如 `"roundrobin: 1,0"` —— **注意 realm 不认识 `active-standby`，底层输出的是 `roundrobin`**（`lib/realm.sh:706-714`）。比较时按逗号切分取数字序列，忽略空格。
+7. `config.json` 里该端点的 `balance` 形如 `"roundrobin: 1,0"` —— **注意 realm 不认识 `active-standby`，底层输出的是 `roundrobin`**（`lib/realm.sh` 的 `generate_endpoints_from_rules`）。比较时按逗号切分取数字序列，忽略空格。
 
 **失败判据与排查方向**
 
 | 现象 | 排查方向 |
 |---|---|
-| timer `is-enabled` 返回 `disabled` / `is-active` 返回 `inactive` | 健康检查服务没被拉起 → 查 `ensure_health_check_service`（`lib/rules.sh:2735`）返回值；它失败时只打警告、**不回滚主备开关**，会出现「规则是主备但没人探测」的状态 → 这是第 1 轮报告 B1 |
+| timer `is-enabled` 返回 `disabled` / `is-active` 返回 `inactive` | 健康检查服务没被拉起 → 查 `lib/rules.sh` 的 `ensure_health_check_service` 返回值；它失败时只打警告、**不回滚主备开关**，会出现「规则是主备但没人探测」的状态 → 这是第 1 轮报告 B1 |
 | `health_check.sh` 不存在 | `start_health_check_service` 没跑到；先 `bash -x /etc/realm/xwFailover.sh start` 看断点 |
 | `ExecStart` 路径带 `\r` | 落盘的 unit 是 CRLF → 同 A-1 第 3 步 |
 | `balance` 还是 `roundrobin: 1,1` 或权重不对 | `port_weights` 与目标数没对齐；查规则文件里 WEIGHTS 的存储约定（第 1 条全量、其余单值） |
@@ -245,6 +246,12 @@ pf   # 主菜单 → 6. 负载均衡管理 → 权重配置管理 → 选端口 
 **验收目标**：状态文件结构与 `docs/health-check-and-failover.md` 声明的格式逐字段一致，**含 `TARGET` 的 `host:port` 口径**。
 
 **前置**：A-3 已完成且健康检查至少跑过 1 轮。
+
+> **锚点与口径来源（本节所有判据的依据）**
+>
+> - **被测产物锚定 `a7e23fc`**（`fix(health): 健康状态 TARGET 口径改 host:port`）—— 本节的字段定义、格式串、探测端双查逻辑均取自 `git show a7e23fc:lib/health.sh` 的 `health_check_script_body`，**不取工作区文件**。
+> - **紧随其后的 `bfc99d3`（N1-R1）改了旧格式的兜底**：去掉了消费端「认得出归属时另存一份裸 host 宽键」与展示端「查不到时按裸 host 再查一次」。**裸 host 残留对同 host 多端口场景的影响因此以 `bfc99d3` 为准**（见下面「裸 host 残留的影响」一节的两版对照）。现场若装的是 `a7e23fc` 及更早，**结论相反** —— 验收时必须先确认装的是哪一版。
+> - **HEAD 现状**：`14aef0c`。`a7e23fc..HEAD` 之间 `lib/health.sh` 与 `lib/realm.sh` 的净变化**只有** N1-R1 那一次（去掉裸 host 兜底），**9 字段格式串与字段顺序未变**。
 
 > **读文件前先看这三条**（都来自实现，不看会误判）：
 >
@@ -298,8 +305,13 @@ echo "file: ${file_fmt:-<没找到>}"
 1. 前两行是注释，第 2 行含 9 字段格式串 `RULE_ID|TARGET|STATUS|FAIL_COUNT|SUCCESS_COUNT|LAST_CHECK|FAILURE_START_TIME|LATENCY_MS|LATENCY_HISTORY`。（**老机器上头部可能是 7 字段那一行 → 见上面的读文件前提 2**。）
 2. 数据行字段数**只有 9**（`awk` 输出只有一个计数，值为 9）。
 3. `STATUS` **只有 `healthy` / `failed`** 两种取值。
-4. `TARGET` **全部是 `host:port`**（`BAD-TARGET:` 无输出）。
-5. 第 6、7 字段**全部是纯数字**（`BAD-TS:` 无输出）；第 8 字段是整数毫秒或空（`BAD-LAT:` 无输出）；第 9 字段是逗号分隔的数字或空（`BAD-HIST:` 无输出）。
+4. `TARGET` 口径按**三档**判定（不是「一律 PASS / 一律 FAIL」）：
+   - **绝大多数行是 `host:port`** → **期望，判 PASS**。`a7e23fc` 起写入端写的**就是** `host:port`（`target_endpoint="${target}:${REMOTE_PORT}"`）。
+   - **少数行只有 host**，且其 `RULE_ID` **已不在规则目录里**（归属已失效的孤儿行）→ **有条件接受，但要登记**（见下面「裸 host 残留的影响」与 A-4.1）。这是**旧格式兼容路径**，不是设计，也不是缺陷。
+   - **少数行只有 host**，且其 `RULE_ID` **仍在规则目录里**（归属可确定）→ 跑完 1 轮健康检查后**必须**已被迁成 `host:port`；仍裸 host ⇒ **判 FAIL**（迁移没生效）。
+   - **裸 host 行占多数** → **判 FAIL**（装的是 `a7e23fc` 之前的旧产物，写端就没升级）。
+   - 判定「归属还在不在」的命令见 **A-4.1**。
+5. 第 6、7 字段**全部是纯数字**（`BAD-TS:` 无输出）；第 8 字段是整数毫秒或空（`BAD-LAT:` 无输出）；第 9 字段是逗号分隔的数字或空（`BAD-HIST:` 无输出）。**第 9 字段的两种合法形态**：`LATENCY_HISTORY` 为**空**（还没探测成功过、或没取到时间戳）或为**逗号分隔的数字列表**（如 `10,12,14`，最多 5 个样本）；**其余形态都是坏数据**。
 6. 文档声明的格式串与文件头注释**逐字符一致**（`FMT-MATCH: OK`）—— **仅对全新安装成立**；升级机以数据行为准。
 
 **失败判据与排查方向**
@@ -310,9 +322,22 @@ echo "file: ${file_fmt:-<没找到>}"
 | 出现第 3 种 STATUS | 判定逻辑里还有别的状态值 → 查 `lib/health.sh` 的状态机 |
 | 第 6/7 字段不是数字 | 更老的格式（无 `failure_start_time`）未升级 → 文档 §6.4 有旧格式兼容说明，检查读取端是否做了兼容 |
 | 第 8/9 字段不是数字 | 时延字段写坏了 → 查 `lib/health.sh` 的 `probe_with_latency` / `latency_avg_ms` |
-| **TARGET 只有 host、没有端口** | **判 FAIL。** 文档 `docs/health-check-and-failover.md` 的 `TARGET` 字段表写的就是 `host:port`，**实现应与文档一致**；N1（`a7e23fc` / `bfc99d3`）已把写端、读端、展示端**全部**对齐到 `host:port`。真机仍见裸 host ⇒ **装的是 N1 之前的旧产物** → 查安装产物版本，**不要**按「已知设计」放过 |
+| **TARGET 只有 host、没有端口** | **分三档，不要一律判 FAIL，也不要一律放过。** ① 少数行、且其 `RULE_ID` 已不在规则目录里 → **旧格式兼容路径，有条件接受 + 登记**（产品按「认不出归属 → 当无记录」处理，下一轮重新探测生成精确键）；② 少数行、且其 `RULE_ID` 仍在规则目录里 → 跑完 1 轮健康检查后**必须**迁成 `host:port`，仍裸 host ⇒ **判 FAIL**（迁移没生效）；③ 裸 host 行占多数 ⇒ **判 FAIL**（装的是 `a7e23fc` 之前的旧产物）。**判据依据**：文档 `docs/health-check-and-failover.md` 的 `TARGET` 字段表写的就是 `host:port`，`a7e23fc` 起写入端也是 `host:port` —— **裸 host 是旧格式，不是设计** |
 | 头部注释与文档不一致 | **先判是全新安装还是升级机**（见读文件前提 2/3）。升级机 ⇒ **登记不判 FAIL**（低优先级，不影响解析）；全新安装仍不一致 ⇒ **判 FAIL**（写端的头部格式串与文档脱节） |
 | 老文件升级后被当成「无记录 / 健康」 | 旧格式兼容失效 → 见 A-4.1，判据是「升级瞬间的老记录仍要被认出来」 |
+
+**裸 host 残留对「同 host 多端口」场景的影响（为什么必须登记）**
+
+裸 host 记录**不含端口**，所以它分不清同 host 的哪个端口。产品对它的处理随版本而变，验收时**必须先确认装的是哪一版**：
+
+| 装的是 | 消费端（`lib/realm.sh` 的 `generate_endpoints_from_rules`）对旧格式行的处理 | 同 host 的另一个端口会不会被这条老记录带坏 |
+|---|---|---|
+| `a7e23fc`（有 N1，**没有** N1-R1） | 认得出归属 → 入精确键 `host:port`，**并且始终另存一份裸 host 宽键** | **会**。精确键查不到时退到宽键 → 读到这条老记录的状态 → 同 host 另一个端口被判成同样的状态 |
+| `bfc99d3` 及以后（N1-R1） | 认得出归属 → **只**入精确键，**不存宽键**；认不出归属 → **当无记录** | **不会**。宽键已被去掉 |
+
+`bfc99d3` 之前那个「宽键」的危害是**具体的**：同一主备组内两个目标同 host 不同端口（`10.0.0.1:111` / `10.0.0.1:222`）时，222 查不到精确键 → 退宽键 → 读到 111 的 `failed` → **两个目标都判 failed** → 走「全部目标都挂了」的兜底 → **保持原主不切备** —— 流量压在已故障的主机上，**该切不切的静默失效**。
+
+所以**裸 host 残留 + 同 host 多端口 = 危险组合**，必须登记。清法见 A-4.1：跑完 1 轮健康检查即迁完；归属失效的孤儿行按「当无记录」处理，下一轮重新探测生成精确键。**现场验证见 A-Y。**
 
 **危险动作**：**不要手工编辑** `health_status.conf`（每轮健康检查会原子重写，手改必丢）；排查时只读。A-4.1 要构造老文件时用**副本**，不要动生产文件。
 
@@ -359,6 +384,264 @@ done
 **因此：真机验收看到裸 host 时，不必手工删 `health_status.conf`** —— 产品自己会迁移（跑完 1 轮健康检查即迁完；归属失效的行由下一轮重新探测）。
 
 **危险动作**：要**构造**老文件时，用**副本**（如 `/tmp/health_status.conf.bak`）在测试机上做，**不要**改生产文件；本节全程只读。
+
+---
+
+## A-X　旧格式状态文件 + 新代码 → 仍能正确切换
+
+**验收目标**：老状态文件里那条 `failed` 在升级后**不被当成「无记录 → 目标健康」**（否则故障转移静默失效），同时**不会把同 host 的另一个端口一起判坏**。
+
+**锚点**：本节的期望按 **`bfc99d3`（N1-R1）** 的行为写（`a7e23fc` 的行为差异见 A-4 的「裸 host 残留的影响」对照表）。被测产物一律取 `git show <SHA>:<path>`，**不取工作区文件**。
+
+**前置（三选一，优先级从高到低）**
+
+1. **本机是从旧版本升级上来的**（最省事）：升级前的那个老文件**还在** `/etc/realm/health/health_status.conf` —— 升级**不会自己删数据**，它就是天然样本。
+2. **手上有升级前留存的副本**：来源只能是 ① 升级前的整机/配置备份里的 `/etc/realm/health/` 目录；② 升级前手工 `tar` 的归档；③ 升级工具自己留的 `.bak`（**本产品不留** —— 健康状态文件不在安装/升级的备份清单里，**不能指望**）。**取不到就转第 3 条。**
+3. **现场造样本**（见下表）—— **在沙箱/临时目录里造，不碰生产文件**。
+
+**造样本的三种办法（按安全性排序）**
+
+| 办法 | 怎么做 | 适用 | 注意 |
+|---|---|---|---|
+| **台架沙箱**（推荐） | `tests/run_tests.sh` 的沙箱把 `/etc/realm` 重定向到 `$SBX_ROOT` 下，**自带旧格式样本的用例**：`tests/cases/12_health_target_scope.sh` 的 `case_T52_health_target_scope`（同 host 不同端口互不覆盖 + 旧格式兼容 + 认不出归属时当无记录） | **本地或任意机器，不需要真机** | 台架覆盖的是**逻辑等价**，**不替代**现场 |
+| **干净机/容器 + `HEALTH_DIR`** | 健康检查脚本对状态文件路径的取值顺序是：`HEALTH_STATUS_FILE` 环境变量 → 三个硬编码候选路径 → `${HEALTH_DIR}/health_status.conf`。**三个候选路径只要存在一个，环境变量就被覆盖** —— 所以只有**候选路径都不存在**的机器上，`HEALTH_DIR=/tmp/acc-x` 才生效 | **测试机 / 一次性容器** | 规则目录 `RULES_DIR` 在生成脚本里是**硬编码**的 `/etc/realm/rules`，**不可用环境变量改** → 规则也得在测试机上另备 |
+| **复制到测试机** | 把 `lib/` 与规则目录复制到测试机，在测试机上造 | 有第二台机器时 | 本节全程**只读**；**不要**在生产机上造 |
+
+> **⛔ 两条不要**
+>
+> 1. **不要手工编辑 `/etc/realm/health/health_status.conf`** —— 每轮健康检查会原子重写（先 `grep -v` 掉旧行、再 `mv` 新文件），手改必丢。
+> 2. **不要指望 `HEALTH_STATUS_FILE=/tmp/x.conf` 能把健康检查重定向到临时文件** —— 生成脚本里的路径探测循环会**无条件重置**这个变量、再按硬编码候选路径找，**候选路径存在时你的环境变量不起作用**（在已有生产文件的机器上，它仍会写生产路径）。
+
+**命令（全程只读，样本用第 1/2 条前置的自然样本）**
+
+```bash
+HEALTH_FILE=/etc/realm/health/health_status.conf
+[ -f "$HEALTH_FILE" ] || HEALTH_FILE=/etc/realm/health_status.conf
+[ -f "$HEALTH_FILE" ] || HEALTH_FILE=/var/lib/realm/health_status.conf
+echo "状态文件: $HEALTH_FILE"
+
+echo "--- 1) 老文件里裸 host 的行（升级瞬间的天然形态）---"
+grep -v '^#' "$HEALTH_FILE" | awk -F'|' '$2 !~ /:/ {print}'
+
+echo "--- 2) 每条老行的 RULE_ID 是否还归属某条规则 ---"
+echo "    owned=yes -> 归属可确定，产品应把它迁成 host:port"
+echo "    owned=no  -> 归属已失效（规则已删），产品按「当无记录」处理"
+for id in $(grep -v '^#' "$HEALTH_FILE" | awk -F'|' '$2 !~ /:/ {print $1}' | sort -u); do
+  owned=no
+  for f in /etc/realm/rules/rule-*.conf; do
+    [ -f "$f" ] || continue
+    if grep -q "^RULE_ID=${id}$" "$f" 2>/dev/null; then owned=yes; break; fi
+  done
+  echo "RULE_ID=$id owned=$owned"
+done
+
+echo "--- 3) 老行里 failed 的那些（升级后不能被洗成 healthy）---"
+grep -v '^#' "$HEALTH_FILE" | awk -F'|' '$2 !~ /:/ && $3=="failed" {print "OLD-FAILED:", $0}'
+
+echo "--- 4) 让探测端跑一轮（把老行原地迁成 host:port）---"
+echo "    首选：等 timer 自然跑（OnUnitActiveUSec 默认 4s）—— sleep 8 即可"
+echo "    备选：systemctl start realm-health-check.service（有副作用，见下方「危险动作」）"
+sleep 8
+
+echo "--- 5) 迁完后的全部数据行 ---"
+grep -v '^#' "$HEALTH_FILE"
+
+echo "--- 6) 跑完之后还剩哪些裸 host（应只剩下 owned=no 的孤儿行）---"
+grep -v '^#' "$HEALTH_FILE" | awk -F'|' '$2 !~ /:/ {print}'
+
+echo "--- 7) 关键：老故障有没有被洗白 ---"
+grep -v '^#' "$HEALTH_FILE" | awk -F'|' '$3=="failed" {print "STILL-FAILED:", $0}'
+
+echo "--- 8) 同 host 的另一个端口有没有被这条老记录带坏 ---"
+grep -v '^#' "$HEALTH_FILE" | awk -F'|' '{print $1, $2, $3}' | sort -u
+```
+
+**期望结果（可判定）**
+
+1. 第 2 步里 `owned=yes` 的老行 = **归属可确定**的那些。
+2. 第 4 步跑完后，**`owned=yes` 的老行已被原地迁成 `host:port`**（`TARGET` 含冒号），且 `FAIL_COUNT` / `SUCCESS_COUNT` / `FAILURE_START_TIME` **沿用老值**（不是清零重来）。
+3. 第 3 步列出的每一条 `OLD-FAILED`，在第 7 步里都**必须**还能找到对应目标 —— 老故障**不能**被升级洗成 `healthy`（洗白了 = 故障转移静默失效）。
+4. 第 8 步里，**同 host 的另一个端口不得因为这条老记录变成 `failed`** —— 它的状态必须来自它自己的探测。
+5. 第 6 步里**允许**剩下 `owned=no` 的孤儿行（产品按「认不出归属 → 当无记录」处理，下一轮重新探测生成精确键）—— 这是**正确行为**，不是缺陷。
+6. 迁完的老行**字段数应为 9**（见 A-4）。
+
+**失败判据与排查方向**
+
+| 现象 | 排查方向 |
+|---|---|
+| 老行跑完一轮还是裸 host（且 `owned=yes`） | 迁移没生效 → 查探测端 `lib/health.sh` 的 `health_check_script_body` 有没有做新旧双查（先 `grep` 精确键、再 `grep` 旧口径键）与写回时的旧行清理 |
+| 老记录从 `failed` 变成 `healthy` | **最严重的一种**：老故障被洗白 → 查探测端取到旧记录后有没有把 `status` 一起继承下来（`IFS='|' read -r … status …`） |
+| 同 host 的另一个端口被带成 `failed` | 消费端 `lib/realm.sh` 的 `generate_endpoints_from_rules` 还**存了一份裸 host 宽键** → 那是 `a7e23fc` 那一版（**未含 N1-R1**），**必须升级**；`bfc99d3` 起已去掉 |
+| 一条老行都没迁、文件也没更新 | 健康检查根本没在跑 → `systemctl status realm-health-check.timer`；`journalctl -u realm-health-check.service -n 30` |
+| 迁完后整行字段数不是 9 | 见 A-4 的字段数判据（老行迁完就该是 9 字段） |
+| 老行一直不动、`owned` 也认不出 | 规则目录里的 `RULE_ID` 与老行对不上（规则被重排/重写过 ID）→ 查 `lib/rules.sh` 的 `sync_health_status_ids` |
+
+**危险动作**：本节**全程只读**；唯一有副作用的是第 4 步的 `systemctl start realm-health-check.service` —— 它在探测到状态变化时会调 `pf --restart-service` → **realm 重启、转发短暂中断**，**要在维护窗口做**（优先用「等 timer 自然跑」代替）。**不要**手工改状态文件。
+
+---
+
+## A-Y　同 host 两个端口 → 状态互不覆盖
+
+**验收目标**：**同一台 host** 上的**不同端口**是**不同目标**；一个坏了**不会**把另一个也带成坏。
+
+**锚点**：被测产物取 `git show a7e23fc:lib/health.sh` 与 `git show a7e23fc:lib/realm.sh`（`a7e23fc..HEAD` 之间这两个文件**只有** N1-R1 一处变化，见 A-4 的锚点说明）。
+
+**为什么必须分两种形态做**
+
+「同 host 不同端口」在真实部署里有**两种**形态，触发的是**不同**的代码路径，**两种都要测**：
+
+| 形态 | 拓扑 | 旧实现的症状 |
+|---|---|---|
+| **① 两个不同的转发组** | 两条规则，**不同 `LISTEN_PORT`**，目标**同一 host 不同端口**（`127.0.0.1:8443` 与 `127.0.0.1:9443`） | N1 的主症状：读侧只按 host 建索引 → 两个组的状态互相覆盖（A 组故障被 B 组的健康记录盖掉） |
+| **② 同一个转发组内的主备两端点** | 两条规则，**同一个 `LISTEN_PORT`**（主备组），目标**同一 host 不同端口** | N1-R1 的症状：宽键兜底把一个端口的故障传播给另一个 → 两个目标都判 failed → 走「全部目标都挂了」的兜底 → **保持原主不切备**（流量压在已故障的主机上） |
+
+**前置**
+
+- realm 已装且能起；本机 `command -v nc` 有输出（否则**先过 A-7**）。
+- **已备份** `/etc/realm/rules/` 与 `/etc/realm/config.json`（本项会写规则、可能重启 realm）。
+- 只允许在 `127.0.0.0/8` 上做；**严禁动 22 端口**。
+- **端口规划**（避免与造目标用的监听撞端口）：转发组监听 `18443` / `19443`，目标监听 `8443` / `9443`。
+
+**命令**
+
+```bash
+# ---------- 准备：同一 host 的两个端口各起一个监听 ----------
+python3 -m http.server 8443 --bind 127.0.0.1 >/tmp/acc-y-8443.log 2>&1 & echo $! >/tmp/acc-y-8443.pid
+python3 -m http.server 9443 --bind 127.0.0.1 >/tmp/acc-y-9443.log 2>&1 & echo $! >/tmp/acc-y-9443.pid
+sleep 1
+```
+
+**形态 ①：两个不同的转发组，目标同 host 不同端口**
+
+```bash
+sudo bash <<'EOF'
+R=/etc/realm/rules
+mkdir -p "$R"
+
+cat > "$R/rule-9101.conf" <<'C'
+RULE_ID=9101
+RULE_ROLE=1
+RULE_NAME=ay-g1
+SECURITY_LEVEL=standard
+LISTEN_PORT=18443
+LISTEN_IP=0.0.0.0
+THROUGH_IP=::
+REMOTE_HOST=127.0.0.1
+REMOTE_PORT=8443
+ENABLED=true
+BALANCE_MODE="roundrobin"
+FAILOVER_ENABLED="true"
+WEIGHTS="1"
+C
+
+cat > "$R/rule-9102.conf" <<'C'
+RULE_ID=9102
+RULE_ROLE=1
+RULE_NAME=ay-g2
+SECURITY_LEVEL=standard
+LISTEN_PORT=19443
+LISTEN_IP=0.0.0.0
+THROUGH_IP=::
+REMOTE_HOST=127.0.0.1
+REMOTE_PORT=9443
+ENABLED=true
+BALANCE_MODE="roundrobin"
+FAILOVER_ENABLED="true"
+WEIGHTS="1"
+C
+EOF
+
+echo "--- 让健康检查跑一轮（探测端只处理 RULE_ROLE=1 且 ENABLED=true 且 FAILOVER_ENABLED=true 的规则）---"
+sleep 8
+
+echo "--- 状态文件：应有两行，TARGET 分别是 127.0.0.1:8443 与 127.0.0.1:9443 ---"
+grep -v '^#' /etc/realm/health/health_status.conf
+
+echo "--- 只坏掉 9443 那个（同一 host 的另一个端口必须仍是 healthy）---"
+kill "$(cat /tmp/acc-y-9443.pid)"; rm -f /tmp/acc-y-9443.pid
+sleep 20
+
+echo "--- 关键：8443 那行必须仍是 healthy ---"
+grep -v '^#' /etc/realm/health/health_status.conf | awk -F'|' '{print $1, $2, $3, $4}'
+
+echo "--- 日志 ---"
+journalctl -u realm-health-check.service -n 30 --no-pager | grep -E 'FAILURE|CONFIG|RECOVERY'
+```
+
+> **为什么手写 `FAILOVER_ENABLED="true"`**：探测端只探测**故障转移中转规则**（`RULE_ROLE=1` 且 `ENABLED=true` 且 `FAILOVER_ENABLED=true`），`FAILOVER_ENABLED="false"` 的规则**根本不会被探测**、状态文件里也不会有它。走产品自己的开关也行：`apply_port_group_weight_config <LISTEN_PORT> "1,0" 1`（**第三个参数 `1` 是跳过交互确认，无头环境必须传**，否则会卡在 `read -p` 上；权重含 0 会自动切 `active-standby` 并开 `FAILOVER_ENABLED`）。本节用最直接的白盒写法，**不引入权重口径的干扰**。
+
+**形态 ②：同一个转发组内的主备两端点，目标同 host 不同端口**
+
+```bash
+sudo bash <<'EOF'
+R=/etc/realm/rules
+# 先撤掉形态 ① 的第二条规则（它的目标也是 127.0.0.1:9443，留着会让同一个 TARGET 出现两行、断言含糊）
+rm -f "$R/rule-9102.conf"
+# 同一 LISTEN_PORT=18443 的第二条规则（主备组的另一端点）
+cat > "$R/rule-9103.conf" <<'C'
+RULE_ID=9103
+RULE_ROLE=1
+RULE_NAME=ay-g2
+SECURITY_LEVEL=standard
+LISTEN_PORT=18443
+LISTEN_IP=0.0.0.0
+THROUGH_IP=::
+REMOTE_HOST=127.0.0.1
+REMOTE_PORT=9443
+ENABLED=true
+BALANCE_MODE="roundrobin"
+FAILOVER_ENABLED="true"
+WEIGHTS="0"
+C
+
+source /usr/local/bin/lib/core.sh
+source /usr/local/bin/lib/health.sh
+source /usr/local/bin/lib/rules.sh
+# 第三个参数 1 = 跳过交互确认（无头环境必须传）
+apply_port_group_weight_config 18443 "1,0" 1
+EOF
+
+echo "--- 规则与主备开关（同端口组内：第 1 条存完整权重串，其余存自己那个目标的值）---"
+grep -E '^(BALANCE_MODE|FAILOVER_ENABLED|WEIGHTS)=' /etc/realm/rules/rule-9101.conf /etc/realm/rules/rule-9103.conf
+
+echo "--- 恢复 9443 的监听，并把主（8443）弄坏：主坏、备好 ---"
+python3 -m http.server 9443 --bind 127.0.0.1 >/tmp/acc-y-9443.log 2>&1 & echo $! >/tmp/acc-y-9443.pid
+sleep 8
+kill "$(cat /tmp/acc-y-8443.pid)"; rm -f /tmp/acc-y-8443.pid
+sleep 20
+
+echo "--- 关键：主（127.0.0.1:8443）应 failed、备（127.0.0.1:9443）应 healthy ---"
+grep -v '^#' /etc/realm/health/health_status.conf | awk -F'|' '{print $1, $2, $3, $4}'
+
+echo "--- 权重：主坏了应切到备（0,1）---"
+jq -r '.endpoints[].balance' /etc/realm/config.json
+
+echo "--- 日志：只应有 8443 的 FAILURE，不能有 9443 的 FAILURE ---"
+journalctl -u realm-health-check.service -n 40 --no-pager | grep -E 'FAILURE|CONFIG|RECOVERY'
+```
+
+**期望结果（可判定）**
+
+1. 形态 ①：状态文件里**两行**，`TARGET` 分别是 `127.0.0.1:8443` 与 `127.0.0.1:9443`（**都含端口**），`RULE_ID` 分别是 9101 / 9102。
+2. 形态 ①：杀掉 9443 的监听后，**`127.0.0.1:8443` 那行必须仍是 `healthy`**；只有 `127.0.0.1:9443` 那行变成 `failed` 且 `FAIL_COUNT≥2`。**这是本项的核心断言。**
+3. 形态 ②：两条规则**同一个 `LISTEN_PORT=18443`**；`apply_port_group_weight_config` 之后 `rule-9101` 存完整权重串、`rule-9103` 存自己那个目标的值，`BALANCE_MODE="active-standby"`、`FAILOVER_ENABLED="true"`。
+4. 形态 ②：**主（`127.0.0.1:8443`）那行是 `failed`，备（`127.0.0.1:9443`）那行必须是 `healthy`** —— 备**不能**因为主坏了而跟着坏。
+5. 形态 ②：**绝不能出现两个目标都 `failed`**；一旦出现，说明又走了「全部目标都挂了」的兜底 → 权重**不会**翻、流量压在已故障的主机上（该切不切的静默失效）。日志里应**只有** `[FAILURE] 目标 127.0.0.1:8443 …`，**没有**针对 `127.0.0.1:9443` 的 FAILURE。
+6. 形态 ②：权重应翻成 **`0,1`**（切到备）。比较时按逗号切分取数字序列、忽略空格（realm 不认识 `active-standby`，底层输出的是 `roundrobin`）。
+
+**失败判据与排查方向**
+
+| 现象 | 排查方向 |
+|---|---|
+| 一个坏了，另一个也跟着 `failed` | 读侧仍按 host 建索引 → 查消费端 `lib/realm.sh` 的 `generate_endpoints_from_rules` 是否按 `host:port` 建**精确键**；查写端 `lib/health.sh` 的 `health_check_script_body` 的 `target_key` 是否含端口（`target_endpoint="${target}:${REMOTE_PORT}"`） |
+| 两个目标都 failed、然后「全挂兜底」 | 宽键污染 → 查消费端有没有**再存一份裸 host 宽键**（`a7e23fc` 那一版有，`bfc99d3` 起去掉） |
+| 状态文件里没有 9443 那行 | 规则**没被健康检查覆盖** → 查 `RULE_ROLE=1` / `ENABLED=true` / `FAILOVER_ENABLED=true` 三个开关（探测端只处理故障转移中转规则） |
+| 状态文件里 TARGET 还是裸 host | 装的是 `a7e23fc` 之前的旧产物 → 见 A-4 的 TARGET 三档判据 |
+| 权重没落到主备形态 / `rule-9103` 的权重不对 | 落盘约定：组内**第一条**规则存完整权重串、其余规则存**自己那个目标**的值（不含逗号）；查 `lib/rules.sh` 的 `apply_port_group_weight_config` 的返回值与 `validate_weight_input` |
+| 权重没翻（主坏了也不切） | ① 状态没进 failed → 看 `FAILURE_THRESHOLD` / `CONNECTION_TIMEOUT`；② 状态进了 failed 但 config 没重生成 → 看 `journalctl` 有没有 `[CONFIG]`，没有就是 `pf --restart-service` 没被调用 |
+| 探测端把两个端口都判 failed | 探测本身失败（`nc` 缺失、`/dev/tcp` 回退失效）→ **先过 A-7** |
+
+**危险动作**：本项会**写规则文件**并可能**重启 realm**（`apply_port_group_weight_config` 末尾调 `service_restart` → 转发短暂中断）。**验收前先备份** `/etc/realm/rules/` 与 `/etc/realm/config.json`；**验收后** `rm` 掉 `rule-9101.conf` / `rule-9102.conf` / `rule-9103.conf` 再 `pf --restart-service` 恢复。**只允许在 `127.0.0.0/8` 上做**；**严禁动 22 端口**。
 
 ---
 
@@ -409,7 +692,7 @@ journalctl -u realm-health-check.service -n 30 --no-pager | grep -E 'FAILURE|CON
 |---|---|
 | 两个目标都 failed | 全局探测失败（两个目标其实都不可达）；或健康检查根本没在跑。（「两条规则的 host 被判成同一个 key」是 N1 修复**之前**的旧成因，`TARGET` 口径改成 `host:port` 后不再成立，见 A-4） |
 | 权重没翻 | ① 状态没进 failed → 看 `FAILURE_THRESHOLD` / `CONNECTION_TIMEOUT`；② 状态进了 failed 但 config 没重生成 → 看 `journalctl` 有没有 `[CONFIG]`，没有就是 `pf --restart-service` 没被调用（`lib/health.sh` 里调的是 `pf --restart-service`） |
-| `[CONFIG]` 有但 config.json 没变 | `pf --restart-service` 失败 → 手工执行 `pf --restart-service` 看报错；realm 起来后权重仍不变 → 生成端 `lib/realm.sh:519` 的健康映射 key 不匹配 |
+| `[CONFIG]` 有但 config.json 没变 | `pf --restart-service` 失败 → 手工执行 `pf --restart-service` 看报错；realm 起来后权重仍不变 → 生成端 `lib/realm.sh` 的 `generate_endpoints_from_rules` 的健康映射 key 不匹配 |
 | 翻转了但方向反了 | 权重索引与目标顺序错位 → 回看第 1 轮报告 S1（权重落盘用 rule_index 与目标索引可能错位） |
 
 **危险动作**：`kill` 监听进程是低危。**如果改用 iptables 模拟断网**：只允许 `127.0.0.0/8`，**严禁动 22 端口**；拦完用 `iptables -L -n` 留证，验收后删除规则。
@@ -659,9 +942,9 @@ sudo cat /etc/xwpf/failover.json | jq . 2>/dev/null
 
 1. `systemctl is-active xwpf-failover` → `active`；`is-enabled` → `enabled`。
 2. `/etc/xwpf/failover.json` 存在且是**合法 JSON**（`jq .` 不报错）。
-3. 日志里有 `listening on …` 字样（`cmd/README-failover.md:88` 明确以此为验收标志）。
+3. 日志里有 `listening on …` 字样（`cmd/README-failover.md` 的 `## Running` 一节明确以此为验收标志）。
 4. 主节点断连后，日志出现**状态迁移**记录（switch/standby/active/promote 之一），且池配置里的**主备角色互换**。
-5. 切换过程中**不需要人工干预**，且**不需要重启 realm 守护**（`cmd/README-failover.md:35` 称它会 restart realm 与自身）。
+5. 切换过程中**不需要人工干预**，且**不需要重启 realm 守护**（`cmd/README-failover.md` 的 `## Layout` 一节称它会 restart realm 与自身）。
 
 **失败判据与排查方向**
 
@@ -678,17 +961,17 @@ sudo cat /etc/xwpf/failover.json | jq . 2>/dev/null
 
 ## 11. 最小化 Debian 兼容性矩阵
 
-**为什么需要矩阵**：`lib/core.sh:24 REQUIRED_TOOLS` 只保证 `curl wget tar grep cut bc jq openssl python3`；`nc` **不在**清单内（健康检查已不依赖它，但**仍依赖 `timeout`**——属 coreutils，极简镜像也基本都有）。`jq` 缺失会让 `lib/core.sh:135` / `lib/rules.sh:1474` 的 config.json 合并退化。
+**为什么需要矩阵**：`lib/core.sh` 的 `REQUIRED_TOOLS` 只保证 `curl wget tar grep cut bc jq openssl python3`；`nc` **不在**清单内（健康检查已不依赖它，但**仍依赖 `timeout`**——属 coreutils，极简镜像也基本都有）。`jq` 缺失会让 `lib/core.sh` 的 `generate_network_config` / `lib/rules.sh` 的 `proxy_management_menu` 里的 config.json 合并退化。
 
 | 变量 | 取值 | **必跑**项 | 该组合的重点观察 |
 |---|---|---|---|
-| **netcat-openbsd** | 装了（`apt-get install -y netcat-openbsd`） | A-1 A-3 A-5 A-6 A-8 | 探测走 nc 分支；确认 `nc -h 2>&1 \| grep -q -- '-z'` 在**本机 nc 版本上返回真**（能力探测靠匹配帮助文本） |
-| | **不装**（或 busybox nc） | **A-7** + A-5 A-6 | 必须靠 `bash /dev/tcp` 回退；**任何目标都不能被误判 failed** |
+| **netcat-openbsd** | 装了（`apt-get install -y netcat-openbsd`） | A-1 A-3 A-5 A-6 A-8 **A-Y** | 探测走 nc 分支；确认 `nc -h 2>&1 \| grep -q -- '-z'` 在**本机 nc 版本上返回真**（能力探测靠匹配帮助文本） |
+| | **不装**（或 busybox nc） | **A-7** + A-5 A-6 **A-Y** | 必须靠 `bash /dev/tcp` 回退；**任何目标都不能被误判 failed**（A-Y 正是「一个坏了不能把另一个也带坏」的加强版） |
 | **jq** | 装了 | 全部 | 基准 |
-| | **不装** | A-1 A-2 A-9 A-10 | ① 安装器应**自动补装**（在 REQUIRED_TOOLS 里）；② 故意不装时，`config.json` 的 network 段合并会退化 → 查 `lib/core.sh:135` 的 `2>/dev/null \|\| echo "{}"` 兜底是否留下残缺配置 |
-| **systemd 版本** | Debian 11（systemd 247） | A-3 A-8 A-9 | `journalctl --vacuum-time=7d --dry-run` 需 systemd ≥ 230（247 满足）；timer `OnUnitActiveUSec` 行为 |
-| | Debian 12（systemd 252） | A-3 A-8 A-9 | 基准；`systemctl show -p` 字段名有微调 |
-| | Ubuntu 22.04（systemd 249） | A-3 A-8 A-9 | `systemd-analyze verify` 对 unit 的校验更严 |
+| | **不装** | A-1 A-2 A-9 A-10 | ① 安装器应**自动补装**（在 REQUIRED_TOOLS 里）；② 故意不装时，`config.json` 的 network 段合并会退化 → 查 `lib/core.sh` 的 `generate_network_config` 里 `2>/dev/null \|\| echo "{}"` 兜底是否留下残缺配置 |
+| **systemd 版本** | Debian 11（systemd 247） | A-3 A-8 A-9 **A-X** | `journalctl --vacuum-time=7d --dry-run` 需 systemd ≥ 230（247 满足）；timer `OnUnitActiveUSec` 行为（A-X 要靠 timer 跑完一轮完成老行迁移） |
+| | Debian 12（systemd 252） | A-3 A-8 A-9 **A-X** | 基准；`systemctl show -p` 字段名有微调 |
+| | Ubuntu 22.04（systemd 249） | A-3 A-8 A-9 **A-X** | `systemd-analyze verify` 对 unit 的校验更严 |
 | **shell** | `sh`（dash）调用 | A-1 A-3 | 所有 `.sh` 入口必须带 `#!/bin/bash`；`sh xwPF.sh install` **应明确失败**而不是半跑 |
 | | `bash`（Debian 默认 5.2） | 全部 | 基准 |
 
@@ -717,6 +1000,8 @@ sudo cat /etc/xwpf/failover.json | jq . 2>/dev/null
 | A-8 | journal + vacuum | ☐PASS ☐FAIL ☐BLOCKED | | 四类标记是否齐全 |
 | A-9 | 卸载残留清理 | ☐PASS ☐FAIL ☐BLOCKED | | 残留 unit / 进程数 = |
 | A-10 | xwpf-failover 热切换 | ☐PASS ☐FAIL ☐BLOCKED | | 需双节点 |
+| A-X | 旧格式状态文件 → 仍能切换 | ☐PASS ☐FAIL ☐BLOCKED | | 老故障没被洗白 = / 迁完字段数 = |
+| A-Y | 同 host 两端口 → 互不覆盖 | ☐PASS ☐FAIL ☐BLOCKED | | 坏一个另一个仍 healthy = / 两形态各记一次 |
 
 **缺陷单请直接交 Chief 路由**（按第 1 轮约定：审稿只出报告与清单，不改 `lib/`、`tests/`、`docs/`、`xwFailover.sh`）。
 
