@@ -1,0 +1,11 @@
+#!/bin/bash
+# id 替身：永远返回 root（Git Bash 的 EUID 是 Windows uid，不是 0）。
+case "${1:-}" in
+    -u)
+        if [ "${2:-}" = "-n" ]; then echo "root"; else echo 0; fi
+        ;;
+    *)
+        echo "uid=0(root) gid=0(root) groups=0(root)"
+        ;;
+esac
+exit 0

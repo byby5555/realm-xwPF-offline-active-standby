@@ -78,7 +78,7 @@ create_single_nat_rule() {
     local rule_file="${RULES_DIR}/rule-${rule_id}.conf"
     local rule_name="中转"
 
-    cat > "$rule_file" <<EOF
+    tr -d '\r' > "$rule_file" <<EOF
 RULE_ID=$rule_id
 RULE_NAME="$rule_name"
 RULE_ROLE="1"
@@ -124,7 +124,7 @@ create_single_exit_rule() {
     local rule_name="服务端"
     local forward_target="$FORWARD_TARGET:$forward_port"
 
-    cat > "$rule_file" <<EOF
+    tr -d '\r' > "$rule_file" <<EOF
 RULE_ID=$rule_id
 RULE_NAME="$rule_name"
 RULE_ROLE="2"
@@ -186,7 +186,7 @@ enable_mptcp() {
     echo -e "${YELLOW}步骤2: 启用系统MPTCP...${NC}"
     local mptcp_conf="/etc/sysctl.d/90-enable-MPTCP.conf"
 
-    cat > "$mptcp_conf" << EOF
+    tr -d '\r' > "$mptcp_conf" << EOF
 # MPTCP基础配置
 net.mptcp.enabled=1
 

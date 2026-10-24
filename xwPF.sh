@@ -13,7 +13,8 @@ REPO_RAW_URL="https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-acti
 
 # 模块列表（加载顺序）
 # failover.sh 必须在 ui.sh 之前 (ui.sh 调用 failover_proxy_menu)
-LIB_FILES=("core.sh" "rules.sh" "server.sh" "realm.sh" "failover.sh" "ui.sh")
+# health.sh 提供连通性探测与健康检查服务，必须在 rules.sh/server.sh 之前
+LIB_FILES=("core.sh" "health.sh" "rules.sh" "server.sh" "realm.sh" "failover.sh" "ui.sh")
 
 # 颜色
 _RED='\033[0;31m'
@@ -126,6 +127,11 @@ case "${1:-}" in
         _SKIP_SCRIPT_UPDATE=1 smart_install
         # 安装 active/passive 主备故障转移守护（幂等：已装跳过）
         failover_install_check && failover_service_enable
+        ;;
+    help|--help|-h)
+        # 打印用法（与 pf --help 一致）
+        _load_libs || exit 1
+        main "$@"
         ;;
     *)
         _load_libs || exit 1

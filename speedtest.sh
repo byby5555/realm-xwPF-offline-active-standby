@@ -1322,7 +1322,7 @@ generate_final_report() {
     echo ""
     echo -e "─────────────────────────────────────────────────────────────────"
 
-    echo -e "测试完成时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S') | 脚本开源地址：https://github.com/zywe03/realm-xwPF"
+    echo -e "测试完成时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S') | 脚本开源地址：https://github.com/byby5555/realm-xwPF-offline-active-standby"
     echo -e "${WHITE}按任意键返回主菜单...${NC}"
     read -n 1 -s
 }

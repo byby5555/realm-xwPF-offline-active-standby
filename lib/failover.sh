@@ -206,7 +206,7 @@ failover_create_server_rule() {
         r_port="443"
     fi
     local outfile="${RULES_DIR}/rule-${rule_id}.conf"
-    cat > "$outfile" <<EOF
+    tr -d '\r' > "$outfile" <<EOF
 RULE_ID="${rule_id}"
 RULE_NAME="failover-backend-${rule_id}"
 RULE_ROLE="2"

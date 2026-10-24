@@ -156,7 +156,7 @@ init_config() {
     download_notification_modules >/dev/null 2>&1 || true
 
     if [ ! -f "$CONFIG_FILE" ]; then
-        cat > "$CONFIG_FILE" << 'EOF'
+        tr -d '\r' > "$CONFIG_FILE" << 'EOF'
 {
   "global": {
     "billing_mode": "double"
@@ -836,7 +836,7 @@ show_main_menu() {
     local daily_total=$(get_daily_total_traffic)
 
     echo -e "${BLUE}=== 端口流量狗 v$SCRIPT_VERSION ===${NC}"
-    echo -e "${GREEN}介绍主页:${NC}https://zywe.de | ${GREEN}项目开源:${NC}https://github.com/zywe03/realm-xwPF"
+    echo -e "${GREEN}介绍主页:${NC}https://zywe.de | ${GREEN}项目开源:${NC}https://github.com/byby5555/realm-xwPF-offline-active-standby"
     echo -e "${GREEN}一只轻巧的‘守护犬’，时刻守护你的端口流量 | 快捷命令: dog${NC}"
     echo
 
@@ -2135,7 +2135,7 @@ export_config() {
     cp -r "$CONFIG_DIR" "$package_dir"
 
     # 生成端口流量狗配置包信息文件
-    cat > "$package_dir/package_info.txt" << EOF
+    tr -d '\r' > "$package_dir/package_info.txt" << EOF
 ===================
 导出时间: $(get_beijing_time '+%Y-%m-%d %H:%M:%S')
 脚本版本: $SCRIPT_VERSION
@@ -2448,7 +2448,7 @@ install_update_script() {
 
 create_shortcut_command() {
     if [ ! -f "/usr/local/bin/$SHORTCUT_COMMAND" ]; then
-        cat > "/usr/local/bin/$SHORTCUT_COMMAND" << EOF
+        tr -d '\r' > "/usr/local/bin/$SHORTCUT_COMMAND" << EOF
 #!/bin/bash
 exec bash "$SCRIPT_PATH" "\$@"
 EOF
@@ -2697,7 +2697,7 @@ format_status_message() {
     local daily_total=$(get_daily_total_traffic)
 
     local message="<b>${notification_icon} 端口流量狗 v${SCRIPT_VERSION}</b> | ⏰ ${timestamp}
-介绍主页:<code>https://zywe.de</code> | 项目开源:<code>https://github.com/zywe03/realm-xwPF</code>
+介绍主页:<code>https://zywe.de</code> | 项目开源:<code>https://github.com/byby5555/realm-xwPF-offline-active-standby</code>
 一只轻巧的'守护犬'，时刻守护你的端口流量 | 快捷命令: dog
 ---
 状态: 监控中 | 守护端口: ${port_count}个 | 端口总流量: ${daily_total}
@@ -2719,7 +2719,7 @@ format_text_status_message() {
     local daily_total=$(get_daily_total_traffic)
 
     local message="${notification_icon} 端口流量狗 v${SCRIPT_VERSION} | ⏰ ${timestamp}
-介绍主页: https://zywe.de | 项目开源: https://github.com/zywe03/realm-xwPF
+介绍主页: https://zywe.de | 项目开源: https://github.com/byby5555/realm-xwPF-offline-active-standby
 一只轻巧的'守护犬'，时刻守护你的端口流量 | 快捷命令: dog
 ---
 状态: 监控中 | 守护端口: ${port_count}个 | 端口总流量: ${daily_total}
@@ -2741,7 +2741,7 @@ format_markdown_status_message() {
     local daily_total=$(get_daily_total_traffic)
 
     local message="**${notification_icon} 端口流量狗 v${SCRIPT_VERSION}** | ⏰ ${timestamp}
-介绍主页: \`https://zywe.de\` | 项目开源: \`https://github.com/zywe03/realm-xwPF\`
+介绍主页: \`https://zywe.de\` | 项目开源: \`https://github.com/byby5555/realm-xwPF-offline-active-standby\`
 一只轻巧的'守护犬'，时刻守护你的端口流量 | 快捷命令: dog
 ---
 **状态**: 监控中 | **守护端口**: ${port_count}个 | **端口总流量**: ${daily_total}
@@ -2859,7 +2859,7 @@ main() {
             --version)
                 echo -e "${BLUE}$SCRIPT_NAME v$SCRIPT_VERSION${NC}"
                 echo -e "${GREEN}介绍主页:${NC} https://zywe.de"
-                echo -e "${GREEN}项目开源:${NC} https://github.com/zywe03/realm-xwPF"
+                echo -e "${GREEN}项目开源:${NC} https://github.com/byby5555/realm-xwPF-offline-active-standby"
                 exit 0
                 ;;
             --install)

@@ -323,7 +323,7 @@ process_json() {
                 fi
             fi
 
-            cat > "$rule_file" << RULE_EOF
+            tr -d '\r' > "$rule_file" << RULE_EOF
 RULE_ID=$rule_id
 RULE_NAME="$rule_name"
 RULE_ROLE="$rule_role"
@@ -355,7 +355,7 @@ RULE_EOF
 
             if [ "$rule_role" = "1" ]; then
                 # 中转服务器字段（使用主脚本的标准格式）
-                cat >> "$rule_file" << RULE_EOF
+                tr -d '\r' >> "$rule_file" << RULE_EOF
 
 # 中转服务器配置
 THROUGH_IP="::"
@@ -369,7 +369,7 @@ WS_HOST="$ws_host"
 RULE_EOF
             else
                 # 服务端服务器字段（使用主脚本的标准格式）
-                cat >> "$rule_file" << RULE_EOF
+                tr -d '\r' >> "$rule_file" << RULE_EOF
 
 # 服务端服务器配置
 FORWARD_TARGET="$target"

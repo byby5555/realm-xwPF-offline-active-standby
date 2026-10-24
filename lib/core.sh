@@ -76,6 +76,9 @@ CONFIG_DIR="/etc/realm"
 CONFIG_PATH="${CONFIG_DIR}/config.json"
 SYSTEMD_PATH="/etc/systemd/system/realm.service"
 RULES_DIR="${CONFIG_DIR}/rules"
+# 健康状态文件：故障转移的探测结果落盘处（主备切换据此翻转权重）
+# 用变量统一，避免各处硬编码路径不一致（lib/rules.sh 之前引用过未定义的 $HEALTH_STATUS_FILE）
+HEALTH_STATUS_FILE="${HEALTH_STATUS_FILE:-${CONFIG_DIR}/health/health_status.conf}"
 
 # 默认tls和host域名（加密解密需要相同SNI）
 DEFAULT_SNI_DOMAIN="www.tesla.com"
@@ -100,6 +103,20 @@ is_valid_port() {
     local port="$1"
     [[ "$port" =~ ^[0-9]+$ ]] || return 1
     [ "$port" -ge 1 ] && [ "$port" -le 65535 ]
+}
+
+# 打印用法说明（--help / -h / help）
+show_usage() {
+    echo -e "${GREEN}用法:${NC} pf [命令]"
+    echo -e "${WHITE}Usage:${NC} pf [command]"
+    echo ""
+    echo -e "  ${GREEN}install${NC}                  安装/更新脚本（等价于 bash xwPF.sh install）"
+    echo -e "  ${GREEN}--restart-service${NC}        仅重启 realm 服务（供健康检查调用）"
+    echo -e "  ${GREEN}--generate-config-only${NC}   仅重新生成配置文件，不进入菜单"
+    echo -e "  ${GREEN}--help, -h, help${NC}         显示本帮助"
+    echo ""
+    echo "不带参数进入交互菜单。"
+    echo "Run without arguments to enter the interactive menu."
 }
 
 
@@ -131,7 +148,7 @@ generate_complete_config() {
         network_config='{"no_tcp": false, "use_udp": true}'
     fi
 
-    cat > "$config_path" <<EOF
+    tr -d '\r' > "$config_path" <<EOF
 {
     "network": $network_config,
     "endpoints": [$endpoints
@@ -266,6 +283,68 @@ get_public_ip() {
     echo ""
 }
 
+smart_display_target() {
+    local target="$1"
+
+    # 处理多地址情况
+    if [[ "$target" == *","* ]]; then
+        # 分割多地址
+        IFS=',' read -ra addresses <<< "$target"
+        local display_addresses=()
+
+        for addr in "${addresses[@]}"; do
+            addr=$(echo "$addr" | xargs)  # 去除空格
+            local display_addr="$addr"
+
+            if [[ "$addr" == "127.0.0.1" ]] || [[ "$addr" == "localhost" ]]; then
+                # IPv4本地地址时显示IPv4公网IP
+                local public_ipv4=$(get_public_ip ipv4)
+                if [ -n "$public_ipv4" ]; then
+                    display_addr="$public_ipv4"
+                fi
+            elif [[ "$addr" == "::1" ]]; then
+                # IPv6本地地址时显示IPv6公网IP
+                local public_ipv6=$(get_public_ip ipv6)
+                if [ -n "$public_ipv6" ]; then
+                    display_addr="$public_ipv6"
+                fi
+            fi
+
+            display_addresses+=("$display_addr")
+        done
+
+        # 重新组合地址
+        local result=""
+        for i in "${!display_addresses[@]}"; do
+            if [ $i -gt 0 ]; then
+                result="$result,"
+            fi
+            result="$result${display_addresses[i]}"
+        done
+        echo "$result"
+    else
+        # 单地址处理
+        if [[ "$target" == "127.0.0.1" ]] || [[ "$target" == "localhost" ]]; then
+            # IPv4本地地址时显示IPv4公网IP
+            local public_ipv4=$(get_public_ip ipv4)
+            if [ -n "$public_ipv4" ]; then
+                echo "$public_ipv4"
+            else
+                echo "$target"
+            fi
+        elif [[ "$target" == "::1" ]]; then
+            # IPv6本地地址时显示IPv6公网IP
+            local public_ipv6=$(get_public_ip ipv6)
+            if [ -n "$public_ipv6" ]; then
+                echo "$public_ipv6"
+            else
+                echo "$target"
+            fi
+        else
+            echo "$target"
+        fi
+    fi
+}
 # 支持realm单端口多规则复用，避免误报端口冲突
 check_port_usage() {
     local port="$1"
@@ -288,16 +367,8 @@ check_port_usage() {
     return 0
 }
 
-check_connectivity() {
-    local target="$1"
-    local port="$2"
-    local timeout="${3:-3}"
-
-    [ -z "$target" ] || [ -z "$port" ] && return 1
-
-    # bash /dev/tcp（全平台通用）
-    timeout "$timeout" bash -c "echo >/dev/tcp/$target/$port" 2>/dev/null
-}
+# 连通性探测 check_connectivity 已移入 lib/health.sh（与故障转移共用同一份实现，
+# 优先 nc，缺 nc 时回退 bash /dev/tcp）——health.sh 在本文件之后加载。
 
 validate_port() {
     [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
