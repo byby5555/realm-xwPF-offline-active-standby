@@ -24,6 +24,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # 台架版本：台架自身的改动会让旧报告的结论打折，改了台架就 bump
+# v2.5.0：第 7 轮收尾 —— 跟随产品口径变更（健康状态 TARGET 改 host:port）
+#         · T51 状态记录定位改成**格式无关**（host / host:port 都能定位）
+#           —— 记录定位写死旧格式 → 产品改口径就整组用例替产品背锅
+#         · T51 补「同 host 不同端口必须查不到」的负向对照
+#         · 健康状态 fixture（_write_health）改写**当前格式**（host:port）
+#           —— 旧格式 fixture 会让用例退化成「旧格式兼容兜底分支」，精确索引主路径无人覆盖
+#         · 新增 T52：同 host 不同端口互不覆盖（写侧 + 读侧）+ 旧格式兼容 + 3 条负向对照
 # v2.4.0：第 7 轮 —— 补覆盖盲区
 #         · T32 条件 4 改成**形态无关**（形态 A 内嵌 / 形态 B source 真源都判过）
 #         · T32 条件 5 正则收紧（只匹配肯定误导句式 + 整行否定词豁免 + 扫描范围下限护栏）
@@ -32,7 +39,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #         · tests/test_update.sh、tests/test_latency.sh 改薄封装（消除第二入口）
 #         · jq 桩扩能力：数组下标路径、-e 退出码语义、JSON 对象字面量；
 #           并把 `..` 这类「会被静默误解」的语法显式判为不支持
-HARNESS_VERSION="v2.4.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T51-coverage)"
+HARNESS_VERSION="v2.5.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport)"
 
 # shellcheck source=lib/harness.sh
 . "$SCRIPT_DIR/lib/harness.sh"
@@ -149,6 +156,8 @@ CASES=(
     "T49:case_T49_jq_config_generation"
     "T50:case_T50_rule_crud_persistence"
     "T51:case_T51_latency_merged"
+    # —— 第 7 轮收尾：健康状态 TARGET 口径（host:port）——
+    "T52:case_T52_health_target_scope"
 )
 
 for f in "$SCRIPT_DIR"/cases/*.sh; do

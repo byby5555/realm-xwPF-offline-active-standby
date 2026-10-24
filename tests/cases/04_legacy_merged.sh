@@ -123,41 +123,41 @@ case_T24_priority_primary_selection() {
     # 10,0 → 第一个为主
     _make_rule_pair "$rules" "roundrobin" "false"
     _apply_weights 443 "10,0" >/dev/null
-    _write_health "$health" "10.0.0.1:healthy" "10.0.0.2:healthy"
+    _write_health "$health" 8443 "10.0.0.1:healthy" "10.0.0.2:healthy"
     b=$(_gen_balance); h_log "全健康(10,0) -> $b"
     h_check_contains "$b" "roundrobin: 1, 0" "10,0 全健康 → 第一个为主"
 
     # 主挂 → 切备
-    _write_health "$health" "10.0.0.1:failed" "10.0.0.2:healthy"
+    _write_health "$health" 8443 "10.0.0.1:failed" "10.0.0.2:healthy"
     b=$(_gen_balance); h_log "主故障(10,0) -> $b"
     h_check_contains "$b" "roundrobin: 0, 1" "主故障 → 切到备"
 
     # 主恢复 → 切回
-    _write_health "$health" "10.0.0.1:healthy" "10.0.0.2:healthy"
+    _write_health "$health" 8443 "10.0.0.1:healthy" "10.0.0.2:healthy"
     b=$(_gen_balance); h_log "主恢复(10,0) -> $b"
     h_check_contains "$b" "roundrobin: 1, 0" "主恢复 → 切回主"
 
     # 0,10 → 第二个为主
     _make_rule_pair "$rules" "roundrobin" "false"
     _apply_weights 443 "0,10" >/dev/null
-    _write_health "$health" "10.0.0.1:healthy" "10.0.0.2:healthy"
+    _write_health "$health" 8443 "10.0.0.1:healthy" "10.0.0.2:healthy"
     b=$(_gen_balance); h_log "全健康(0,10) -> $b"
     h_check_contains "$b" "roundrobin: 0, 1" "0,10 → 第二个为主"
 
     # 0,10 且第二个故障 → 回退第一个
-    _write_health "$health" "10.0.0.1:healthy" "10.0.0.2:failed"
+    _write_health "$health" 8443 "10.0.0.1:healthy" "10.0.0.2:failed"
     b=$(_gen_balance); h_log "第二主故障(0,10) -> $b"
     h_check_contains "$b" "roundrobin: 1, 0" "第二主故障 → 切回第一个"
 
     # 全挂(0,10) → 兜底第二个（优先级最高）
-    _write_health "$health" "10.0.0.1:failed" "10.0.0.2:failed"
+    _write_health "$health" 8443 "10.0.0.1:failed" "10.0.0.2:failed"
     b=$(_gen_balance); h_log "全挂(0,10) -> $b"
     h_check_contains "$b" "roundrobin: 0, 1" "全挂(0,10) → 兜底第二个"
 
     # 全挂(10,0) → 兜底第一个
     _make_rule_pair "$rules" "roundrobin" "false"
     _apply_weights 443 "10,0" >/dev/null
-    _write_health "$health" "10.0.0.1:failed" "10.0.0.2:failed"
+    _write_health "$health" 8443 "10.0.0.1:failed" "10.0.0.2:failed"
     b=$(_gen_balance); h_log "全挂(10,0) -> $b"
     h_check_contains "$b" "roundrobin: 1, 0" "全挂(10,0) → 兜底第一个"
 }
@@ -349,29 +349,33 @@ case_T29_active_standby_six_states() {
     local health="$SBX_ROOT/realm/health/health_status.conf"
     local b
 
+    # ★ 先清空规则目录：沙箱是**跨用例共用**的，前面用例留下的规则
+    #   （同 LISTEN_PORT 且 FAILOVER_ENABLED=true）会改变本例的故障转移判定 ——
+    #   用例结果不能依赖跑批顺序。
+    rm -f "$rules"/rule-*.conf
     _make_rule "$rules/rule-1.conf" 8080 "active-standby" "true" "1,0,0" "10.0.0.1,10.0.0.2,10.0.0.3"
 
-    _write_health "$health" "10.0.0.1:healthy" "10.0.0.2:healthy" "10.0.0.3:healthy"
+    _write_health "$health" 8080 "10.0.0.1:healthy" "10.0.0.2:healthy" "10.0.0.3:healthy"
     b=$(_gen_balance); h_log "场景1 平时 -> $b"
     h_check_contains "$b" "roundrobin: 1, 0, 0" "场景1 平时"
 
-    _write_health "$health" "10.0.0.1:failed" "10.0.0.2:healthy" "10.0.0.3:healthy"
+    _write_health "$health" 8080 "10.0.0.1:failed" "10.0.0.2:healthy" "10.0.0.3:healthy"
     b=$(_gen_balance); h_log "场景2 主挂 -> $b"
     h_check_contains "$b" "roundrobin: 0, 1, 0" "场景2 主挂"
 
-    _write_health "$health" "10.0.0.1:failed" "10.0.0.2:failed" "10.0.0.3:healthy"
+    _write_health "$health" 8080 "10.0.0.1:failed" "10.0.0.2:failed" "10.0.0.3:healthy"
     b=$(_gen_balance); h_log "场景3 主+备1挂 -> $b"
     h_check_contains "$b" "roundrobin: 0, 0, 1" "场景3 主+备1挂"
 
-    _write_health "$health" "10.0.0.1:healthy" "10.0.0.2:failed" "10.0.0.3:healthy"
+    _write_health "$health" 8080 "10.0.0.1:healthy" "10.0.0.2:failed" "10.0.0.3:healthy"
     b=$(_gen_balance); h_log "场景4 主恢复 -> $b"
     h_check_contains "$b" "roundrobin: 1, 0, 0" "场景4 主恢复（严格切回主）"
 
-    _write_health "$health" "10.0.0.1:healthy" "10.0.0.2:failed" "10.0.0.3:healthy"
+    _write_health "$health" 8080 "10.0.0.1:healthy" "10.0.0.2:failed" "10.0.0.3:healthy"
     b=$(_gen_balance); h_log "场景5 备1单挂 -> $b"
     h_check_contains "$b" "roundrobin: 1, 0, 0" "场景5 备1单挂"
 
-    _write_health "$health" "10.0.0.1:failed" "10.0.0.2:failed" "10.0.0.3:failed"
+    _write_health "$health" 8080 "10.0.0.1:failed" "10.0.0.2:failed" "10.0.0.3:failed"
     b=$(_gen_balance); h_log "场景6 全挂 -> $b"
     h_check_contains "$b" "roundrobin: 1, 0, 0" "场景6 全挂兜底（不断流）"
 }
@@ -386,26 +390,28 @@ case_T30_exclude_mode_five_states() {
     local health="$SBX_ROOT/realm/health/health_status.conf"
     local n
 
+    # ★ 同 T29：先清空规则目录，别继承前面用例留下的同端口规则
+    rm -f "$rules"/rule-*.conf
     _make_rule "$rules/rule-1.conf" 8080 "roundrobin" "true" "1,1,1" "10.0.0.1,10.0.0.2,10.0.0.3"
 
-    _write_health "$health" "10.0.0.1:healthy" "10.0.0.2:healthy" "10.0.0.3:healthy"
+    _write_health "$health" 8080 "10.0.0.1:healthy" "10.0.0.2:healthy" "10.0.0.3:healthy"
     n=$(_gen_target_count); h_log "场景7 全健康 -> 目标数 $n"
     h_check_eq "3" "$n" "场景7 全健康 → 3 个目标"
 
-    _write_health "$health" "10.0.0.1:failed" "10.0.0.2:healthy" "10.0.0.3:healthy"
+    _write_health "$health" 8080 "10.0.0.1:failed" "10.0.0.2:healthy" "10.0.0.3:healthy"
     n=$(_gen_target_count); h_log "场景8 主挂 -> 目标数 $n"
     h_check_eq "2" "$n" "场景8 主挂 → 剔除后 2 个"
 
-    _write_health "$health" "10.0.0.1:failed" "10.0.0.2:failed" "10.0.0.3:healthy"
+    _write_health "$health" 8080 "10.0.0.1:failed" "10.0.0.2:failed" "10.0.0.3:healthy"
     n=$(_gen_target_count); h_log "场景9 主+备1挂 -> 目标数 $n"
     h_check_eq "1" "$n" "场景9 主+备1挂 → 只剩 1 个"
 
-    _write_health "$health" "10.0.0.1:failed" "10.0.0.2:failed" "10.0.0.3:failed"
+    _write_health "$health" 8080 "10.0.0.1:failed" "10.0.0.2:failed" "10.0.0.3:failed"
     n=$(_gen_target_count); h_log "场景10 全挂 -> 目标数 $n"
     h_check_eq "1" "$n" "场景10 全挂 → 保留第一个"
 
     _make_rule "$rules/rule-1.conf" 8080 "roundrobin" "false" "1,1,1" "10.0.0.1,10.0.0.2,10.0.0.3"
-    _write_health "$health" "10.0.0.1:failed" "10.0.0.2:failed" "10.0.0.3:failed"
+    _write_health "$health" 8080 "10.0.0.1:failed" "10.0.0.2:failed" "10.0.0.3:failed"
     n=$(_gen_target_count); h_log "场景11 failover off -> 目标数 $n"
     h_check_eq "3" "$n" "场景11 failover off → 不过滤，3 个都在"
 }
@@ -416,6 +422,7 @@ case_T31_set_u_robustness() {
         "set -u 下跑 generate_endpoints_from_rules" \
         "不致命中断；输出与普通模式一致；仍生成 balance 与全部目标；无 unbound variable"
 
+    rm -f "$SBX_ROOT/realm/rules"/rule-*.conf
     _make_rule "$SBX_ROOT/realm/rules/rule-1.conf" 8080 "active-standby" "true" "10,0" "10.0.0.1,10.0.0.2"
 
     # 对照组：证明旧写法在 set -u 下确实致命（避免"怎么写都绿"）

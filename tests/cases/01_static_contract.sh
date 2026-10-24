@@ -76,7 +76,7 @@ case_T02_old_repo_name() {
     h_case_begin "T02" "旧仓库名残留" \
         "冻结态 $BASE_SHA（只读）" \
         "grep -F 'zywe03/realm-xwPF'" \
-        "全仓出现次数 0（tests/ 自身除外）"
+        "产品与用户可见文档里出现次数 0（台架自身 tests/ 与审查报告 reports/ 除外）"
 
     # ★ 第 5 轮：把「自指风险」显式化（这条用例自己就含被禁字符串）。
     #
@@ -86,40 +86,56 @@ case_T02_old_repo_name() {
     #   否则将来只要改动本文件的逻辑（哪怕只改一句注释、换一个变量名），
     #   统计就会把自己数进去 → 出现跟产品无关的**自指假红**。
     #
-    #   所以这里给三条断言，把「排除 tests/」这件事变成可验证的：
-    #     1) 排除 tests/ 后命中 0 条              → 产品与文档干净
-    #     2) 全树命中中落在 tests/ 之外的 0 条   → 证明排除 tests/ 没掩盖任何外部残留
-    #     3) 冻结树里 tests/ 内命中 ≥ 1          → 证明排除确实是必要的（不是多余的）
+    # ★ 第 7 轮：排除范围从 tests/ 扩到 **tests/ + reports/**，理由三条：
+    #   1) 不变式本身是「**产品代码与面向用户的文档**里不得再出现旧仓库名」——
+    #      用户实际拿到的输出（lib/ cmd/ docs/ README 脚本）里不能有指向旧仓库的链接。
+    #   2) `tests/` 是台架自身、`reports/` 是审查报告 —— 两者都是**过程产物**，不是产品交付物。
+    #      审稿要在报告里说明「旧仓库名出现在哪」，**就必须引用它**；
+    #      不引用反而写不清问题（与 tests/ 的自指是同一类）。
+    #   3) **URL 层面的覆盖没有丢**：T01（下载地址一致性）**不排除 reports/**，
+    #      仍然全树扫 .sh/.md/.py/.service 里的下载 URL；
+    #      报告里若残留指向旧仓库的下载链接，T01 照样判红。
+    #      T02 只是不再查「纯文字提及」—— 报告里用文字提到旧仓库名不是产品缺陷。
+    #
+    #   所以这里给四条断言，把「排除 tests/ 与 reports/」变成**可验证的**：
+    #     1) 排除 tests/ 与 reports/ 后命中 0 条   → 产品与用户可见文档干净
+    #     2) 全树命中中落在 tests/ 与 reports/ 之外的 0 条
+    #                                              → 证明排除没掩盖任何外部残留
+    #     3) 冻结树里 tests/ 内命中 ≥ 1             → 证明排除 tests/ 是必要的（不是多余的）
+    #     4) 冻结树里 reports/ 内命中 ≥ 1           → 证明排除 reports/ 是必要的（同上）
 
-    local hits_prod hits_all hits_tests tmp
-    local count_prod=0 count_tests=0 count_outside=0
+    local hits_prod hits_all hits_tests hits_reports tmp
+    local count_prod=0 count_tests=0 count_reports=0 count_outside=0
 
-    # 统计口径：排除 tests/ 目录（断言自身所在目录）
-    hits_prod=$(grep -rnF "$REPO_OLD" "$SBX_SRC" --exclude-dir=tests 2>/dev/null)
-    # 全树命中（不排除任何目录）—— 用来核对「排除 tests/ 到底盖住了什么」
+    # 统计口径：排除 tests/（断言自身所在目录）与 reports/（审查报告目录）
+    hits_prod=$(grep -rnF "$REPO_OLD" "$SBX_SRC" --exclude-dir=tests --exclude-dir=reports 2>/dev/null)
+    # 全树命中（不排除任何目录）—— 用来核对「排除到底盖住了什么」
     hits_all=$(grep -rnF "$REPO_OLD" "$SBX_SRC" 2>/dev/null)
     # tests/ 目录内的命中
     hits_tests=$(grep -rnF "$REPO_OLD" "$SBX_SRC/tests" 2>/dev/null)
+    # reports/ 目录内的命中
+    hits_reports=$(grep -rnF "$REPO_OLD" "$SBX_SRC/reports" 2>/dev/null)
 
     [ -n "$hits_prod" ] && count_prod=$(printf '%s' "$hits_prod" | grep -c .)
     [ -n "$hits_tests" ] && count_tests=$(printf '%s' "$hits_tests" | grep -c .)
+    [ -n "$hits_reports" ] && count_reports=$(printf '%s' "$hits_reports" | grep -c .)
     if [ -n "$hits_all" ]; then
         # 路径形如 <沙箱>/src/tests/README.md:45:xxx → 目录成分里有 tests/ 的算 tests/ 内
-        tmp=$(printf '%s\n' "$hits_all" | grep -vE '(^|/)tests/')
+        tmp=$(printf '%s\n' "$hits_all" | grep -vE '(^|/)tests/' | grep -vE '(^|/)reports/')
         [ -n "$tmp" ] && count_outside=$(printf '%s' "$tmp" | grep -c .)
     fi
 
     if [ -n "$hits_prod" ]; then
-        h_log "命中明细（排除 tests/ 后）:"
+        h_log "命中明细（排除 tests/ 与 reports/ 后）:"
         while IFS= read -r v; do h_log "  - ${v#$SBX_SRC/}"; done <<< "$hits_prod"
     fi
     if [ -n "$hits_all" ]; then
-        h_log "全树命中（含 tests/ 自身）共 $(printf '%s' "$hits_all" | grep -c .) 处，其中落在 tests/ 之外 $count_outside 处"
+        h_log "全树命中（含 tests/ 与 reports/ 自身）共 $(printf '%s' "$hits_all" | grep -c .) 处：tests/ 内 $count_tests 处、reports/ 内 $count_reports 处、两者之外 $count_outside 处"
         while IFS= read -r v; do h_log "  · ${v#$SBX_SRC/}"; done <<< "$hits_all"
     fi
 
-    h_check_eq "0" "$count_prod" "旧仓库名出现次数（排除 tests/ 自身）"
-    h_check_eq "0" "$count_outside" "全树命中中落在 tests/ 之外的条数（证明排除 tests/ 没掩盖外部残留）"
+    h_check_eq "0" "$count_prod" "旧仓库名出现次数（排除 tests/ 与 reports/ 自身）"
+    h_check_eq "0" "$count_outside" "全树命中中落在 tests/ 与 reports/ 之外的条数（证明排除没掩盖外部残留）"
 
     if [ -f "$SBX_SRC/tests/cases/01_static_contract.sh" ]; then
         h_check_ge 1 "$count_tests" "tests/ 内命中数（断言自身含被禁字符串 → 排除 tests/ 是必要的）"
@@ -127,6 +143,45 @@ case_T02_old_repo_name() {
         h_log "冻结点没有 tests/cases/01_static_contract.sh（老冻结点）→ 「断言自身含被禁字符串」这一条不适用"
         h_pass "断言自身含被禁字符串的检查不适用（冻结点无 tests/cases/01_static_contract.sh）"
     fi
+
+    # reports/ 的排除同样要「必要性」可验证 —— 否则它就是个没必要的放宽
+    if [ ! -d "$SBX_SRC/reports" ]; then
+        h_log "冻结点没有 reports/ 目录（老冻结点）→ 「排除 reports/ 是必要的」这一条不适用"
+        h_pass "reports/ 排除的必要性检查不适用（冻结点无 reports/ 目录）"
+    elif [ "$count_reports" = "0" ]; then
+        h_log "冻结树的 reports/ 里没有旧仓库名命中 → 这条排除当前用不上（记一条提示，不判红）"
+        h_pass "reports/ 内命中数 = 0 → 排除 reports/ 当前用不上（不判红，但如实记一条）"
+    else
+        h_check_ge 1 "$count_reports" "reports/ 内命中数（审查报告必须引用旧仓库名才能说明问题 → 排除 reports/ 是必要的）"
+    fi
+
+    # ── 负向对照：同一套计数口径必须「该抓的抓、该放的放」──
+    # 用**合成探针树**（不碰冻结态、不碰仓库）：
+    #   · lib/ 下的命中 → 必须被算成「产品命中」（证明排除没有过度）
+    #   · reports/ 下的命中 → 必须被算成「已排除」
+    #   · tests/ 下的命中 → 必须被算成「已排除」
+    local probe="$SBX_ROOT/t02_probe"
+    rm -rf "$probe"
+    mkdir -p "$probe/lib" "$probe/reports" "$probe/tests"
+    printf 'x %s\n' "$REPO_OLD" > "$probe/lib/product.sh"
+    printf 'x %s\n' "$REPO_OLD" > "$probe/reports/review.md"
+    printf 'x %s\n' "$REPO_OLD" > "$probe/tests/case.sh"
+    local p_prod p_all p_tests p_reports p_outside
+    p_prod=$(grep -rnF "$REPO_OLD" "$probe" --exclude-dir=tests --exclude-dir=reports 2>/dev/null)
+    p_all=$(grep -rnF "$REPO_OLD" "$probe" 2>/dev/null)
+    p_tests=$(grep -rnF "$REPO_OLD" "$probe/tests" 2>/dev/null)
+    p_reports=$(grep -rnF "$REPO_OLD" "$probe/reports" 2>/dev/null)
+    p_outside=$(printf '%s\n' "$p_all" | grep -vE '(^|/)tests/' | grep -vE '(^|/)reports/')
+    local np_prod=0 np_tests=0 np_reports=0 np_outside=0
+    [ -n "$p_prod" ] && np_prod=$(printf '%s' "$p_prod" | grep -c .)
+    [ -n "$p_tests" ] && np_tests=$(printf '%s' "$p_tests" | grep -c .)
+    [ -n "$p_reports" ] && np_reports=$(printf '%s' "$p_reports" | grep -c .)
+    [ -n "$p_outside" ] && np_outside=$(printf '%s' "$p_outside" | grep -c .)
+    h_log "负向对照（合成探针树）: prod=$np_prod outside=$np_outside tests=$np_tests reports=$np_reports"
+    h_check_eq "1" "$np_prod" "负向对照：lib/ 下的命中必须被算成产品命中（排除没有过度）"
+    h_check_eq "1" "$np_outside" "负向对照：lib/ 下的命中必须被算成「两者之外」（排除没掩盖）"
+    h_check_eq "1" "$np_tests" "负向对照：tests/ 下的命中必须被算成已排除"
+    h_check_eq "1" "$np_reports" "负向对照：reports/ 下的命中必须被算成已排除"
 }
 
 case_T03_eol() {

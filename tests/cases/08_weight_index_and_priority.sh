@@ -93,13 +93,13 @@ case_T42_priority_single_primary() {
 
     local b
     # 全健康 → 主 = 权重 5 的那个（第一个）
-    _write_health "$health" "10.0.0.1:healthy" "10.0.0.2:healthy" "10.0.0.3:healthy"
+    _write_health "$health" 8080 "10.0.0.1:healthy" "10.0.0.2:healthy" "10.0.0.3:healthy"
     b=$(_gen_balance); h_log "全健康(5,3,0) -> $b"
     # ★ 关键断言：权重是优先级不是分流比例 → 输出的是 0/1 列表，不是 5,3,0
     h_check_contains "$b" "roundrobin: 1, 0, 0" "全健康 → 只有权重 5 的目标当主（不是 5,3,0 分流）"
 
     # 权重 5 的挂了 → 第一备（权重 3）顶上
-    _write_health "$health" "10.0.0.1:failed" "10.0.0.2:healthy" "10.0.0.3:healthy"
+    _write_health "$health" 8080 "10.0.0.1:failed" "10.0.0.2:healthy" "10.0.0.3:healthy"
     b=$(_gen_balance); h_log "主挂(5,3,0) -> $b"
     h_check_contains "$b" "roundrobin: 0, 1, 0" "权重 5 的故障 → 权重 3 的当第一备"
 }

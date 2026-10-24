@@ -144,27 +144,50 @@ case_T51_latency_merged() {
     h_check_eq "12ms" "$disp_nohist" "format_latency_display 无历史"
     h_check_eq "-" "$disp_none" "format_latency_display 无数据"
 
-    # get_health_status_record：状态文件是产品自己写的，这里手工造一行同格式的
+    # get_health_status_record：状态文件是产品自己写的，这里手工造同格式的行
+    # ★ 两种形态都要测：
+    #   (a) 当前格式 TARGET=host:port → 按精确键命中（生产主路径）
+    #   (b) 旧格式   TARGET=裸 host  → **查不到**（展示端只认精确键：
+    #       旧格式记录说不清是哪个端口的，显示出来会把同 host 另一个端口的状态
+    #       显示成这条目标的 —— N1-R1 之前就是这个坑）
+    #   (c) 同 host 但**端口不同** → 必须查不到（这正是 host:port 口径的意义）
     local sf="$SBX_ROOT/realm/health/health_status.conf"
     mkdir -p "$(dirname "$sf")"
-    cat > "$sf" <<'EOF'
-# Realm健康状态文件
-1|127.0.0.1|healthy|0|3|1792810000|0|12|10,12,14
-EOF
-    local rec
+    local row_new="1|127.0.0.1:18097|healthy|0|3|1792810000|0|12|10,12,14"
+    local row_old="2|127.0.0.1|healthy|0|3|1792810000|0|12|10,12,14"
+    local rec recline recrc recmiss
+    printf '# Realm健康状态文件\n%s\n' "$row_new" > "$sf"
     rec=$(_run_in_sandbox '
         source "$1/lib/health.sh" >/dev/null 2>&1
-        get_health_status_record "127.0.0.1"
+        get_health_status_record "127.0.0.1:18097"
         echo "RC=$?"
-        get_health_status_record "10.9.9.9" >/dev/null 2>&1
+    ' 2>&1)
+    recline=$(printf '%s' "$rec" | grep -a '^1|127\.0\.0\.1[:|]' | head -1)
+    recrc=$(printf '%s' "$rec" | grep -a '^RC=' | head -1 | cut -d= -f2-)
+    h_check_eq "$row_new" "$recline" "get_health_status_record 按 host:port 精确命中（新格式）"
+    h_check_eq "0" "$recrc" "get_health_status_record 存在时返回 0"
+
+    # 旧格式（裸 host）：**不得**被当成这条目标的记录
+    # 展示端只认精确键（host:port）—— 旧格式记录说不清是哪个端口的，
+    # 拿来显示会把同 host 另一个端口的状态显示成这条目标的（N1-R1 之前就是这个坑）。
+    printf '# Realm健康状态文件\n%s\n' "$row_old" > "$sf"
+    rec=$(_run_in_sandbox '
+        source "$1/lib/health.sh" >/dev/null 2>&1
+        get_health_status_record "127.0.0.1:18097"
+        echo "RC=$?"
+    ' 2>&1)
+    recline=$(printf '%s' "$rec" | grep -a '^2|127\.0\.0\.1|' | head -1)
+    recrc=$(printf '%s' "$rec" | grep -a '^RC=' | head -1 | cut -d= -f2-)
+    h_check_eq "" "$recline" "get_health_status_record 不把旧格式记录当成这条目标的（避免误显示同 host 另一个端口的状态）"
+    h_check_rc "nonzero" "$recrc" "get_health_status_record 旧格式记录查不到时返回非 0"
+
+    # 目标不存在 → 非 0
+    rec=$(_run_in_sandbox '
+        source "$1/lib/health.sh" >/dev/null 2>&1
+        get_health_status_record "10.9.9.9:18097" >/dev/null 2>&1
         echo "RC_MISS=$?"
     ' 2>&1)
-    local recline recrc recmiss
-    recline=$(printf '%s' "$rec" | grep -a '^1|127.0.0.1|' | head -1)
-    recrc=$(printf '%s' "$rec" | grep -a '^RC=' | head -1 | cut -d= -f2-)
     recmiss=$(printf '%s' "$rec" | grep -a '^RC_MISS=' | head -1 | cut -d= -f2-)
-    h_check_eq "1|127.0.0.1|healthy|0|3|1792810000|0|12|10,12,14" "$recline" "get_health_status_record 返回整行"
-    h_check_eq "0" "$recrc" "get_health_status_record 存在时返回 0"
     h_check_rc "nonzero" "$recmiss" "get_health_status_record 目标不存在 → 非 0"
 
     # ── D. 生成的 health_check.sh 真跑一轮 ──
@@ -209,8 +232,13 @@ EOF
     hrc=$(bash "$hc" >/dev/null 2>&1; echo $?)
     h_check_eq "0" "$hrc" "健康检查脚本退出码 0"
 
+    # ★ 记录定位必须**格式无关**：TARGET 字段的口径经历过一次变更
+    #   （裸 host → host:port），把定位写死成旧格式 → 产品改了口径就整组用例判红，
+    #   那是台架在替产品背锅，不是产品坏了。这里按 RULE_ID + host 前缀匹配，
+    #   host 和 host:port 两种形态都能定位到同一条记录。
+    local _T51_REC_RE='^1\|127\.0\.0\.1[:|]'
     local line1
-    line1=$(grep '^1|127.0.0.1|' "$sf" 2>/dev/null | head -1)
+    line1=$(grep -E "$_T51_REC_RE" "$sf" 2>/dev/null | head -1)
     h_log "状态记录: $line1"
     local v1
     v1=$(_t51_judge_status "$line1")
@@ -221,7 +249,7 @@ EOF
     bash "$hc" >/dev/null 2>&1
     bash "$hc" >/dev/null 2>&1
     local hist2 cnt2
-    hist2=$(grep '^1|127.0.0.1|' "$sf" 2>/dev/null | head -1 | cut -d'|' -f9)
+    hist2=$(grep -E "$_T51_REC_RE" "$sf" 2>/dev/null | head -1 | cut -d'|' -f9)
     cnt2=$(printf '%s' "$hist2" | tr ',' '\n' | grep -c .)
     h_log "跑 3 轮后的历史: $hist2（$cnt2 个样本）"
     h_check_eq "3" "$cnt2" "时延历史累积到 3 个样本"
@@ -230,7 +258,7 @@ EOF
     local i
     for i in 1 2 3 4; do bash "$hc" >/dev/null 2>&1; done
     local hist3 cnt3
-    hist3=$(grep '^1|127.0.0.1|' "$sf" 2>/dev/null | head -1 | cut -d'|' -f9)
+    hist3=$(grep -E "$_T51_REC_RE" "$sf" 2>/dev/null | head -1 | cut -d'|' -f9)
     cnt3=$(printf '%s' "$hist3" | tr ',' '\n' | grep -c .)
     h_log "跑 7 轮后的历史: $hist3（$cnt3 个样本）"
     h_check_eq "5" "$cnt3" "时延历史最多保留 5 个样本"
@@ -252,9 +280,11 @@ EOF
     h_check_eq "1" "$n_hint" "菜单提示时延来源与刷新周期"
 
     # 真渲染一次（set -u 下也必须跑得通）
+    # ★ fixture 用**当前格式**（TARGET=host:port，端口与下面规则的 REMOTE_PORT 一致）：
+    #   菜单侧按 host:port 取记录，写成裸 host 会让这条断言退化成在测兼容兜底分支。
     cat > "$sf" <<'EOF'
-1|127.0.0.1|healthy|0|3|1792810000|0|12|10,12,14
-2|127.0.0.2|healthy|0|3|1792810000|0|88|80,90
+1|127.0.0.1:18097|healthy|0|3|1792810000|0|12|10,12,14
+2|127.0.0.2:18097|healthy|0|3|1792810000|0|88|80,90
 EOF
     cat > "$rules/rule-1.conf" <<'EOF'
 RULE_ID=1
@@ -361,4 +391,18 @@ EOS
     h_log "非数字时延判定: $(printf '%s' "$v3" | cut -f1) —— $(printf '%s' "$v3" | cut -f2-)"
     h_check_contains "$v3" "FAIL" "负向对照 3：时延字段非数字时必须判红"
     h_check_contains "$v3" "第 8 个字段" "负向对照 3：判红原因指到「第 8 个字段」"
+
+    # ── 负向对照 4：同 host 但端口不同 → 必须查不到记录 ──
+    # 这是 host:port 口径的核心性质：状态按 host:port 区分，不是按 host。
+    # 若实现退回「只按 host 匹配」，这条就会命中 → 断言红。
+    printf '# Realm健康状态文件\n1|127.0.0.1:18098|healthy|0|3|1792810000|0|12|10,12,14\n' > "$sf"
+    local v4 v4rc
+    v4=$(_run_in_sandbox '
+        source "$1/lib/health.sh" >/dev/null 2>&1
+        get_health_status_record "127.0.0.1:18097" >/dev/null 2>&1
+        echo "RC=$?"
+    ' 2>&1)
+    v4rc=$(printf '%s' "$v4" | grep -a '^RC=' | head -1 | cut -d= -f2-)
+    h_log "同 host 不同端口的查询结果: RC=$v4rc"
+    h_check_rc "nonzero" "$v4rc" "负向对照 4：同 host 不同端口 → 必须查不到记录（状态按 host:port 区分）"
 }

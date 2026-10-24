@@ -1,31 +1,30 @@
 # 被测产物基线快照（冻结点机制）
 repo        : /c/Users/liwend/.minimax-agent-cn/projects/realm-xwPF-offline-active-standby
-BASE_SHA    : b9b4c5e09a2ac07be5c478ae0edd6525516d3459
-BASE_SHA 全 : b9b4c5e09a2ac07be5c478ae0edd6525516d3459
-BASE 标题   : Sat Oct 24 12:38:39 2026 +0800 docs: 修正 M4 之后的过时说法 —— 探测实现已是机械抽取，不再需要「两处同步」
-harness     : v2.3.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract)
-time        : 2026-10-24 12:40:46 +0800
-sandbox     : /tmp/xwpf-sbx.HNHoHd
+BASE_SHA    : a7e23fc294dc964cfcc4148a44f504bf03856565
+BASE_SHA 全 : a7e23fc294dc964cfcc4148a44f504bf03856565
+BASE 标题   : Sat Oct 24 14:14:57 2026 +0800 fix(health): 健康状态 TARGET 口径改 host:port，同 host 多端口不再互相覆盖
+harness     : v2.5.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport)
+time        : 2026-10-24 14:46:41 +0800
+sandbox     : /tmp/xwpf-sbx.8VEVcK
 
 --- 当前工作区 HEAD（仅供对照，不作为被测产物）---
-head        : b9b4c5e09a2ac07be5c478ae0edd6525516d3459
+head        : a7e23fc294dc964cfcc4148a44f504bf03856565
 
 --- git status --porcelain（跑批时刻的工作区状态）---
- M tests/BASELINE-round2.md
+ M docs/health-check-and-failover.md
+ M lib/health.sh
+ M lib/realm.sh
  M tests/README.md
  M tests/TEST-HARNESS.md
  M tests/baseline-manifest.txt
+ M tests/cases/00_common.sh
  M tests/cases/01_static_contract.sh
  M tests/cases/04_legacy_merged.sh
- M tests/lib/harness.sh
+ M tests/cases/08_weight_index_and_priority.sh
+ M tests/cases/11_latency.sh
  M tests/run_tests.sh
-?? reports/round2-review.md
-?? tests/BASELINE-round3.md
-?? tests/BASELINE-round4.md
-?? tests/BASELINE-round5.md
-?? tests/cases/06_recent_behaviours.sh
-?? tests/cases/07_commit_message_contract.sh
-?? tests/commit-msg-exemptions.txt
+?? tests/BASELINE-round7.md
+?? tests/cases/12_health_target_scope.sh
 
 --- sha256（冻结态原始 blob = 本次被测产物，git show $BASE_SHA:<path>）---
 5ff152f64acc20af1b741b9c06e472ea498b155e17c41922fba78473b3d8fb2b  README.md
@@ -35,16 +34,16 @@ head        : b9b4c5e09a2ac07be5c478ae0edd6525516d3459
 0133affbb41f18f7e3178c774f89777baa25666ea1a57b13b7c30823c21aa7b2  cmd/xwpf-failover.service
 347bb02c2a5df27c8369c7657fcc37720e43f5049b3efdb3c8b195615c97baa2  docker-web-auth-feasibility.md
 afc435b90b5f38469c1fafaf3fdd78c5b464f1b8cbece55ef6de522d03367509  docs/README.md
-2d9721e0a92ddfd215dfb86d33ed1faf40e4aa102d19433ca846a1e1b88a559d  docs/active-standby-logic.md
-8559a679e01d263fb7bbf20792a56ec935adabf632e8397f9bedf34ea4e5408c  docs/health-check-and-failover.md
+c57749a8eedd85c8a708b5ebc466dc6d18aa74f781f34e59cea152c6ac97be19  docs/active-standby-logic.md
+06f61e30224445b874bddcd13a965e69b124e3bc4f88c617f5bd93749dbfb48c  docs/health-check-and-failover.md
 f1eb2aa42b8d8d5f3d4f7a3dcfb78129ed18d70cdc85d4667faa56d3a0d5b90a  docs/install-and-upgrade.md
 b00fb1e86343a8c9dd3e2e54b058ad1414734a4aa39af96e62ac1d37c8b308ef  docs/port-groups-and-weights.md
 c35b19a76df8f2ec6278a1fbbd721974a9d1d84862c4656fe5856d9aa5dbfdb1  docs/troubleshooting.md
 666003c3b2f523bf4759fb9821c0d2f5c72fd5b3c9a5ce09f9845a1e29e87f08  lib/core.sh
 01116553e852bc2114ae0c6ef8e104a6fca9ecf390d2a776f143e43c1d322e55  lib/failover.sh
-7be5bbffe1495cddfba2aa835bb3884bdbb41dd245b5042a63cff6bb9457c480  lib/health.sh
-33433bdd4a7b2adf29659b8b7a7342f0450d4283361c4e9c751a867274bb984c  lib/realm.sh
-874c552d46dc11b2d26224c4ec9b804d8b85c32e0beb110ee679ec04c7adc7a0  lib/rules.sh
+ab461aab65c58752013704802b5bfb923cf7bcd1e291347edb983312da50708e  lib/health.sh
+b7311adda1a1cdcf0ae2f1406f04af63e6c129bbca101b172f87736595ce907f  lib/realm.sh
+f4bc9a0f63abef0bb27d7ac45573568bea16f7fcb7a8c63a2c4c16c7455d4545  lib/rules.sh
 80880eeed140942f81898cf0073e9a171be959179f382eacfd5c584980e05e40  lib/server.sh
 1948ae91d89013112578783877e621c2d9e83660b59f1e19fb542b50e106cd76  lib/ui.sh
 a869123029887b0b45522a60329a558cf6c84943a23d6e7b9d877c13248d2f44  lib/update.sh
@@ -54,26 +53,38 @@ bf7b29b9f23afa2933a965618992622e68c3c677cef4c27597ceba27b848a1d1  port-traffic-d
 ab37971ee9b2f05b9eb0de199228275ccb34baff5ae55d223c3a22f141516918  port-traffic-dog.sh
 4b7ed0d6ce53636da0a4072893a3894b2664d768b83593183d338ef97e778c2d  reports/real-machine-acceptance.md
 be882c6b4d91bd812bc90fdde0fc6624417b87b7fb30536a7623870bf523a858  reports/round1-baseline-review.md
+5a5986b40f8b741fb74420822f71e2c8408ff5ee678a2e75f994b85dc62f9956  reports/round2-review.md
 7d8d826412842746c2e1562d4891cba413ab9e13f8e0cb132fddf1ab50b760eb  speedtest.sh
 ff5b7eae8692c6f37a30b4b2e51b95f36aff5b9c209eb080443ec48d748b60c6  tests/BASELINE-round1.md
-f3b4732e185a9017f931e21134a4782ef1343dc5471b9d32036344b3c133e0cf  tests/BASELINE-round2.md
-daaed574211c2b6f50d3b47c8b62112162610e0c6317311e400ba3602a44f69e  tests/README.md
-c93c45e702dc65014a7879a119e20abfadb6d9d4620c157aa9704d7d4cc165aa  tests/TEST-HARNESS.md
+fda683c526ae711bb954f9ae8cdae450704b91fe57b95cdf19952f92634cfde5  tests/BASELINE-round2.md
+09d934255fe55bc436c749503480e501b5398de7d2402041e772c0131dc0c76c  tests/BASELINE-round3.md
+64528ffc9236189c75b107db9e391fa8836b81e03668f751227c8e7c0e9fca95  tests/BASELINE-round4.md
+b604059b7ba859641aaa15f70c39fec1557163af3d62b45b0a50cce51aefcc8f  tests/BASELINE-round5.md
+854261f9edff00b5cd8a47f3beddc7f1c8be5f443566e38eb939164c27e37c01  tests/BASELINE-round6.md
+22403569b379e05dab8a95918212eabdf55dfba48600774a3a42ab98b26e4910  tests/README.md
+04f2a732e44f93255e0f820da748384e31ca9930a093acee1f9f787fa097ea13  tests/TEST-HARNESS.md
 f10d3e9356b129a7eb10a18fa974176af98f62ce8da814c938008ac46856eb22  tests/cases/00_common.sh
-7cc968dff4f8e4dbd0a67c6c93a048d3a664e00a7136a3efa60b0fa47d27aeba  tests/cases/01_static_contract.sh
+e99308455efb531c046b3ae03642341d05aa925fe5139f9e2f9c69832d9318bd  tests/cases/01_static_contract.sh
 c202ae688d4f1b44374407b1ca95c2d65e9be2fe72c7a27c6dcb9847ffca73a4  tests/cases/02_weight_active_standby.sh
 324e1f152d66cadee5d000a1670e7833f52cfa913708c20f1e476db1a7a64269  tests/cases/03_failover_runtime.sh
-0890df1c1dc4e0c9059aa807cf8856d5903e797aa8a060d04e74eccb65ebcc47  tests/cases/04_legacy_merged.sh
+9e3998686dffd4d0863bc9e61ba1b8eb6fb85329aaef1b7d99a1667668063307  tests/cases/04_legacy_merged.sh
 e1986d407129f31abe23c75cb205b5406eae5cb0983de38fc5ca5698ed796b49  tests/cases/05_docs_refs.sh
-efa5ccd2954638a4c7edb88c695a15f7700e5484fd42073322e80797c33341ac  tests/lib/harness.sh
+2a1888918fa2df658c4bbf7f66b929acc8efcfd24477c6d084457707ea7698b1  tests/cases/06_recent_behaviours.sh
+53f13dc31d158b1c90d48039a0200e5e863b5f477084e4b029c63a393e5ba5d8  tests/cases/07_commit_message_contract.sh
+30b3566bc24c9c5a492cfedcce94d7676f4f6e7088ce43fdb3f48a5032ff47c7  tests/cases/08_weight_index_and_priority.sh
+4d3e3d7ae5cbfbd5f3c6a2dc1646e7f7d6dd2e0b5d3e4efbe76155dc5c75fddd  tests/cases/09_update_center.sh
+a2149eb33af2239d88acacee16d739c681c6df536feed63e1647cc604a308788  tests/cases/10_ocr_jq_rules.sh
+a954b73c1f3d999e4d3ed2e46ca99f33ff9b7785b9e0ad593d3380bb37ce6a04  tests/cases/11_latency.sh
+2e52e1a92f6edea7f487e72b879dbdd20369d0cf0a3541b04418a2d528c75141  tests/lib/harness.sh
 b8946df65e1900e342ee42683bfb9372722c1e157e326b55ffccc635634490ca  tests/lib/sandbox.sh
-ddc345857584af877b5d57d243117288b95401f939460e5ddd110f959dc8cf16  tests/run_tests.sh
+0c0cf2dfede8462fd4a75d9c55555fed074e983438d5e7df1118f3cabac79cc0  tests/run_tests.sh
+7cd44123187c9521f6b9fdf84160c1ff1d70e153756936aa2a085e13093fe072  tests/shims/jq_impl.py
 1d6de139b630373bcaec8f47073ecd2e7faae576068b18599bc87f62baf858cf  tests/test_active_standby.sh
 9390ec654caa0cafef9b8d65f55743bf8aa627eb48a544caeebb7c11bce31e4d  tests/test_connectivity.sh
 85e3c4d220f594241175f20e1743721a7e9809e168ec9b220242aeb422c973e2  tests/test_e2e.sh
-e37b19047a6a417bf8279c40a5ae3e655aafa4367b93a2dbfa787fe6bbf60c47  tests/test_latency.sh
+91e4d3d380f4a33b58b264bf0e8078bf8b06f24d113acf4b143b2a98d3f9b3ad  tests/test_latency.sh
 f23622499a3e6a414f6d7b043abddd69174f8ce87eca9684800653240c4ae02f  tests/test_set_u.sh
-d54beb43804167591375615df782698bb452f44c93f26237e2505611479697e8  tests/test_update.sh
+3b70ed5ceef2dc534da21425be40603df9a19a4b0d9ddad3e107e6849568a75b  tests/test_update.sh
 58976580e3caae3f7e8c9d58a677ce09c68f1ab575c6f661d08997e86d8b3cac  xwFailover.sh
 c489561531f3b89a4c278dd9f57ee080a069c1b983aa9896218ebac5299cbd67  xwPF.sh
-0745a973d1c53368881ec0a1e28a99df5888d035f69b8d69c07f7b5e441723a6  xw_realm_OCR.sh
+433cd0d69cbc18b6cfc7e47ddcc1547f17d8f8357f4f541ee3002fccb38fd915  xw_realm_OCR.sh

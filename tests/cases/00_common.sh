@@ -147,16 +147,29 @@ time.sleep(30)
     return 0
 }
 
-# 写健康状态文件（参数：host:status ...）
+# 写健康状态文件
+#
+# ★ 口径（重要）：TARGET 字段写 **host:port**（当前生产写入口径）。
+#   写成裸 host 的旧格式，用例会退化成「旧格式兼容兜底分支」——
+#   读侧按精确键查不到就落回裸 host，断言照样绿，但精确索引这条主路径
+#   根本没人测 → fixture 的形态本身就是断言的一部分。
+#
+# 用法：_write_health <文件> <端口> <host:status> ...
+#   端口   = 规则的 REMOTE_PORT（必须与用例里规则的 REMOTE_PORT 一致，
+#            不一致 → 精确键查不到 → 行为改变）
+#   host:status = 目标地址 + 状态（healthy / failed）
+#
+# 注：第 1 列 RULE_ID 这里按顺序编号。RULE_ID 只在**旧格式**的归属回填里被用到，
+#     新格式（host:port）的读取路径不看这一列 —— 所以顺序编号不影响断言。
 _write_health() {
-    local file="$1"
-    shift
+    local file="$1" port="$2"
+    shift 2
     mkdir -p "$(dirname "$file")"
     {
         echo "# Realm健康状态文件"
         local i=1 pair
         for pair in "$@"; do
-            echo "${i}|${pair%%:*}|${pair##*:}|0|3|100|0"
+            echo "${i}|${pair%%:*}:${port}|${pair##*:}|0|3|100|0"
             i=$((i + 1))
         done
     } > "$file"
