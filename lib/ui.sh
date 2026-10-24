@@ -679,7 +679,7 @@ speedtest_menu() {
     ui_pause "按回车键返回主菜单..."
 }
 
-# 故障转移管理菜单（旧版 LB-mode failover，xwFailover.sh）
+# 故障转移管理菜单（规则级故障转移：剔除模式 + 主备模式，xwFailover.sh）
 failover_management_menu() {
     local failover_script="/etc/realm/xwFailover.sh"
 
@@ -692,7 +692,7 @@ failover_management_menu() {
     while true; do
         sleep 0.2
         ui_clear
-        echo -e "${YELLOW}=== 故障转移管理 (旧) ===${NC}"
+        echo -e "${YELLOW}=== 故障转移管理（规则级） ===${NC}"
         echo ""
         echo -e "${GREEN}1.${NC} 开启/关闭故障转移"
         echo -e "${BLUE}2.${NC} 参数配置（间隔/阈值/超时/冷却）"
