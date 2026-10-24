@@ -70,7 +70,7 @@ check_root() {
 
 # 读取规则文件：read_rule_file 由 lib/health.sh 提供（白名单逐行解析）。
 # 这里**不再**自己实现一份 ——
-# 旧实现用 source "$rule_file" 解析规则文件，规则文件里的 $(...) 会被执行；
+# 旧实现是直接 source 规则文件，规则文件里的命令替换会被执行；
 # 而生成的 health_check.sh 是以 root 跑的，等于开了一个 root 提权面。
 
 # 查找文件路径
