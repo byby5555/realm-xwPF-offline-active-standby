@@ -223,24 +223,30 @@ get_health_status_record() {
     echo "$line"
 }
 
-# 在旧状态文件里按 TARGET 找一行（跨轮继承用）
+# 在旧状态文件里按 (RULE_ID, 目标地址) 组合键找一行（跨轮继承用）
 #
-# ★ 匹配键是「目标地址」，**不是 RULE_ID**：
-#   规则 ID 会被复用（删掉一条规则后，下一条规则可能拿到同一个 ID），
-#   按 RULE_ID 继承会把老规则的 failed / 失败计数算到新规则头上
-#   → 新鲜健康的目标一上来就显示「故障」，甚至被当成故障。
-#   按目标地址继承则不会串：目标地址不同 → 认不出旧行 → 当成没有记录。
+# ★ 匹配键 = (RULE_ID, TARGET)，**两者都要对上**：
+#   ① 只按 RULE_ID 匹配：规则 ID 会被复用（删掉一条规则后，下一条规则可能拿到
+#      同一个 ID）→ 老规则的 failed / 失败计数会算到新规则头上
+#      → 新鲜健康的目标一上来就显示「故障」。
+#   ② 只按目标地址匹配：两条规则共用同一个后端时（同 host 同 port），
+#      一条规则的失败状态会被过户给另一条规则 → 误继承 → 误切。
+#   组合键同时挡住两个方向：RULE_ID 或目标地址**任一**不同 → 认不出旧行
+#      → 当成「没有记录」→ 从零重新计数。
+#   ⇒ 认不出时的方向是**安全方向**（重新计数 = 最多晚几轮才切换），
+#      不是**危险方向**（误继承 = 刚建好的目标被判 failed = 误切）。
 #
 # 口径：
-#   ① 新格式行（TARGET = host:port）：整段相等才算命中（不靠子串，
-#      否则 "10.0.0.1" 会命中 "110.0.0.1"）。
-#   ② 旧格式行（TARGET 只有 host，没有端口）：仍然认出来并参与继承
-#      —— 老文件里那种行不能当成「没有记录」，否则目标会被当成健康
+#   ① 新格式行（TARGET = host:port）：RULE_ID 与 TARGET 都相等才算命中
+#      （不靠子串，否则 "10.0.0.1" 会命中 "110.0.0.1"）。
+#   ② 旧格式行（TARGET 只有 host，没有端口）：RULE_ID 相等且 TARGET 等于裸 host
+#      才算命中 —— 老文件里那种行不能当成「没有记录」，否则目标会被当成健康
 #      → 故障转移静默失效。
 health_status_find_row() {
     local status_file="$1"
-    local endpoint="$2"
-    local host="$3"
+    local rule_id="$2"
+    local endpoint="$3"
+    local host="$4"
     local legacy_row="" _rid _field2 _rest
 
     [ -f "$status_file" ] || return 1
@@ -250,6 +256,10 @@ health_status_find_row() {
             '#'*) continue ;;
         esac
         [ -z "${_field2:-}" ] && continue
+        # 组合键的 RULE_ID 那一半：对不上就跳过（不参与任何匹配）
+        if [ "$_rid" != "$rule_id" ]; then
+            continue
+        fi
         if [ "$_field2" = "$endpoint" ]; then
             printf '%s|%s|%s\n' "$_rid" "$_field2" "$_rest"
             return 0
@@ -470,15 +480,18 @@ for rule_file in "${RULES_DIR}"/rule-*.conf; do
 
         # ★ TARGET 字段 = host:port（与 docs/health-check-and-failover.md 的口径一致）：
         #   同一个 host 上的不同端口是**不同目标**，状态互不覆盖。
+        # ★ 行键 = RULE_ID + 目标地址（组合键）：状态归属到「哪条规则的哪个目标」，
+        #   跨轮继承按同一个组合键回读（见 health_status_find_row）。
         target_endpoint="${target}:${REMOTE_PORT}"
         target_key="${RULE_ID}|${target_endpoint}"
 
-        # 取上一轮的状态（跨轮继承）：按**目标地址**匹配，不按 RULE_ID 匹配。
-        #   规则 ID 会被复用（删掉一条规则后，下一条规则可能拿到同一个 ID），
-        #   按 RULE_ID 继承会把老规则的 failed / 失败计数算到新规则头上
-        #   → 新鲜健康的目标一上来就显示「故障」。
-        #   旧格式行（TARGET 只有 host）仍然认出来并参与继承。
-        status_line=$(health_status_find_row "$_health_status_old" "$target_endpoint" "$target")
+        # 取上一轮的状态（跨轮继承）：按 **(RULE_ID, 目标地址) 组合键**匹配，
+        #   两者都要对上。
+        #   只按 RULE_ID 匹配 → ID 复用会把老规则的失败计数算到新规则头上；
+        #   只按目标地址匹配 → 同后端被两条规则共用时，状态会过户给另一条规则。
+        #   认不出旧行 → 当成没有记录 → 从零重新计数（安全方向）。
+        #   旧格式行（TARGET 只有 host）仍然认出来并参与继承（RULE_ID 也要对上）。
+        status_line=$(health_status_find_row "$_health_status_old" "$RULE_ID" "$target_endpoint" "$target")
         if [ -n "$status_line" ]; then
             IFS='|' read -r _ _ status fail_count success_count last_check failure_start_time latency_ms latency_hist <<< "$status_line"
             # 兼容旧格式行：字段更少（没有 failure_start_time / latency 两列）
