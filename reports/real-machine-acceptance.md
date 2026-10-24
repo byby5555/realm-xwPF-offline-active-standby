@@ -1,6 +1,7 @@
 # realm-xwPF 真机验收清单（Debian / Ubuntu VPS）
 
 > 产出：审稿（bot_263632b9af01）　｜　生成时间：2026-10-24　｜　基线 SHA：`a9102c1`
+> **修订（2026-10-24，第 2 次）**：**A-4 一节按 N1 落地后的口径改写** —— 字段数 **7 → 9**（`LATENCY_MS` / `LATENCY_HISTORY` 是后加的）；「TARGET 只有 host、没有端口」由「不判 FAIL，但要登记」改为**判 FAIL**；新增 **A-4.1 旧格式兼容登记**（升级瞬间的老文件**不必手工删**）。A-3 / A-5 两处引用同一旧事实的表述一并更正。**A-4 一节的锚点推进到 `bfc99d3`（N1-R1）**，其余各节仍以 `a9102c1` 为基线。
 > 适用范围：本机无 WSL / Docker / systemd / realm，下列全部项**只能在真实 Linux VPS 上验**。
 > 本清单只做**验收**，不修改 `lib/`、`tests/`、`docs/`、`xwFailover.sh`；发现问题登记缺陷单交 Chief 路由。
 
@@ -139,7 +140,7 @@ done
 
 **前置**：realm 已装且能起；A-1 通过；两个可连通目标（本机用 `127.0.0.1` / `127.0.0.2` 造，见 A-5）。
 
-> ⚠️ **必须用两个不同的 host，不要用同一 IP 的两个端口** —— 健康状态文件的 key 是 `RULE_ID|HOST`（**不含端口**），同 host 多端口会互相覆盖，详见附录 A-3。
+> ⚠️ 本项用**两个不同的 host**（`127.0.0.1` / `127.0.0.2`），是为了把「主备切换」与「同 host 多端口」两件事**解耦**，不是产品限制。健康状态文件的 `TARGET` 口径自 N1 落地起是 `host:port`（key = `RULE_ID|host:port`），**同 host 的不同端口不再互相覆盖**；「key 不含端口」是 N1 修复**之前**的旧行为，已在 `a7e23fc` / `bfc99d3` 修掉 —— 历史登记见 `reports/round1-baseline-review.md` 附录 A-3-1，现状口径见 A-4。
 
 **命令（白盒，直接驱动产品代码路径，最可复现）**
 
@@ -241,48 +242,123 @@ pf   # 主菜单 → 6. 负载均衡管理 → 权重配置管理 → 选端口 
 
 ## A-4　健康状态文件格式与文档一致
 
-**验收目标**：状态文件结构与 `docs/health-check-and-failover.md` 声明的格式逐字段一致。
+**验收目标**：状态文件结构与 `docs/health-check-and-failover.md` 声明的格式逐字段一致，**含 `TARGET` 的 `host:port` 口径**。
 
 **前置**：A-3 已完成且健康检查至少跑过 1 轮。
+
+> **读文件前先看这三条**（都来自实现，不看会误判）：
+>
+> 1. **状态文件路径有三个候选**（`lib/health.sh` 的 `health_check_script_body` 按顺序探测）：`/etc/realm/health/health_status.conf` → `/etc/realm/health_status.conf` → `/var/lib/realm/health_status.conf`。下面的命令用 `$HEALTH_FILE`。
+> 2. **头部注释是「首次创建时」写下的，不随升级刷新**（`if [ ! -f "$HEALTH_STATUS_FILE" ]; then ... fi`）。`a9102c1` 及更早版本写下的是 **7 字段**那一行，之后才是 9 字段。→ **从老版本升上来的机器，头部注释仍是老口径，但数据行已经是新口径**。此时以**数据行**为准，头部陈旧**登记不判 FAIL**（低优先级，不影响解析：读取端按位置取字段，多出的字段自动忽略）。
+> 3. **文件一旦触发过内置的 >5MB 清理，头部注释会被截掉且不再补回**（清理用 `tail -n 2000` 保留尾部）。此时「前两行是注释」不成立，属已知形态，**登记不判 FAIL**。
 
 **命令**
 
 ```bash
-echo "--- 头两行注释 ---"
-head -2 /etc/realm/health/health_status.conf
+# 状态文件路径（产品按顺序探测这三个）
+HEALTH_FILE=""
+for p in /etc/realm/health/health_status.conf /etc/realm/health_status.conf /var/lib/realm/health_status.conf; do
+  [ -f "$p" ] && { HEALTH_FILE="$p"; break; }
+done
+echo "状态文件: ${HEALTH_FILE:-<没找到>}"
+[ -n "$HEALTH_FILE" ] || exit 1
 
-echo "--- 数据行字段数分布（应只有 7）---"
-grep -v '^#' /etc/realm/health/health_status.conf | awk -F'|' '{print NF}' | sort | uniq -c
+echo "--- 头两行注释 ---"
+head -2 "$HEALTH_FILE"
+
+echo "--- 数据行字段数分布（应为 9）---"
+grep -v '^#' "$HEALTH_FILE" | awk -F'|' '{print NF}' | sort | uniq -c
 
 echo "--- STATUS 取值集合（应只有 healthy / failed）---"
-grep -v '^#' /etc/realm/health/health_status.conf | awk -F'|' '{print $3}' | sort | uniq -c
+grep -v '^#' "$HEALTH_FILE" | awk -F'|' '{print $3}' | sort | uniq -c
 
-echo "--- 末字段应为整数时间戳 ---"
-grep -v '^#' /etc/realm/health/health_status.conf | awk -F'|' '$7 !~ /^[0-9]+$/ {print "BAD-TS:", $0}' | head
+echo "--- TARGET 口径（应全部是 host:port，即第 2 字段含冒号）---"
+grep -v '^#' "$HEALTH_FILE" | awk -F'|' '$2 !~ /:/ {print "BAD-TARGET:", $0}' | head
 
-echo "--- 文档声明的格式 ---"
-grep -n 'RULE_ID|TARGET|STATUS' /usr/local/bin/../../..//dev/null 2>/dev/null
-grep -rn 'RULE_ID|TARGET|STATUS|FAIL_COUNT|SUCCESS_COUNT|LAST_CHECK|FAILURE_START_TIME' docs/ 2>/dev/null | head
+echo "--- 时间戳字段（第 6 LAST_CHECK / 第 7 FAILURE_START_TIME，应全是纯数字）---"
+grep -v '^#' "$HEALTH_FILE" | awk -F'|' '$6 !~ /^[0-9]+$/ || $7 !~ /^[0-9]+$/ {print "BAD-TS:", $0}' | head
+
+echo "--- 时延字段（第 8 LATENCY_MS 整数毫秒、第 9 LATENCY_HISTORY 逗号分隔数字，可为空）---"
+grep -v '^#' "$HEALTH_FILE" | awk -F'|' '$8 != "" && $8 !~ /^[0-9]+$/ {print "BAD-LAT:", $0}' | head
+grep -v '^#' "$HEALTH_FILE" | awk -F'|' '$9 != "" && $9 !~ /^[0-9]+(,[0-9]+)*$/ {print "BAD-HIST:", $0}' | head
+
+echo "--- 文档声明的格式 vs 文件头注释（应逐字符一致）---"
+FMT='RULE_ID|TARGET|STATUS|FAIL_COUNT|SUCCESS_COUNT|LAST_CHECK|FAILURE_START_TIME|LATENCY_MS|LATENCY_HISTORY'
+doc_fmt=$(grep -o "$FMT" docs/health-check-and-failover.md 2>/dev/null | head -1)
+file_fmt=$(head -2 "$HEALTH_FILE" | grep -o "$FMT" | head -1)
+echo "doc : ${doc_fmt:-<没找到>}"
+echo "file: ${file_fmt:-<没找到>}"
+[ -n "$doc_fmt" ] && [ "$doc_fmt" = "$file_fmt" ] && echo "FMT-MATCH: OK" || echo "FMT-MATCH: MISMATCH"
 ```
+
+> `docs/health-check-and-failover.md` 是**仓库内**路径 —— 这条命令要在**有仓库检出**的目录下跑（或把它换成被测文档的实际路径）。文档里 9 字段格式串出现 **2 次**（字段表 + 头部注释样例），`grep -o | head -1` 取到的是同一串。
 
 **期望结果（可判定）**
 
-1. 前两行是注释，第 1 行含 `RULE_ID|TARGET|STATUS|FAIL_COUNT|SUCCESS_COUNT|LAST_CHECK|FAILURE_START_TIME`。
-2. 数据行字段数**只有 7**（`awk` 输出只有一个计数，值为 7）。
+1. 前两行是注释，第 2 行含 9 字段格式串 `RULE_ID|TARGET|STATUS|FAIL_COUNT|SUCCESS_COUNT|LAST_CHECK|FAILURE_START_TIME|LATENCY_MS|LATENCY_HISTORY`。（**老机器上头部可能是 7 字段那一行 → 见上面的读文件前提 2**。）
+2. 数据行字段数**只有 9**（`awk` 输出只有一个计数，值为 9）。
 3. `STATUS` **只有 `healthy` / `failed`** 两种取值。
-4. 第 7 字段**全部是纯数字**（`BAD-TS:` 无输出）。
-5. 文档里声明的格式串与文件头注释**逐字符一致**。
+4. `TARGET` **全部是 `host:port`**（`BAD-TARGET:` 无输出）。
+5. 第 6、7 字段**全部是纯数字**（`BAD-TS:` 无输出）；第 8 字段是整数毫秒或空（`BAD-LAT:` 无输出）；第 9 字段是逗号分隔的数字或空（`BAD-HIST:` 无输出）。
+6. 文档声明的格式串与文件头注释**逐字符一致**（`FMT-MATCH: OK`）—— **仅对全新安装成立**；升级机以数据行为准。
 
 **失败判据与排查方向**
 
 | 现象 | 排查方向 |
 |---|---|
-| 字段数不是 7 | 生成端与文档端不同版本 → 比对 `/etc/realm/health/health_check.sh` 与 `lib/health.sh` 的写入语句 |
+| 字段数不是 9 | **先确认健康检查已跑过 1 轮**（老行由探测端在下一轮原地迁移，见 A-4.1）。仍为 7/6 字段的行，若其 `RULE_ID` **在规则目录里还存在**（归属可确定）⇒ **判 FAIL**（迁移没生效）；若该 `RULE_ID` 已不存在（孤儿行）⇒ **登记不判 FAIL**（产品按「当无记录」处理，下一轮重新探测生成精确键）。另外：**只有 7 个字段本身是老版本产物的正常形态**（`LATENCY_MS`/`LATENCY_HISTORY` 是后加的），此时应**升级**而不是改代码 |
 | 出现第 3 种 STATUS | 判定逻辑里还有别的状态值 → 查 `lib/health.sh` 的状态机 |
-| 末字段不是数字 | 老格式（无 `failure_start_time`）未升级 → 文档提到过旧格式兼容，检查读取端是否做了兼容 |
-| **TARGET 只有 host、没有端口** | 这是**已知设计**（写入端 `target_key="${RULE_ID}|${target}"`，target 是裸 host），但文档没写明 → 见附录 A-3；**不判 FAIL，但要登记** |
+| 第 6/7 字段不是数字 | 更老的格式（无 `failure_start_time`）未升级 → 文档 §6.4 有旧格式兼容说明，检查读取端是否做了兼容 |
+| 第 8/9 字段不是数字 | 时延字段写坏了 → 查 `lib/health.sh` 的 `probe_with_latency` / `latency_avg_ms` |
+| **TARGET 只有 host、没有端口** | **判 FAIL。** 文档 `docs/health-check-and-failover.md` 的 `TARGET` 字段表写的就是 `host:port`，**实现应与文档一致**；N1（`a7e23fc` / `bfc99d3`）已把写端、读端、展示端**全部**对齐到 `host:port`。真机仍见裸 host ⇒ **装的是 N1 之前的旧产物** → 查安装产物版本，**不要**按「已知设计」放过 |
+| 头部注释与文档不一致 | **先判是全新安装还是升级机**（见读文件前提 2/3）。升级机 ⇒ **登记不判 FAIL**（低优先级，不影响解析）；全新安装仍不一致 ⇒ **判 FAIL**（写端的头部格式串与文档脱节） |
+| 老文件升级后被当成「无记录 / 健康」 | 旧格式兼容失效 → 见 A-4.1，判据是「升级瞬间的老记录仍要被认出来」 |
 
-**危险动作**：**不要手工编辑** `health_status.conf`（每轮健康检查会原子重写，手改必丢）；排查时只读。
+**危险动作**：**不要手工编辑** `health_status.conf`（每轮健康检查会原子重写，手改必丢）；排查时只读。A-4.1 要构造老文件时用**副本**，不要动生产文件。
+
+### A-4.1　旧格式兼容登记（升级瞬间的老文件：**不必手工删**）
+
+**要验的是什么**：现网老版本的 `health_status.conf` 里 `TARGET` **只有 host**。升级到当前版本后，这些老行**仍要被正确识别** —— 而不是被当成「没记录 → 目标健康」→ 故障转移静默失效。
+
+**产品侧的三条口径**（与 `docs/health-check-and-failover.md` §6.4 一致）：
+
+1. **探测端**（`lib/health.sh` 的 `health_check_script_body`）：先按 `RULE_ID|host:port` 找自己的记录，**找不到再按旧口径 `RULE_ID|host` 找**；找到就**沿用老记录的状态与计数**（`FAIL_COUNT` / `SUCCESS_COUNT` / `FAILURE_START_TIME` 不清零）；写回时**写成新格式并删掉同一 host 的旧行**。
+2. **消费端**（`lib/realm.sh` 的 `generate_endpoints_from_rules`）：旧格式的行按该行 `RULE_ID` 对应规则的 `REMOTE_PORT` **补出端口**，入**精确键** `host:port`。
+   - **认得出归属时只入精确键**，**不再另存一份裸 host 的宽键** —— 宽键会把「一个端口的故障」传播给同 host 的其他端口：同一主备组里两个目标同 host 不同端口时，两个目标会同时被判 failed → 走「全部目标都挂了」的兜底 → 保持原主不切备（**该切不切的静默失效**）。
+   - **认不出归属**（规则已删、行号式的老记录）时**当无记录**：由健康检查下一轮重新探测、生成精确键。
+3. **展示端**（`lib/health.sh` 的 `get_health_status_record`）：按 `TARGET` 字段**精确匹配**，查不到就是查不到，**不**按裸 host 兜底（否则会把同 host 另一个端口的记录显示成这条目标的）。
+
+**验收动作（老文件是天然样本时）**
+
+前置：本机是**从旧版本升级**上来的（升级前的老文件还在），或手上有一份同源的老文件副本。
+
+```bash
+HEALTH_FILE=/etc/realm/health/health_status.conf   # 按实际路径改
+
+echo "--- 裸 host 老行样例（升级前的老文件天然就是这个形态）---"
+grep -v '^#' "$HEALTH_FILE" | awk -F'|' '$2 !~ /:/ {print}' | head
+
+echo "--- 每条老行的 RULE_ID 是否还归属某条规则（owned=yes 归属可确定 / owned=no 已成孤儿）---"
+for id in $(grep -v '^#' "$HEALTH_FILE" | awk -F'|' '$2 !~ /:/ {print $1}' | sort -u); do
+  owned=no
+  for f in /etc/realm/rules/rule-*.conf; do
+    [ -f "$f" ] || continue
+    if grep -q "^RULE_ID=${id}$" "$f" 2>/dev/null; then owned=yes; break; fi
+  done
+  echo "RULE_ID=$id owned=$owned"
+done
+```
+
+**期望结果（可判定）**
+
+1. 升级瞬间，老行**仍在**文件里（升级不会自己删数据）。
+2. 跑完**1 轮健康检查**后，归属可确定（`owned=yes`）的老行被**原地迁成 `host:port`**，且 `FAIL_COUNT` / `SUCCESS_COUNT` / `FAILURE_START_TIME` **沿用老值**（不是清零重来）。
+3. 老行若曾是 `failed`，升级后**不能**变成 `healthy`（否则老故障被当成健康 → 故障转移静默失效）。
+4. 归属已失效（`owned=no`）的老行**可以**留在文件里 —— 产品按「当无记录」处理，下一轮重新探测。
+
+**因此：真机验收看到裸 host 时，不必手工删 `health_status.conf`** —— 产品自己会迁移（跑完 1 轮健康检查即迁完；归属失效的行由下一轮重新探测）。
+
+**危险动作**：要**构造**老文件时，用**副本**（如 `/tmp/health_status.conf.bak`）在测试机上做，**不要**改生产文件；本节全程只读。
 
 ---
 
@@ -331,7 +407,7 @@ journalctl -u realm-health-check.service -n 30 --no-pager | grep -E 'FAILURE|CON
 
 | 现象 | 排查方向 |
 |---|---|
-| 两个目标都 failed | 全局探测失败（多半两条规则的 host 被判成同一个 key，见附录 A-3）；或健康检查根本没在跑 |
+| 两个目标都 failed | 全局探测失败（两个目标其实都不可达）；或健康检查根本没在跑。（「两条规则的 host 被判成同一个 key」是 N1 修复**之前**的旧成因，`TARGET` 口径改成 `host:port` 后不再成立，见 A-4） |
 | 权重没翻 | ① 状态没进 failed → 看 `FAILURE_THRESHOLD` / `CONNECTION_TIMEOUT`；② 状态进了 failed 但 config 没重生成 → 看 `journalctl` 有没有 `[CONFIG]`，没有就是 `pf --restart-service` 没被调用（`lib/health.sh` 里调的是 `pf --restart-service`） |
 | `[CONFIG]` 有但 config.json 没变 | `pf --restart-service` 失败 → 手工执行 `pf --restart-service` 看报错；realm 起来后权重仍不变 → 生成端 `lib/realm.sh:519` 的健康映射 key 不匹配 |
 | 翻转了但方向反了 | 权重索引与目标顺序错位 → 回看第 1 轮报告 S1（权重落盘用 rule_index 与目标索引可能错位） |
@@ -634,7 +710,7 @@ sudo cat /etc/xwpf/failover.json | jq . 2>/dev/null
 | A-1 | 一键安装落盘 | ☐PASS ☐FAIL ☐BLOCKED | | 重点：落盘文件含 CR 数 = |
 | A-2 | `pf --help` | ☐PASS ☐FAIL ☐BLOCKED | | 三种写法退出码 |
 | A-3 | 权重 1,0 → 主备 + timer | ☐PASS ☐FAIL ☐BLOCKED | | timer enabled/active |
-| A-4 | 状态文件格式 | ☐PASS ☐FAIL ☐BLOCKED | | 字段数 = |
+| A-4 | 状态文件格式 | ☐PASS ☐FAIL ☐BLOCKED | | 字段数 = / TARGET 口径 = / FMT-MATCH = |
 | A-5 | 主断 → 权重 0,1 | ☐PASS ☐FAIL ☐BLOCKED | | 翻转耗时 |
 | A-6 | 主恢复 → 权重 1,0 | ☐PASS ☐FAIL ☐BLOCKED | | 冷却期是否生效 |
 | A-7 | 无 nc 靠 /dev/tcp | ☐PASS ☐FAIL ☐BLOCKED | | 误判 failed 的目标数 = |
