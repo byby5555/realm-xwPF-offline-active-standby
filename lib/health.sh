@@ -201,27 +201,18 @@ probe_with_latency() {
 #
 # ★ TARGET 字段口径：host:port（与 docs/health-check-and-failover.md 一致）。
 #   同一个 host 上的不同端口是**不同目标**，状态互不覆盖。
-# 兼容旧格式：老文件的 TARGET 只有 host（没有端口），
-#   传 host:port 查不到时按裸 host 再查一次 —— 升级后老记录仍然认得出来。
+# 旧格式（TARGET 只有 host）的老行**不**用「按裸 host 再查一次」兜底：
+#   那会把同 host 另一个端口的记录当成这条目标的记录（显示成别人的状态）。
+#   查不到就当无记录 —— 由健康检查重新探测、生成精确键。
 get_health_status_record() {
     local target="$1"
     local status_file="${HEALTH_STATUS_FILE}"
     local line=""
-    local legacy_host=""
 
     [ -f "$status_file" ] || return 1
 
     # 按 TARGET 字段精确匹配（不靠子串，避免 "10.0.0.1" 命中 "110.0.0.1"）
     line=$(awk -F'|' -v t="$target" '!/^#/ && $2 == t { print; exit }' "$status_file" 2>/dev/null)
-
-    if [ -z "$line" ]; then
-        case "$target" in
-            *:*)
-                legacy_host="${target%:*}"
-                line=$(awk -F'|' -v t="$legacy_host" '!/^#/ && $2 == t { print; exit }' "$status_file" 2>/dev/null)
-                ;;
-        esac
-    fi
 
     [ -n "$line" ] || return 1
     echo "$line"

@@ -333,11 +333,13 @@ generate_endpoints_from_rules() {
     # ★ TARGET 字段口径：host:port（与 docs/health-check-and-failover.md 一致）。
     #   同一个 host 上的不同端口是**不同目标**，状态互不覆盖。
     # 兼容旧格式：老文件的 TARGET 只有 host —— 按该行 RULE_ID 对应规则的 REMOTE_PORT
-    #   补出端口，入精确键 host:port。
-    #   ★ 裸 host 的键**始终保留**为兜底：精确键认得出归属时按精确键走；
-    #     精确键缺失时（同 host 的另一个端口组、归属已失效的老行），
-    #     同 host 的另一个端口会读到这条老记录的状态 —— 偏保守（宁可多切一次），
-    #     不会出现「该切不切」这种静默失效。
+    #   补出端口，入**精确键** host:port。
+    # ★ 认得出归属时**只**入精确键，**不**再存一份裸 host 的宽键：
+    #     宽键会把「一个端口的故障」传播给同 host 的其他端口 —— 同一主备组里
+    #     两个目标都是同 host 不同端口时，两个目标都读到 failed → 全挂兜底
+    #     → 保持原主不切备（该切不切的静默失效）。
+    #   认不出归属（规则已删）时**当无记录**：让健康检查重新探测生成精确键，
+    #     比留一份会跨端口污染的宽键安全。
     declare -A health_status
     local health_status_file="${HEALTH_STATUS_FILE}"
 
@@ -362,15 +364,16 @@ generate_endpoints_from_rules() {
 
             if [[ "$_row_target" != *:* ]]; then
                 # 旧格式：TARGET 只有 host → 用该行 RULE_ID 对应规则的 REMOTE_PORT 补出端口。
-                # 认得出归属 → 入精确键 host:port（同 host 不同端口因此互不覆盖）；
-                # 认不出归属（规则已删、行号式的老记录）→ 只有裸 host 的兜底键。
-                # ★ 裸 host 的键两种情况都写：它是兜底，精确键缺失时同 host 的另一个端口
-                #   会读到它 —— 偏保守（宁可多切一次），不会「该切不切」。
+                # 认得出归属 → **只**入精确键 host:port（同 host 不同端口因此互不覆盖）。
+                # ★ 不存裸 host 的宽键：宽键会把一个端口的故障传播给同 host 的其他端口
+                #   （同一主备组里两个目标同 host 不同端口时 → 两个都判 failed →
+                #    全挂兜底 → 保持原主不切备 → 该切不切的静默失效）。
+                # 认不出归属（规则已删、行号式的老记录）→ **当无记录**，
+                #   让健康检查下一轮重新探测、生成精确键；比留宽键安全。
                 local _row_port="${rule_remote_port[$_row_rule_id]:-}"
                 if [ -n "$_row_port" ]; then
                     health_status["${_row_target}:${_row_port}"]="$_row_status"
                 fi
-                health_status["$_row_target"]="$_row_status"
             else
                 health_status["$_row_target"]="$_row_status"
             fi
@@ -535,12 +538,8 @@ generate_endpoints_from_rules() {
                 local primary_target=""
                 for _t in "${priority_targets[@]}"; do
                     # ★ 按 host:port 查状态：同 host 不同端口互不影响
-                    #   精确键缺失时退回裸 host 的兜底键（旧格式老记录的保守回退）
+                    #   查不到 = 无记录 = 视为健康（由健康检查重新探测生成精确键）
                     local _st="${health_status[$_t]:-}"
-                    if [ -z "$_st" ]; then
-                        # 兜底：旧格式记录（认不出归属规则时）按裸 host 存过
-                        _st="${health_status[${_t%:*}]:-healthy}"
-                    fi
                     if [ "$_st" != "failed" ]; then
                         primary_target="$_t"
                         break
@@ -591,12 +590,8 @@ generate_endpoints_from_rules() {
                 for i in "${!all_targets[@]}"; do
                     local target="${all_targets[i]}"
                     # ★ 按 host:port 查状态：同 host 不同端口互不影响
-                    #   精确键缺失时退回裸 host 的兜底键（旧格式老记录的保守回退）
+                    #   查不到 = 无记录 = 视为健康（由健康检查重新探测生成精确键）
                     local node_status="${health_status[$target]:-}"
-                    if [ -z "$node_status" ]; then
-                        # 兜底：旧格式记录（认不出归属规则时）按裸 host 存过
-                        node_status="${health_status[${target%:*}]:-healthy}"
-                    fi
 
                     if [ "$node_status" != "failed" ]; then
                         if [ -n "$filtered_targets" ]; then
