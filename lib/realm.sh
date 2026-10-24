@@ -329,20 +329,50 @@ generate_endpoints_from_rules() {
     reorder_rule_ids
 
     # 健康状态读取（直接读取健康状态文件）
+    #
+    # ★ TARGET 字段口径：host:port（与 docs/health-check-and-failover.md 一致）。
+    #   同一个 host 上的不同端口是**不同目标**，状态互不覆盖。
+    # 兼容旧格式：老文件的 TARGET 只有 host —— 按该行 RULE_ID 对应规则的 REMOTE_PORT
+    #   补出端口，入精确键 host:port。
+    #   ★ 裸 host 的键**始终保留**为兜底：精确键认得出归属时按精确键走；
+    #     精确键缺失时（同 host 的另一个端口组、归属已失效的老行），
+    #     同 host 的另一个端口会读到这条老记录的状态 —— 偏保守（宁可多切一次），
+    #     不会出现「该切不切」这种静默失效。
     declare -A health_status
     local health_status_file="${HEALTH_STATUS_FILE}"
 
-    if [ -f "$health_status_file" ]; then
-        while read -r line; do
-            # 跳过注释行和空行
-            [[ "$line" =~ ^#.*$ ]] && continue
-            [[ -z "$line" ]] && continue
+    # 规则 ID → 远端端口（给旧格式的 TARGET 补端口用）
+    declare -A rule_remote_port
+    local _rf
+    for _rf in "${RULES_DIR}"/rule-*.conf; do
+        if [ -f "$_rf" ] && read_rule_file "$_rf"; then
+            if [ "$RULE_ROLE" = "1" ] && [ -n "$RULE_ID" ] && [ -n "$REMOTE_PORT" ]; then
+                rule_remote_port["$RULE_ID"]="$REMOTE_PORT"
+            fi
+        fi
+    done
 
-            # 解析格式: RULE_ID|TARGET|STATUS|...
-            if [[ "$line" =~ ^[0-9]+\|([^|]+)\|([^|]+)\| ]]; then
-                local host="${BASH_REMATCH[1]}"
-                local status="${BASH_REMATCH[2]}"
-                health_status["$host"]="$status"
+    if [ -f "$health_status_file" ]; then
+        while IFS='|' read -r _row_rule_id _row_target _row_status _row_rest; do
+            # 跳过注释行和空行
+            [[ "$_row_rule_id" =~ ^#.*$ ]] && continue
+            [[ -z "$_row_rule_id" ]] && continue
+            [ -z "$_row_target" ] && continue
+            [ -z "$_row_status" ] && continue
+
+            if [[ "$_row_target" != *:* ]]; then
+                # 旧格式：TARGET 只有 host → 用该行 RULE_ID 对应规则的 REMOTE_PORT 补出端口。
+                # 认得出归属 → 入精确键 host:port（同 host 不同端口因此互不覆盖）；
+                # 认不出归属（规则已删、行号式的老记录）→ 只有裸 host 的兜底键。
+                # ★ 裸 host 的键两种情况都写：它是兜底，精确键缺失时同 host 的另一个端口
+                #   会读到它 —— 偏保守（宁可多切一次），不会「该切不切」。
+                local _row_port="${rule_remote_port[$_row_rule_id]:-}"
+                if [ -n "$_row_port" ]; then
+                    health_status["${_row_target}:${_row_port}"]="$_row_status"
+                fi
+                health_status["$_row_target"]="$_row_status"
+            else
+                health_status["$_row_target"]="$_row_status"
             fi
         done < "$health_status_file"
     fi
@@ -504,8 +534,14 @@ generate_endpoints_from_rules() {
                 # 按优先级找第一个健康目标作为主
                 local primary_target=""
                 for _t in "${priority_targets[@]}"; do
-                    local _host="${_t%:*}"
-                    if [ "${health_status[$_host]:-healthy}" != "failed" ]; then
+                    # ★ 按 host:port 查状态：同 host 不同端口互不影响
+                    #   精确键缺失时退回裸 host 的兜底键（旧格式老记录的保守回退）
+                    local _st="${health_status[$_t]:-}"
+                    if [ -z "$_st" ]; then
+                        # 兜底：旧格式记录（认不出归属规则时）按裸 host 存过
+                        _st="${health_status[${_t%:*}]:-healthy}"
+                    fi
+                    if [ "$_st" != "failed" ]; then
                         primary_target="$_t"
                         break
                     fi
@@ -554,8 +590,13 @@ generate_endpoints_from_rules() {
                 # 记录健康节点的索引位置
                 for i in "${!all_targets[@]}"; do
                     local target="${all_targets[i]}"
-                    local host="${target%:*}"
-                    local node_status="${health_status[$host]:-healthy}"
+                    # ★ 按 host:port 查状态：同 host 不同端口互不影响
+                    #   精确键缺失时退回裸 host 的兜底键（旧格式老记录的保守回退）
+                    local node_status="${health_status[$target]:-}"
+                    if [ -z "$node_status" ]; then
+                        # 兜底：旧格式记录（认不出归属规则时）按裸 host 存过
+                        node_status="${health_status[${target%:*}]:-healthy}"
+                    fi
 
                     if [ "$node_status" != "failed" ]; then
                         if [ -n "$filtered_targets" ]; then

@@ -198,13 +198,31 @@ probe_with_latency() {
 
 # 读取目标在健康状态文件里的整行记录
 # 输出格式与状态文件一致（字段以 | 分隔），取不到返回 1
+#
+# ★ TARGET 字段口径：host:port（与 docs/health-check-and-failover.md 一致）。
+#   同一个 host 上的不同端口是**不同目标**，状态互不覆盖。
+# 兼容旧格式：老文件的 TARGET 只有 host（没有端口），
+#   传 host:port 查不到时按裸 host 再查一次 —— 升级后老记录仍然认得出来。
 get_health_status_record() {
-    local host="$1"
+    local target="$1"
     local status_file="${HEALTH_STATUS_FILE}"
     local line=""
+    local legacy_host=""
 
     [ -f "$status_file" ] || return 1
-    line=$(grep -F "|${host}|" "$status_file" 2>/dev/null | head -1)
+
+    # 按 TARGET 字段精确匹配（不靠子串，避免 "10.0.0.1" 命中 "110.0.0.1"）
+    line=$(awk -F'|' -v t="$target" '!/^#/ && $2 == t { print; exit }' "$status_file" 2>/dev/null)
+
+    if [ -z "$line" ]; then
+        case "$target" in
+            *:*)
+                legacy_host="${target%:*}"
+                line=$(awk -F'|' -v t="$legacy_host" '!/^#/ && $2 == t { print; exit }' "$status_file" 2>/dev/null)
+                ;;
+        esac
+    fi
+
     [ -n "$line" ] || return 1
     echo "$line"
 }
@@ -370,10 +388,24 @@ for rule_file in "${RULES_DIR}"/rule-*.conf; do
     IFS=',' read -ra targets <<< "$REMOTE_HOST"
     for target in "${targets[@]}"; do
         target=$(echo "$target" | xargs)  # 去除空格
-        target_key="${RULE_ID}|${target}"
 
-        # 获取当前状态
+        # ★ TARGET 字段 = host:port（与 docs/health-check-and-failover.md 的口径一致）：
+        #   同一个 host 上的不同端口是**不同目标**，状态互不覆盖。
+        target_endpoint="${target}:${REMOTE_PORT}"
+        target_key="${RULE_ID}|${target_endpoint}"
+        # 旧格式（TARGET 只有 host）的记录：升级后仍然要认。
+        # 不认的话，老文件里的 failed 会被当成「没有记录」→ 目标被当成健康
+        # → 故障转移静默失效（看起来一切正常，实际不再切备）。
+        legacy_key="${RULE_ID}|${target}"
+
+        # 获取当前状态（新格式优先；没有再按旧格式找）
+        # ★ 这两处 grep 必须用 BRE（不带 -E）：BRE 里 `|` 是字面量、`^` 只在模式开头是锚点，
+        #   所以 "^${key}|" 匹配的是「以 key| 开头的那一行」。
+        #   改成 grep -E 会变成 alternation（"以 RULE_ID 开头" 或 "含 host:port"）→ 会误删别人的行。
         status_line=$(grep "^${target_key}|" "$HEALTH_STATUS_FILE" 2>/dev/null)
+        if [ -z "$status_line" ]; then
+            status_line=$(grep "^${legacy_key}|" "$HEALTH_STATUS_FILE" 2>/dev/null)
+        fi
         if [ -n "$status_line" ]; then
             IFS='|' read -r _ _ status fail_count success_count last_check failure_start_time latency_ms latency_hist <<< "$status_line"
             # 兼容旧格式（没有failure_start_time字段）
@@ -436,7 +468,10 @@ for rule_file in "${RULES_DIR}"/rule-*.conf; do
         fi
 
         # 更新状态文件（包含故障开始时间与时延）
-        grep -v "^${target_key}|" "$HEALTH_STATUS_FILE" > "$HEALTH_STATUS_FILE.tmp" 2>/dev/null || true
+        # 同一 host 的旧格式行一起清掉：旧行留着会被读成「同一个目标的另一条记录」
+        # ★ 同样是 BRE（不带 -E）：`|` 是字面量、`^` 是行首锚点；
+        #   换成 grep -E 就成了 alternation → 会把别的规则的行一起删掉。
+        grep -v -e "^${target_key}|" -e "^${legacy_key}|" "$HEALTH_STATUS_FILE" > "$HEALTH_STATUS_FILE.tmp" 2>/dev/null || true
         echo "${target_key}|${status}|${fail_count}|${success_count}|${current_time}|${failure_start_time}|${latency_ms}|${latency_hist}" >> "$HEALTH_STATUS_FILE.tmp"
         mv "$HEALTH_STATUS_FILE.tmp" "$HEALTH_STATUS_FILE"
     done

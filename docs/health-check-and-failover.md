@@ -287,7 +287,7 @@ RULE_ID|TARGET|STATUS|FAIL_COUNT|SUCCESS_COUNT|LAST_CHECK|FAILURE_START_TIME|LAT
 | 字段 | 说明 |
 |------|------|
 | `RULE_ID` | 规则 ID |
-| `TARGET` | `host:port` |
+| `TARGET` | `host:port`（同一个 host 上的不同端口是不同目标，状态互不覆盖；旧格式只有 host，见 §6.4） |
 | `STATUS` | `healthy` / `failed` |
 | `FAIL_COUNT` | 连续失败次数 |
 | `SUCCESS_COUNT` | 连续成功次数 |
@@ -328,6 +328,7 @@ mv "$HEALTH_STATUS_FILE.tmp" "$HEALTH_STATUS_FILE"
 
 规则 ID 重排（`reorder_rule_ids`）后，健康状态文件里的 `RULE_ID` 会按
 `REMOTE_HOST` / `FORWARD_TARGET` 重新匹配并改写（`sync_health_status_ids`，`lib/rules.sh` 的 `sync_health_status_ids`）。
+匹配按「host + 端口」逐个比对（`TARGET` 是 `host:port`，多地址规则要拆开逐个 host 比），
 匹配不上的旧行会被丢弃。
 
 ---
@@ -365,10 +366,23 @@ status == failed  且  success_count >= SUCCESS_THRESHOLD
 **冷却期是必需的**：连续成功达标但冷却期没到，状态**保持 failed**。
 这是防止节点抖动导致频繁切换的关键。
 
-### 6.4 旧格式兼容
+### 6.4 旧格式兼容（缺字段与旧 TARGET 口径）
 
 早期版本的状态文件没有 `FAILURE_START_TIME` 字段，这时会拿 `LAST_CHECK` 顶替
 （`lib/health.sh` 的 `health_check_script_body`）。
+
+早期版本的 `TARGET` 字段还只有 `host`（没有端口），所以**同一 host 上跑不同端口的转发组会互相覆盖**。
+现在的 `TARGET` 是 `host:port`，两种格式都能认：
+
+- 探测端（`lib/health.sh` 的 `health_check_script_body`）：先按 `RULE_ID|host:port` 找自己的记录，
+  找不到再按旧口径 `RULE_ID|host` 找；找到就**沿用旧记录的状态与计数**，
+  写回时写成新格式并顺手删掉同一 host 的旧行 —— 老文件里的 `failed` 不会因为升级被当成「健康」。
+- 消费端（`lib/realm.sh` 的 `generate_endpoints_from_rules`）：旧格式的行按该行 `RULE_ID`
+  对应规则的 `REMOTE_PORT` 补出端口，入**精确键** `host:port`；同时**始终**保留一份裸 host 的兜底键。
+  查状态时精确键优先；精确键缺失时（同 host 的另一个端口组、或归属已失效的老行），
+  同 host 的另一个端口会读到这条老记录的状态 —— 偏保守（宁可多切一次），不会「该切不切」。
+- 展示端（`lib/health.sh` 的 `get_health_status_record`）：先按 `TARGET` 字段精确匹配，
+  查不到再按裸 host 兜底查一次。
 
 ---
 

@@ -61,17 +61,56 @@ sync_health_status_ids() {
     while IFS='|' read -r old_rule_id target status fail_count success_count last_check failure_start_time; do
         [[ "$old_rule_id" =~ ^#.*$ ]] && continue
         [[ -z "$old_rule_id" ]] && continue
+        [[ -z "$target" ]] && continue
 
         local new_rule_id=""
         for rule_file in "${RULES_DIR}"/rule-*.conf; do
             if [ -f "$rule_file" ] && read_rule_file "$rule_file"; then
                 if [ "$RULE_ROLE" = "1" ]; then
-                    if [[ "$REMOTE_HOST" == *"$target"* ]] || [[ "$target" == "${REMOTE_HOST}:${REMOTE_PORT}" ]]; then
+                    # ★ TARGET 口径是 host:port：按「REMOTE_HOST 里的某个 host + 本规则的 REMOTE_PORT」匹配。
+                    #   老口径拿 REMOTE_HOST 做子串匹配，多地址规则（REMOTE_HOST=a,b）匹配不上
+                    #   host:port 形式的记录 → 记录被整条丢掉。
+                    #   旧格式（TARGET 只有 host）先按 host 精确匹配，匹配不上再退回老口径，
+                    #   保证升级过程里老记录不会被丢。
+                    local _matched=false
+                    local _h
+                    local _rh=()
+                    IFS=',' read -ra _rh <<< "$REMOTE_HOST"
+                    for _h in "${_rh[@]}"; do
+                        _h=$(echo "$_h" | xargs)  # 去除空格
+                        [ -n "$_h" ] || continue
+                        if [[ "$target" == *:* ]]; then
+                            if [ "${_h}:${REMOTE_PORT}" = "$target" ]; then
+                                _matched=true
+                                break
+                            fi
+                        else
+                            if [ "$_h" = "$target" ]; then
+                                _matched=true
+                                break
+                            fi
+                        fi
+                    done
+                    if [ "$_matched" != true ] && [[ "$target" != *:* ]]; then
+                        # 旧口径兜底（**刻意保留，不是漏改**）：老记录的 host 可能只是 REMOTE_HOST 的子串，
+                        # 精确匹配认不出来时仍按老口径认领 —— 升级期间宁可沿用老认领方式，
+                        # 也不能把老记录整条丢掉（丢掉 = 状态归零 = 故障转移静默失效）。
+                        if [[ "$REMOTE_HOST" == *"$target"* ]]; then
+                            _matched=true
+                        fi
+                    fi
+                    if [ "$_matched" = true ]; then
                         new_rule_id="$RULE_ID"
                         break
                     fi
                 else
-                    if [[ "$FORWARD_TARGET" == "$target" ]]; then
+                    local _fwd_ok=false
+                    if [ "$FORWARD_TARGET" = "$target" ]; then
+                        _fwd_ok=true
+                    elif [[ "$target" != *:* ]] && [ "${FORWARD_TARGET%%:*}" = "$target" ]; then
+                        _fwd_ok=true
+                    fi
+                    if [ "$_fwd_ok" = true ]; then
                         new_rule_id="$RULE_ID"
                         break
                     fi
@@ -1873,10 +1912,11 @@ load_balance_management_menu() {
                     if [ "$balance_mode" != "off" ] && [ "${port_failover_status[$port_key]:-}" = "true" ]; then
                         local health_status_file="${HEALTH_STATUS_FILE}"
                         local node_status="healthy"
-                        local host_only=$(echo "$target" | cut -d':' -f1)
 
                         if [ -f "$health_status_file" ]; then
-                            local health_record=$(get_health_status_record "$host_only")
+                            # ★ 按 host:port 取记录：同 host 不同端口各自独立；
+                            #   旧格式（TARGET 只有 host）由 get_health_status_record 兜底
+                            local health_record=$(get_health_status_record "$target")
                             if [ -n "$health_record" ]; then
                                 IFS='|' read -r _ _ _ _ _ _ _ lat_ms lat_hist <<< "$health_record"
                                 local found_status=$(echo "$health_record" | cut -d'|' -f3)
