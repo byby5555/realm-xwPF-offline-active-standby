@@ -2473,6 +2473,7 @@ configure_port_group_weights() {
     echo -e "${WHITE}格式说明: 按服务器顺序输入权重值，如 \"2,1,3\"${NC}"
     echo -e "${WHITE}权重范围: 0-10；普通负载均衡下数值越大分配流量越多${NC}"
     echo -e "${GREEN}含 0 即自动主备: 如 \"10,0\" → 自动进入主备模式并开启主备路由${NC}"
+    echo -e "${GREEN}权重 10 是独占权重: 只能给一个目标, 给了 10 其余必须全是 0${NC}"
     echo -e "${BLUE}  主备模式下：权重数值大的排在前，同一时刻只有一个主承接流量；权重表示优先级，不是分流比例${NC}"
     echo -e "${BLUE}  权重 0 的目标不参与主备；主故障自动切备，主恢复自动切回${NC}"
     echo ""
@@ -2528,6 +2529,35 @@ validate_weight_input() {
     # 不能全部为 0：主备语义下至少要有一个目标承担流量，否则整个端口组无出口
     if [ "$total_weight" -eq 0 ]; then
         echo -e "${RED}权重不能全部为 0，至少保留一个大于 0 的权重${NC}"
+        return 1
+    fi
+
+    # ★ 10 是独占权重（第 4 条校验）
+    #
+    # 等价说法（写在这里便于后人理解）：
+    #   要么所有权重都在 0-9  →  负载均衡，按比例分流
+    #   要么恰好一个 10 且其余全是 0  →  主备，10 独占一个目标、其余待命
+    #
+    # 为什么必须拦：10,5 这种写法「不含 0」→ 会被当成普通负载均衡按 10:5 分摊，
+    # 而 10 的语义是「主、其余待命」—— 两者相反，放过去就是静默跑错模式，
+    # 主故障时没有探测驱动的切换状态机，只有比例分摊。
+    local ten_count=0
+    local other_non_zero=0
+    for weight in "${weights[@]}"; do
+        if [ "$weight" -eq 10 ]; then
+            ten_count=$((ten_count + 1))
+        elif [ "$weight" -ne 0 ]; then
+            other_non_zero=$((other_non_zero + 1))
+        fi
+    done
+    if [ "$ten_count" -gt 1 ]; then
+        echo -e "${RED}只能有一个目标拿 10${NC}"
+        echo -e "  ${BLUE}写法示例: 10,0 = 主备（主故障自动切备、主恢复自动切回）；5,5 = 负载均衡按比例分流${NC}"
+        return 1
+    fi
+    if [ "$ten_count" -eq 1 ] && [ "$other_non_zero" -gt 0 ]; then
+        echo -e "${RED}权重 10 只能给一个目标独占：给了 10 之后，其余目标只能是 0${NC}"
+        echo -e "  ${BLUE}写法示例: 10,0 = 主备（主故障自动切备、主恢复自动切回）；5,5 = 负载均衡按比例分流${NC}"
         return 1
     fi
 
@@ -2949,7 +2979,7 @@ auto_enable_active_standby() {
                 _ensure_rule_field_default "$rule_file" "HEALTH_CHECK_INTERVAL" "4"
                 _ensure_rule_field_default "$rule_file" "FAILURE_THRESHOLD" "2"
                 _ensure_rule_field_default "$rule_file" "SUCCESS_THRESHOLD" "2"
-                _ensure_rule_field_default "$rule_file" "CONNECTION_TIMEOUT" "3"
+                _ensure_rule_field_default "$rule_file" "CONNECTION_TIMEOUT" "10"
                 _ensure_rule_field_default "$rule_file" "RECOVERY_COOLDOWN" "120"
 
                 updated_count=$((updated_count + 1))
