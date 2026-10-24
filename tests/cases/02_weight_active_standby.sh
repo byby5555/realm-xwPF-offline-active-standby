@@ -125,7 +125,26 @@ case_T14_active_standby_rule_state() {
     h_check_file_has "$rule" 'HEALTH_CHECK_INTERVAL="4"' "HEALTH_CHECK_INTERVAL"
     h_check_file_has "$rule" 'FAILURE_THRESHOLD="2"' "FAILURE_THRESHOLD"
     h_check_file_has "$rule" 'SUCCESS_THRESHOLD="2"' "SUCCESS_THRESHOLD"
-    h_check_file_has "$rule" 'CONNECTION_TIMEOUT="3"' "CONNECTION_TIMEOUT"
+    # CONNECTION_TIMEOUT 的期望值**从产品自己声明的默认值抽**
+    #   原因：探测预算 3s → 10s 是**产品侧**改动（check_connectivity 默认值 /
+    #   lib/health.sh 的 ${CONNECTION_TIMEOUT:-N} / 规则模板默认值）。
+    #   台架写死 "3" → 产品改一次就红一次（假红），而且红的原因会被误读成「台架坏了」。
+    local ct_def
+    ct_def=$(sed -n 's/.*_ensure_rule_field_default[^"]*"CONNECTION_TIMEOUT"[^"]*"\([0-9]\+\)".*/\1/p' "$SBX_SRC/lib/rules.sh" 2>/dev/null | head -1)
+    [ -z "$ct_def" ] && ct_def=$(sed -n 's/.*CONNECTION_TIMEOUT:-\([0-9]\+\).*/\1/p' "$SBX_SRC/lib/health.sh" 2>/dev/null | head -1)
+    if [ -z "$ct_def" ]; then
+        h_log "抽不到产品声明的 CONNECTION_TIMEOUT 默认值 → 退回区间断言（1..30）"
+        local ct_val
+        ct_val=$(sed -n 's/^CONNECTION_TIMEOUT="\([0-9]\+\)".*/\1/p' "$rule" 2>/dev/null | head -1)
+        if [ -n "$ct_val" ] && [ "$ct_val" -ge 1 ] && [ "$ct_val" -le 30 ]; then
+            h_pass "CONNECTION_TIMEOUT=$ct_val 在 1..30 区间内"
+        else
+            h_fail "CONNECTION_TIMEOUT 取不到或不在 1..30 区间（值=<$ct_val>）"
+        fi
+    else
+        h_log "产品声明的 CONNECTION_TIMEOUT 默认值 = $ct_def"
+        h_check_file_has "$rule" "CONNECTION_TIMEOUT=\"$ct_def\"" "CONNECTION_TIMEOUT（跟产品声明的默认值）"
+    fi
     h_check_file_has "$rule" 'RECOVERY_COOLDOWN="120"' "RECOVERY_COOLDOWN"
 }
 

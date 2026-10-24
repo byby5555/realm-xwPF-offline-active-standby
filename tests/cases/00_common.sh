@@ -5,6 +5,43 @@
 #   - 所有被测代码来自冻结态 $SBX_RUN / $SBX_SRC（= git show $BASE_SHA:<path>）
 #   - 所有文件操作都在沙箱里，绝不碰真实 /etc/realm
 
+# ── 历史对象清单（负向对照依赖的「修复前的真实旧实现」）────────────
+#   ★ 单一真源：**用例**（去取旧实现）和**跑批前预检**（检查对象在不在本地库）
+#     都从这里读，避免两处漂移。新增一个用历史实现的负向对照 →
+#     ① 在下面加一行 ② 用例改用 sbx_history_sha <key> 取值（不要在用例里写死 sha）。
+#   背景（第 9 轮 · Chief 派单 P2）：堆叠 PR 全部 squash 合并后，main 的历史里
+#     **不再包含**这些旧 SHA；而 `git clone --single-branch` **不拉 tag**
+#     → 对象缺失 → 负向对照取不到「修复前的真实旧实现」→ 证明力归零，
+#     而且门禁会以「用例失败」的形式红，**会被误读成产品回归**。
+#     → 跑批前预检（tests/run_tests.sh）用独立退出码 3 报这件事，并给出修复命令。
+#   格式：<key> <sha> <说明>
+sbx_required_history_shas() {
+    cat <<'EOF'
+t52-prefix    f730c8b  T52 负向对照：最初的健康状态实现（读侧只用裸 host 建索引）
+t52-pre-n1r1  a7e23fc  T52 负向对照：TARGET 改 host:port 之后、仍留一份裸 host 宽键的那一版
+t53-pre-fix   d0366b3  T53 负向对照：菜单 EOF 忙循环修复之前的实现（整份 lib/）
+t54-pre-fix   a359301  T54 负向对照：交互读入 EOF 收口之前的实现（整份 lib/）
+weight10-pre  b863911  T84 负向对照：加「权重 10 独占」校验之前的实现（会接受 10,5）
+n4-pre        f59e389  T85/T86 负向对照：生成物装/升级不重生成 + 状态文件不原子重建的那一版
+inherit-pre   9dc5b56  T87/T88 负向对照：health_status_find_row 只比对目标地址、没看 RULE_ID 的那一版
+inherit-ok    f59e389  T87/T88「老实现本来是对的」：老实现用 grep 组合键（RULE_ID|地址），跑同一场景必须**不串**
+n4-del        2beb7bd  删除进程级主备池整块的那一版（补历史文件时取它的父提交）
+EOF
+}
+
+# 按 key 取 sha（用例用）
+#   成功 → stdout 打印 sha，rc=0；清单里没有这个 key → rc=1 且 stdout 为空
+sbx_history_sha() {
+    local key="$1" k sha desc
+    while read -r k sha desc; do
+        case "$k" in ''|'#'*) continue ;; esac
+        [ "$k" = "$key" ] || continue
+        printf '%s\n' "$sha"
+        return 0
+    done < <(sbx_required_history_shas)
+    return 1
+}
+
 # 在沙箱里 source 冻结态产品代码，执行一段 bash，返回输出
 _run_in_sandbox() {
     local code="$1"

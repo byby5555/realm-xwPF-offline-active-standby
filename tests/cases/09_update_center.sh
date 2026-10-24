@@ -30,15 +30,27 @@ _upd_site() {
     chmod +x "$site/install/realm"
     printf '#!/bin/bash\nSCRIPT_VERSION="v2.2.1"\n' > "$site/install/lib/core.sh"
     local f
-    for f in health.sh rules.sh server.sh realm.sh failover.sh ui.sh update.sh; do
+    # ★ 假安装目录/假远端镜像的文件清单**从产品自己声明的清单抽**
+    #   （lib/update.sh 的 UPDATE_LIB_FILES / UPDATE_CMD_FILES）
+    #   原因：产品正在删文件（2beb7bd 删了 lib/failover.sh 与 cmd/xwpf-failover.*）。
+    #   台架里写死一份清单 → 产品一改，台架就跟现实脱节（要么假红，要么漏检）。
+    local p_libs p_cmds f g
+    p_libs=$(sed -n 's/^UPDATE_LIB_FILES=(\(.*\))$/\1/p' "$SBX_SRC/lib/update.sh" 2>/dev/null | tr -d '"' | tr ' ' '\n' | grep -v '^$')
+    p_cmds=$(sed -n 's/^UPDATE_CMD_FILES=(\(.*\))$/\1/p' "$SBX_SRC/lib/update.sh" 2>/dev/null | tr -d '"' | tr ' ' '\n' | grep -v '^$')
+    # 抽不到就退回一份保守清单（抽不到 = 台架配置问题，必须看得见）
+    if [ -z "$p_libs" ]; then
+        echo "!! 抽不到产品的 UPDATE_LIB_FILES（lib/update.sh 形态变了？）—— 用保守清单兜底" >&2
+        p_libs="core.sh health.sh rules.sh server.sh realm.sh ui.sh update.sh"
+    fi
+    for f in $p_libs; do
         printf '#!/bin/bash\n# %s\n' "$f" > "$site/install/lib/$f"
     done
     printf '#!/bin/bash\n# xwPF\n' > "$site/install/xwPF.sh"
-    printf '# daemon\n' > "$site/install/cmd/xwpf-failover.py"
-    printf '# service\n' > "$site/install/cmd/xwpf-failover.service"
+    for f in $p_cmds; do
+        printf '# %s\n' "$f" > "$site/install/cmd/$f"
+    done
     # 远端脚本包镜像（假 GitHub raw）
-    local g
-    for g in xwPF.sh core.sh health.sh rules.sh server.sh realm.sh failover.sh ui.sh update.sh; do
+    for g in xwPF.sh $p_libs; do
         printf '#!/bin/bash\n# new %s\n' "$g" > "$site/fake/remote/$g"
     done
     printf '#!/bin/bash\nSCRIPT_VERSION="v9.9.9"\n' > "$site/fake/remote/core.sh"

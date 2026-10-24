@@ -33,7 +33,10 @@
 #   ＋ 负向对照：用**真实修复前实现**复现忙循环，断言「坏情况确实发生」。
 
 # 修复前冻结点（EOF 忙循环修复之前的最后一个提交）
-_T53_PRE_FIX_SHA="d0366b3"
+#   ★ sha 来自**单一真源** tests/cases/00_common.sh 的 sbx_required_history_shas
+#     （跑批前预检用同一份清单检查对象在不在本地库 → 缺对象时用退出码 3 报，
+#      不会被误读成产品回归）。不要在这里写死 sha。
+_T53_PRE_FIX_SHA="$(sbx_history_sha t53-pre-fix)"
 
 # 输出字节数上限（用于**修复后**的实现：菜单在 EOF 下必须很快收住）。
 # 实测：修复后 170 字节。
@@ -61,6 +64,44 @@ _T53_SENTINEL="AFTER-CALLBACK-SENTINEL"
 
 # 有 helper 契约的实现（4 处：主脚本 + 3 个独立脚本，各自带一份）
 _T53_HELPER_HOSTS="lib/core.sh xwFailover.sh port-traffic-dog.sh speedtest.sh"
+
+# ── 「份数」不变式：同一件事只能有一份实现 ──────────────────────
+#   本仓铁律：同一件事只能有一份实现（当年 M4 两份 check_connectivity 就是这么收敛的）。
+#   当前产品的**例外**是 3 个独立脚本（xwFailover.sh / port-traffic-dog.sh / speedtest.sh）
+#   各自内置一份 —— 它们在真机上要能独立跑，不能 source lib/core.sh。
+#   → 合法形态 = 4 份（lib/core.sh + 3 个独立脚本）。
+#   ★ 写成「≤ 4」而不是「== 4」：钉的是「**不许又多抄一份**」，
+#     不是「必须正好 4 份」—— 将来若独立脚本改成 source 唯一来源（份数变 1），
+#     这条不该误红（形态无关）。
+_T53_HELPER_MAX=4
+
+# 冻结态里的 .sh 文件清单（排除台架自己的 tests/）
+_t53_sh_list() {
+    local rel
+    while IFS= read -r rel; do
+        case "$rel" in
+            *.sh) ;;
+            *) continue ;;
+        esac
+        case "$rel" in
+            tests/*) continue ;;
+        esac
+        printf '%s\n' "$rel"
+    done < <(git ls-tree -r --name-only "$BASE_SHA")
+}
+
+# 数一个根目录下的 ui_read_into() { 定义份数
+_t53_count_helpers() {
+    local root="$1" list="$2" rel n tot=0
+    while IFS= read -r rel; do
+        [ -z "$rel" ] && continue
+        [ -f "$root/$rel" ] || continue
+        n=$(grep -c '^ui_read_into() {' "$root/$rel" 2>/dev/null || true)
+        [ -z "$n" ] && n=0
+        tot=$((tot + n))
+    done < "$list"
+    printf '%s\n' "$tot"
+}
 
 # 从冻结态文件里**现场抽** ui_read_into 的实现（不抄进测试）
 _t53_extract_helper() {
@@ -152,13 +193,21 @@ _t53_prepare_pre_fix_lib() {
     _T53_LIBROOT="$libroot"
     rm -rf "$libroot"
     mkdir -p "$libroot/lib"
-    local f
+    # ★ 该 sha 的树里**有**的取、没有的跳过；一个都没取到才算失败
+    #   （产品删文件后，硬编码列表会让「取不到」直接判失败 → 负向对照跑不起来 = 没在证明）
+    local f got=0
     for f in core.sh ui.sh health.sh rules.sh server.sh realm.sh failover.sh update.sh; do
-        if ! (cd "$SBX_REPO" && git show "$sha:lib/$f" > "$libroot/lib/$f" 2>/dev/null); then
-            echo "取不到 $sha:lib/$f" >&2
-            return 1
+        if (cd "$SBX_REPO" && git show "$sha:lib/$f" > "$libroot/lib/$f" 2>/dev/null); then
+            got=$((got + 1))
+        else
+            rm -f "$libroot/lib/$f"
+            echo "该 sha 没有 lib/$f（产品已删）→ 跳过" >&2
         fi
     done
+    if [ "$got" -eq 0 ]; then
+        echo "取不到 $sha 的任何 lib 文件" >&2
+        return 1
+    fi
     return 0
 }
 
@@ -217,6 +266,31 @@ case_T53_menu_eof_no_busy_loop() {
     local guard=否
     grep -qaE '终端|terminal|全功能一键脚本' "$out_new" && guard=是
     h_check_eq "是" "$guard" "防空过护栏：输出命中入口标志（入口提示语或菜单标题）→ 证明真的走到了菜单入口"
+
+    # ── 第五层 · 「份数」不变式：同一件事只能有一份实现 ─────────────
+    #   少一份：上面第一层就红（每处主机都必须抽得到 helper）。
+    #   多一份：这里红（有人又抄了一份到别处 → 改一处忘一处，正是本缺陷的家族）。
+    local shlist53="$SBX_ROOT/t53_shfiles.txt"
+    _t53_sh_list > "$shlist53"
+    local helper_n
+    helper_n=$(_t53_count_helpers "$SBX_SRC" "$shlist53")
+    h_log "全仓 ui_read_into() { 定义份数: $helper_n"
+    h_check_le "$_T53_HELPER_MAX" "$helper_n" "全仓 ui_read_into() { 定义份数（不许出现第 5 份副本）"
+
+    # 负向对照（判定器自检）：合成树里塞 5 份 → 计数器必须数到 5。
+    #   ★ 这条是防「上限断言恒真」：计数器若坏了（恒返回 0），上面的上限断言会一路绿灯。
+    local probe5="$SBX_ROOT/t53_helper_count"
+    rm -rf "$probe5"
+    mkdir -p "$probe5/a"
+    local i5
+    for i5 in 1 2 3 4 5; do
+        printf 'ui_read_into() {\n    echo x\n}\n' > "$probe5/a/f$i5.sh"
+    done
+    printf 'a/f1.sh\na/f2.sh\na/f3.sh\na/f4.sh\na/f5.sh\n' > "$probe5/list"
+    local n5
+    n5=$(_t53_count_helpers "$probe5" "$probe5/list")
+    h_log "负向对照：5 份副本的合成树，计数器数到 $n5"
+    h_check_eq "5" "$n5" "负向对照自检：第 5 份实现必须被份数计数器数到（否则上限断言是恒真）"
 
     # ── 负向对照：真实修复前实现必须复现忙循环 ──────────────
     h_log "准备修复前实现：$_T53_PRE_FIX_SHA 的 lib/"

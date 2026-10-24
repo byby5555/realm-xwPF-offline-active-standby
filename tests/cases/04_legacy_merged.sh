@@ -587,6 +587,76 @@ _T32_NEG_RE='不需要|不存在|无需|无须|不再|不必|不用|不涉及|�
 # 作用：挡住「扫描器一个文件都没扫 → 违规数必然 0 → 假绿」。
 _T32_SCAN_FLOOR=14
 
+# ── 锚点文件（第 9 轮 · 审稿复核 发现 1 的修法）────────────────────
+#   背景：文件数下限护栏只防「**全砍**」，不防「砍一部分」——
+#   审稿实测：把 docs/* 从候选范围里去掉 → N 从 28 变 22（仍 ≥ 14 → 护栏不响）
+#   → 那 6 份文档里的误导句式彻底无人检查，而门禁是绿的。
+#   真正的不变式是「**扫描器真的看了出事的地方**」→ 锚点断言：
+#   候选清单必须包含这些**历史上真出过这个毛病**的文件，且它们必须真的被扫到。
+#   ★ 锚点用**具体文件**而不是**文件数**：文件数会随文档增删漂移，锚点不会。
+_T32_ANCHORS="docs/active-standby-logic.md docs/health-check-and-failover.md"
+_T32_ANCHOR_N=0        # 被扫到的锚点数（由 _t32_scan_stale 填）
+T32_ANCHOR_N=0
+
+# ── 子句级豁免（第 9 轮 · 审稿复核 发现 2 的修法）────────────────────
+#   背景：否定词「整行豁免」是一条漏判通道 —— 一行里只要出现**任何**否定词，
+#   整行就被放过。审稿实测：「改动 … 两处必须同步，没有别的办法。」这类
+#   「肯定误导 + 句尾否定词」的行，现行判据抓不到。
+#   ★ 而且负向对照 6(b) 把这种漏判写成了「正确行为」（期望保持绿）——
+#     这就是硬规矩 19 ③ 说的「期望值本身也可能写错」。
+#   修法：豁免从「整行」缩到「**子句**」——
+#     · 先按整行 stale 正则**发现**候选（发现口径不变，不丢检测力）；
+#     · 再按**核心短语**「两处…同步」定位，逐个核心短语判豁免：
+#         同一子句内、否定词**起点不晚于**核心短语起点、且**词尾紧邻或覆盖**它
+#         → 该核心短语豁免；只要有一个核心短语不被豁免 → 这行计入违规。
+#   ★ 子句切分按**字节**：中文标点是固定 3 字节（。=E3 80 82 ，=E3 80 84
+#     （=EF BC 88 ）=EF BC 89 …），按字节切是稳定的；
+#     **不要**引入中文标点字符类（那正是 P1 的病根）。
+#   ★ 「不需要两处同步」必须豁免：否定词紧贴在核心短语**左侧**（词尾 = 起点-1）。
+_T32_CORE_RE='两处.{0,30}同步'
+_T32_SEP_RE=$(printf '\xe3\x80\x82|\xe3\x80\x84|\xe3\x80\x81|\xef\xbc\x9b|\xef\xbc\x81|\xef\xbc\x9f|\xef\xbc\x88|\xef\xbc\x89')
+
+# 单行判定：这一行算不算「肯定误导句式」（子句级豁免）
+_t32_line_is_violation() {
+    local text="$1"
+    printf '%s\n' "$text" | LC_ALL=C awk \
+        -v CORE="$_T32_CORE_RE" -v NEGRE="$_T32_NEG_RE" -v SEPRE="$_T32_SEP_RE" '
+        function negated(clause, cs,   win, rest, abs, endpos) {
+            win = substr(clause, 1, cs + 12)
+            rest = win
+            while (match(rest, NEGRE)) {
+                abs = length(win) - length(rest) + RSTART
+                endpos = abs + RLENGTH - 1
+                if (abs <= cs && endpos >= cs - 1) return 1
+                rest = substr(rest, RSTART + RLENGTH)
+            }
+            return 0
+        }
+        {
+            line = $0
+            rest = line
+            off = 0
+            while (match(rest, CORE)) {
+                mlen = RLENGTH
+                mstart = off + RSTART
+                prefix = substr(line, 1, mstart - 1)
+                clause_start = 1
+                p = prefix
+                poff = 0
+                while (match(p, SEPRE)) {
+                    clause_start = poff + RSTART + RLENGTH
+                    p = substr(p, RSTART + RLENGTH)
+                    poff = poff + RSTART + RLENGTH - 1
+                }
+                clause = substr(line, clause_start)
+                cs = mstart - clause_start + 1
+                if (!negated(clause, cs)) { print "HIT"; exit }
+                rest = substr(rest, RSTART + mlen)
+                off = off + RSTART + mlen - 1
+            }
+        }' | grep -q HIT
+}
+
 _t32_candidate_list() {
     local rel
     while IFS= read -r rel; do
@@ -607,17 +677,23 @@ _t32_scan_stale() {
     local rel l text
     T32_SCAN_N=0
     T32_STALE_HITS=0
+    T32_ANCHOR_N=0
     : > "$SBX_ROOT/t32_stale_hits.txt"
     while IFS= read -r rel; do
         [ -z "$rel" ] && continue
         [ -f "$root/$rel" ] || continue
         T32_SCAN_N=$((T32_SCAN_N + 1))
+        # 锚点：候选清单里出现且文件存在 → 记一次（“扫描器真的看了出事的地方”）
+        case " $_T32_ANCHORS " in
+            *" $rel "*) T32_ANCHOR_N=$((T32_ANCHOR_N + 1)) ;;
+        esac
         while IFS= read -r l; do
             [ -z "$l" ] && continue
             text="${l#*:}"
-            # 同一行含否定词 → 豁免（这是否定句，不是肯定误导句式）
-            if printf '%s' "$text" | LC_ALL=C grep -qE "$_T32_NEG_RE"; then
-                h_log "  豁免（含否定词）: $rel:${l%%:*}  $(printf '%s' "$text" | cut -c1-90)"
+            # 豁免判定：**子句级** —— 否定词必须在命中核心短语的左侧、且同一子句内
+            #   （整行豁免会让「肯定误导 + 句尾否定词」这类行漏过去）
+            if ! _t32_line_is_violation "$text"; then
+                h_log "  豁免（否定词紧邻命中、同一子句内）: $rel:${l%%:*}  $(printf '%s' "$text" | cut -c1-90)"
                 continue
             fi
             T32_STALE_HITS=$((T32_STALE_HITS + 1))
@@ -626,55 +702,304 @@ _t32_scan_stale() {
     done < "$list"
 }
 
+# ── 探测实现份数的形态判定器（第 9 轮 P2 补回）──────────────────────
+# 背景：第 3 轮（reports/round2-review.md）把 T32 从「总数 == 2」放宽成
+#   「全仓 check_connectivity() { 的份数 ∈ [1,2]」：
+#     1 份 = 已收敛为单一真源（health_emit_function 机械抽取）
+#     2 份 = 真源 + 生成脚本内的手工内联副本（a9102c1 / b361ca8 的形态）
+#   关键不变式不是「等于几」，而是「不许有第 3 份」+「生成物里恰好 1 份且与真源逐字一致」。
+# ★ 第 9 轮（P2）发现：这条分支在后续重构里丢了 —— 份数被钉成 == 1，
+#   于是「真源 + 生成脚本内联副本」这个**合法**形态会被误判红。
+#   手工扫描口径认它（round2-review.md），T32 抓不住 → 这里按「并列分支」补回来。
+#   ★ 补回来的分支必须**当场证明它会判对**：否则只是把一条从没跑过的分支写进台架。
+#     → 配套 5 组合成探针树自检（单一真源 / 真源+内联副本 / 漂移 / 分散 / 第 3 份）。
+_T32_FORM_SINGLE="单一真源"
+_T32_FORM_INLINE="真源+内联副本"
+_T32_FORM_BAD="越界"
+
+# 冻结态里的 .sh 文件清单（排除台架自己的 tests/）
+_t32_sh_file_list() {
+    local rel
+    while IFS= read -r rel; do
+        case "$rel" in
+            *.sh) ;;
+            *) continue ;;
+        esac
+        case "$rel" in
+            tests/*) continue ;;
+        esac
+        printf '%s\n' "$rel"
+    done < <(git ls-tree -r --name-only "$BASE_SHA")
+}
+
+# 生成器函数里 heredoc 的行号范围（start end）
+#   ★ 必须按 heredoc 的**结束标记**收尾：heredoc 正文里常有 `done` / `fi` 这种
+#     单个词的行，用「单字母行」当结束标记会在正文中间就停 → 抽出来的正文是残缺的
+#     （实测：这样抽出来只剩 14 行，真正的正文有 ~190 行）。
+_t32_gen_heredoc_range() {
+    awk '
+        /^health_check_script_body\(\) *\{/ { ingen = 1; next }
+        {
+            if (ingen && inhd == 0) {
+                p = index($0, "<<")
+                if (p > 0) {
+                    rest = substr($0, p + 2)
+                    gsub(/^[[:space:]]+/, "", rest)
+                    n = split(rest, w, /[[:space:]]+/)
+                    tok = w[1]
+                    gsub(/[^A-Za-z0-9_]/, "", tok)
+                    marker = tok
+                    inhd = 1
+                    start = NR
+                    next
+                }
+            }
+            if (inhd == 1 && $0 == marker) { print start, NR; exit }
+        }
+    ' "$1"
+}
+
+# 形态判定器：<根目录> <文件清单> → 「形态|生成器 heredoc 内副本数|说明」
+#   形态 = 单一真源 / 真源+内联副本 / 越界
+#   ★ 两个字段都从 stdout 出来：**不要用全局变量回传** ——
+#     本函数是在命令替换（子 shell）里被调用的，函数里赋的全局变量
+#     在父 shell 里永远是空 → 断言会拿空值去比（实测踩过）。
+_t32_probe_form() {
+    local root="$1" list="$2"
+    local rel n total=0 files="" copies_file="" inside=0 outside=0
+    while IFS= read -r rel; do
+        [ -z "$rel" ] && continue
+        [ -f "$root/$rel" ] || continue
+        n=$(grep -c '^check_connectivity() {' "$root/$rel" 2>/dev/null || true)
+        [ -z "$n" ] && n=0
+        [ "$n" = "0" ] && continue
+        total=$((total + n))
+        files="$files $rel×$n"
+        if [ -z "$copies_file" ]; then
+            copies_file="$rel"
+        elif [ "$rel" != "$copies_file" ]; then
+            printf '%s|%s|副本分散在多个文件（%s）\n' "$_T32_FORM_BAD" "0" "$files"
+            return 1
+        fi
+    done < "$list"
+
+    if [ "$total" -lt 1 ] || [ "$total" -gt 2 ]; then
+        printf '%s|%s|全仓 %s 份（只允许 1 份或 2 份）：%s\n' "$_T32_FORM_BAD" "0" "$total" "${files:-（无）}"
+        return 1
+    fi
+
+    # 生成器 heredoc 的行号范围 + 落在其中的副本数
+    local rng start end x
+    rng=$(_t32_gen_heredoc_range "$root/$copies_file")
+    start=$(printf '%s' "$rng" | cut -d' ' -f1)
+    end=$(printf '%s' "$rng" | cut -d' ' -f2)
+    if [ -n "$start" ] && [ -n "$end" ]; then
+        while IFS= read -r x; do
+            [ -z "$x" ] && continue
+            if [ "$x" -ge "$start" ] && [ "$x" -le "$end" ]; then
+                inside=$((inside + 1))
+            else
+                outside=$((outside + 1))
+            fi
+        done < <(grep -n '^check_connectivity() {' "$root/$copies_file" | cut -d: -f1)
+    else
+        outside="$total"
+    fi
+
+    if [ "$total" -eq 1 ]; then
+        if [ "$inside" -eq 0 ]; then
+            printf '%s|%s|1 份：单一真源（生成器 heredoc 内无内联副本）：%s\n' "$_T32_FORM_SINGLE" "$inside" "$copies_file"
+            return 0
+        fi
+        printf '%s|%s|唯一一份却藏在生成器 heredoc 里（没有顶层真源）：%s\n' "$_T32_FORM_BAD" "$inside" "$copies_file"
+        return 1
+    fi
+
+    # 2 份：必须是「顶层真源 1 份 + 生成器 heredoc 内 1 份」，且两份逐字一致
+    if [ "$inside" -ne 1 ] || [ "$outside" -ne 1 ]; then
+        printf '%s|%s|2 份但分布不对（heredoc 内 %s 份 / 顶层 %s 份）\n' "$_T32_FORM_BAD" "$inside" "$inside" "$outside"
+        return 1
+    fi
+    local a b ln
+    ln=$(grep -n '^check_connectivity() {' "$root/$copies_file" | cut -d: -f1 | while IFS= read -r x; do
+            if [ "$x" -lt "$start" ] || [ "$x" -gt "$end" ]; then printf '%s\n' "$x"; fi
+        done | head -1)
+    a=$(sed -n "${ln},/^}/p" "$root/$copies_file")
+    b=$(sed -n "${start},${end}p" "$root/$copies_file" | awk '/^check_connectivity\(\) \{/{f=1} f{print} f&&/^\}/{exit}')
+    if [ -z "$a" ] || [ -z "$b" ]; then
+        printf '%s|%s|2 份但取不到可比对的实现\n' "$_T32_FORM_BAD" "$inside"
+        return 1
+    fi
+    if [ "$a" = "$b" ]; then
+        printf '%s|%s|2 份：真源 + 生成脚本内的手工内联副本（逐字一致）：%s\n' "$_T32_FORM_INLINE" "$inside" "$copies_file"
+        return 0
+    fi
+    printf '%s|%s|2 份但真源与内联副本已漂移\n' "$_T32_FORM_BAD" "$inside"
+    return 1
+}
+
 case_T32_single_probe_implementation() {
     h_case_begin "T32" "探测实现：唯一手写真源 + 生成物与真源逐字一致（形态无关）" \
         "冻结态 $BASE_SHA（只读）+ 沙箱生成物" \
         "生成物 health_check.sh 的探测实现 vs 真源（形态 A 内嵌 / 形态 B source 都判过）+ 扫仓库里的「要手工同步」句式" \
-        "全仓手写份数 == 1 且集中在 lib/health.sh；生成物的探测实现与真源逐字一致（形态无关）；仓库无肯定误导句式"
+        "全仓手写份数 ∈ [1,2]（1=单一真源 / 2=真源+生成脚本内联副本）且集中在 lib/health.sh；"
+        "生成物的探测实现与真源逐字一致（形态无关）；仓库无肯定误导句式"
 
     local hl="$SBX_SRC/lib/health.sh"
 
-    # ── 1. 全仓手写份数必须 == 1（多一份 = 有人又手抄了一份）──
-    local rel total=0 detail="" n
-    while IFS= read -r rel; do
-        case "$rel" in
-            *.sh) ;;
-            *) continue ;;
-        esac
-        case "$rel" in
-            tests/*) continue ;;
-        esac
-        [ -f "$SBX_SRC/$rel" ] || continue
-        n=$(grep -c '^check_connectivity() {' "$SBX_SRC/$rel" 2>/dev/null || true)
-        [ -z "$n" ] && n=0
-        if [ "$n" != "0" ]; then
-            total=$((total + n))
-            detail="$detail$rel×$n "
-        fi
-    done < <(git ls-tree -r --name-only "$BASE_SHA")
-    h_log "手写份数分布: ${detail:-（无）}"
-    h_check_eq "1" "$total" "check_connectivity() { 的全仓手写份数（唯一真源）"
+    # ── 1. 全仓手写份数的形态：1 份（单一真源）或 2 份（真源 + 生成脚本内联副本）──
+    #   ★ 第 3 轮放宽过的口径（reports/round2-review.md）：关键不变式不是「等于几」，
+    #     而是「不许有第 3 份」+「生成物里恰好 1 份且与真源逐字一致」。
+    #   ★ 第 9 轮（P2）补回「2 份 = 真源 + 生成脚本内的手工内联副本」这个**合法**分支：
+    #     它在后续重构里被钉成 == 1 → 那种形态会被误判红（手工扫描口径认它，T32 抓不住）。
+    local shlist="$SBX_ROOT/t32_shfiles.txt"
+    _t32_sh_file_list > "$shlist"
 
-    # ── 2. 这 1 份必须在 lib/health.sh（散落到别处 → 红）──
-    local only_health="是"
+    local rel total=0 copies_detail="" n only_health="是"
     while IFS= read -r rel; do
-        case "$rel" in
-            *.sh) ;;
-            *) continue ;;
-        esac
-        case "$rel" in
-            tests/*) continue ;;
-        esac
-        [ "$rel" = "lib/health.sh" ] && continue
         [ -f "$SBX_SRC/$rel" ] || continue
         n=$(grep -c '^check_connectivity() {' "$SBX_SRC/$rel" 2>/dev/null || true)
         [ -z "$n" ] && n=0
-        if [ "$n" != "0" ]; then
+        [ "$n" = "0" ] && continue
+        total=$((total + n))
+        copies_detail="$copies_detail$rel×$n "
+        if [ "$rel" != "lib/health.sh" ]; then
             only_health="否（$rel 还有 $n 份）"
             h_log "越界副本: $rel × $n"
         fi
-    done < <(git ls-tree -r --name-only "$BASE_SHA")
+    done < "$shlist"
+    h_log "手写份数分布: ${copies_detail:-（无）}"
+
+    # 形态判定（判定器独立于上面的计数：它自己查 heredoc 归属 + 两份是否逐字一致）
+    #   ★ 两个字段都从 stdout 取（判定器跑在命令替换的子 shell 里，全局变量回传不到父 shell）
+    local form f_form f_gen f_detail
+    form=$(_t32_probe_form "$SBX_SRC" "$shlist")
+    f_form=$(printf '%s' "$form" | cut -d'|' -f1)
+    f_gen=$(printf '%s' "$form" | cut -d'|' -f2)
+    f_detail=$(printf '%s' "$form" | cut -d'|' -f3-)
+    h_log "探测实现份数形态: $f_form —— $f_detail"
+
+    # 期望形态由「份数」决定（不是由判定器自己的结论决定 → 断言不是恒真）
+    local expect_form expect_gen
+    case "$total" in
+        1) expect_form="$_T32_FORM_SINGLE"; expect_gen="0" ;;
+        2) expect_form="$_T32_FORM_INLINE"; expect_gen="1" ;;
+        *) expect_form="$_T32_FORM_BAD";    expect_gen="0" ;;
+    esac
+
+    h_check_ge 1 "$total" "全仓手写份数 ≥ 1（必须有一份手写真源）"
+    h_check_le 2 "$total" "全仓手写份数 ≤ 2（不许有第 3 份）"
     h_check_eq "是" "$only_health" "探测实现是否只集中在 lib/health.sh"
+    h_check_eq "$expect_form" "$f_form" \
+        "探测实现份数形态判定（1 份=单一真源 / 2 份=真源+生成脚本内联副本 / 其余=越界）"
+    h_check_eq "$expect_gen" "$f_gen" \
+        "生成器 heredoc 内的探测副本数（单一真源形态=0 / 内联副本形态=1）"
+
+    # ── 1.5 判定器自检：合成探针树（证明「2 份」这条分支不是写出来从没跑过）──
+    #   ★ 缺了这段，上面那条形态断言在「2 份」形态下**一次都没被验证过**：
+    #     判定器写错了也会全绿（当前产品只有 1 份 → 永远走不到 2 份那条路）。
+    local st="$SBX_ROOT/t32_forms"
+    rm -rf "$st"
+    mkdir -p "$st/A/lib" "$st/B/lib" "$st/C/lib" "$st/D/lib" "$st/E/lib"
+
+    # A：单一真源（顶层 1 份，生成器 heredoc 内 0 份）
+    cat > "$st/A/lib/health.sh" <<'FORM_A'
+check_connectivity() {
+    echo probe
+}
+
+health_check_script_body() {
+    cat << 'EOF'
+#!/bin/bash
+echo body
+EOF
+}
+FORM_A
+    printf 'lib/health.sh\n' > "$st/A.list"
+
+    # B：真源 + 生成脚本内的手工内联副本（第 3 轮放宽过的**合法**形态，两份逐字一致）
+    cat > "$st/B/lib/health.sh" <<'FORM_B'
+check_connectivity() {
+    echo probe
+}
+
+health_check_script_body() {
+    cat << 'EOF'
+check_connectivity() {
+    echo probe
+}
+EOF
+}
+FORM_B
+    printf 'lib/health.sh\n' > "$st/B.list"
+
+    # C：内联副本与真源**漂移**（同一形态但两份不一致 → 不是合法形态）
+    cat > "$st/C/lib/health.sh" <<'FORM_C'
+check_connectivity() {
+    echo probe
+}
+
+health_check_script_body() {
+    cat << 'EOF'
+check_connectivity() {
+    echo drifted
+}
+EOF
+}
+FORM_C
+    printf 'lib/health.sh\n' > "$st/C.list"
+
+    # D：副本分散在两个文件（不是「同一文件里的真源+内联副本」）
+    cat > "$st/D/lib/health.sh" <<'FORM_D1'
+check_connectivity() {
+    echo probe
+}
+
+health_check_script_body() {
+    cat << 'EOF'
+#!/bin/bash
+EOF
+}
+FORM_D1
+    cat > "$st/D/lib/other.sh" <<'FORM_D2'
+check_connectivity() {
+    echo probe
+}
+FORM_D2
+    printf 'lib/health.sh\nlib/other.sh\n' > "$st/D.list"
+
+    # E：第 3 份（份数越界）
+    cat > "$st/E/lib/health.sh" <<'FORM_E'
+check_connectivity() {
+    echo probe
+}
+
+check_connectivity() {
+    echo probe
+}
+
+health_check_script_body() {
+    cat << 'EOF'
+check_connectivity() {
+    echo probe
+}
+EOF
+}
+FORM_E
+    printf 'lib/health.sh\n' > "$st/E.list"
+
+    local _fa _fb _fc _fd _fe
+    _fa=$(_t32_probe_form "$st/A" "$st/A.list")
+    _fb=$(_t32_probe_form "$st/B" "$st/B.list")
+    _fc=$(_t32_probe_form "$st/C" "$st/C.list")
+    _fd=$(_t32_probe_form "$st/D" "$st/D.list")
+    _fe=$(_t32_probe_form "$st/E" "$st/E.list")
+    h_log "判定器自检: A=$(printf '%s' "$_fa" | cut -d'|' -f1) B=$(printf '%s' "$_fb" | cut -d'|' -f1) C=$(printf '%s' "$_fc" | cut -d'|' -f1) D=$(printf '%s' "$_fd" | cut -d'|' -f1) E=$(printf '%s' "$_fe" | cut -d'|' -f1)"
+    h_check_contains "$_fa" "$_T32_FORM_SINGLE" "判定器自检 A：单一真源树必须判成「单一真源」"
+    h_check_contains "$_fb" "$_T32_FORM_INLINE" "判定器自检 B：真源+内联副本树必须判成「真源+内联副本」（第 3 轮放宽过的合法形态）"
+    h_check_contains "$_fc" "$_T32_FORM_BAD"    "判定器自检 C：内联副本漂移必须判越界"
+    h_check_contains "$_fd" "$_T32_FORM_BAD"    "判定器自检 D：副本分散在多个文件必须判越界"
+    h_check_contains "$_fe" "$_T32_FORM_BAD"    "判定器自检 E：第 3 份必须判越界"
 
     # ── 3. 生成脚本所在文件里仍只有 1 处 ──
     # 守的是**源码树**的性质（真源在 lib/health.sh 里），
@@ -700,7 +1025,8 @@ case_T32_single_probe_implementation() {
     else
         n=$(grep -c '^check_connectivity() {' "$SBX_SRC/$body_file" 2>/dev/null || true)
         [ -z "$n" ] && n=0
-        h_check_eq "1" "$n" "生成脚本所在文件里 check_connectivity() { 的处数"
+        h_check_eq "$total" "$n" "生成脚本所在文件里 check_connectivity() { 的处数"
+                     "（单一真源形态=1 / 真源+内联副本形态=2 —— 该文件持有全部副本）"
     fi
 
     # ── 4. 生成物的探测实现必须与真源逐字一致（**形态无关**）──
@@ -818,6 +1144,10 @@ case_T32_single_probe_implementation() {
     fi
     # 扫描范围下限护栏：候选文件一个都没扫到 → 「违规数 == 0」就是假绿
     h_check_ge "$_T32_SCAN_FLOOR" "$T32_SCAN_N" "条件 5 的扫描范围下限护栏（扫描到的候选文件数）"
+    # 锚点护栏（第 9 轮 · 审稿复核 发现 1）：扫描器必须真的看了**历史上真出过这个毛病**的文件
+    local anchor_total=0 a
+    for a in $_T32_ANCHORS; do anchor_total=$((anchor_total + 1)); done
+    h_check_eq "$anchor_total" "$T32_ANCHOR_N" "条件 5 的锚点护栏（历史上出过毛病的文件必须在范围内且被扫到）"
     h_check_eq "0" "$T32_STALE_HITS" "仍声称「改动要手工同步两份探测实现」的行数"
 
     # ── 负向对照 5：注入一句肯定误导句式 → 条件 5 必须变红 ──
@@ -840,23 +1170,45 @@ case_T32_single_probe_implementation() {
     h_log "负向对照 5：合成探针树扫描了 $T32_SCAN_N 个文件，命中 $T32_STALE_HITS 行"
     h_check_eq "1" "$T32_STALE_HITS" "负向对照 5：注入「改动需两处同步」后条件 5 必须变红"
 
-    # ── 负向对照 6：注入否定句 → 条件 5 必须保持绿 ──
-    # 两种否定句各来一行：
-    #   (a) 纯否定句「不需要手工同步」—— 本来就不该命中；
-    #   (b) 否定句里**带着**肯定误导句式（「…两处必须同步（现在不再需要手工同步）」）——
-    #       这才真正检验「同一行含否定词 → 豁免该行」这条规则真的生效。
+    # ── 负向对照 6：否定句的豁免必须是**子句级**（第 9 轮 · 审稿复核 发现 2）──
+    # 三行，三种期望：
+    #   (a)   「不需要手工同步」→ 真否定句 → 必须豁免
+    #   (b-1) 「改动 check_connectivity 时不需要两处同步。」→ 真否定句 → 必须豁免
+    #   (b-2) 「改动 check_connectivity 时两处必须同步（现在不再需要手工同步）。」
+    #         → 前半句是**肯定误导**，括号里的否定**不能抵消**它 → 必须**计入**
+    #   ★ (b-2) 就是新口径自己的牙齿：整行豁免口径下它会被放过（命中 0）→ 判红。
+    #   ★ 旧的负向对照 6 期望「命中 0」，而那正是把一条漏判写成了「正确行为」
+    #     （硬规矩 19 ③：期望值本身也可能写错）→ 这里按新口径改成期望「命中 1」。
     rm -rf "$probe"
     mkdir -p "$probe/docs"
     printf '# 干净的探针文件\n' > "$probe/docs/t32-probe.md"
     printf '# T32-NEG-NEG: 不需要手工同步\n' >> "$probe/docs/t32-probe.md"
-    printf '# T32-NEG-NEG2: 改动 check_connectivity 时两处必须同步（现在不再需要手工同步）\n' >> "$probe/docs/t32-probe.md"
+    printf '# T32-NEG-NEG1: 改动 check_connectivity 时不需要两处同步。\n' >> "$probe/docs/t32-probe.md"
+    printf '# T32-NEG-NEG2: 改动 check_connectivity 时两处必须同步（现在不再需要手工同步）。\n' >> "$probe/docs/t32-probe.md"
     local n_inj2
     n_inj2=$(grep -c 'T32-NEG-NEG' "$probe/docs/t32-probe.md" 2>/dev/null || true)
     [ -z "$n_inj2" ] && n_inj2=0
-    h_check_ge 2 "$n_inj2" "负向对照 6 的构造生效（两句否定句都在）"
+    h_check_ge 3 "$n_inj2" "负向对照 6 的构造生效（三行否定句都在）"
     _t32_scan_stale "$probe" "$plist"
     h_log "负向对照 6：合成探针树扫描了 $T32_SCAN_N 个文件，命中 $T32_STALE_HITS 行"
-    h_check_eq "0" "$T32_STALE_HITS" "负向对照 6：否定句（含带肯定句式的否定句）必须保持绿"
+    h_check_eq "1" "$T32_STALE_HITS" "负向对照 6：只有 (b-2)（前半句是肯定误导）必须计入，真否定句必须豁免"
+
+    # ── 负向对照 8：扫描范围被「砍一部分」时，锚点护栏必须变红 ──
+    #   背景（审稿复核 发现 1）：把候选清单里的 docs/* 去掉 → 候选数 28→22，
+    #   仍 ≥ 文件数下限 14 → **文件数护栏不响** → 那 6 份文档里的误导句式
+    #   彻底无人检查，而门禁是绿的。
+    #   本对照把这一刀真的砍下去，验证**锚点护栏**会响（文件数护栏挡不住的那一刀）。
+    local list_nodocs="$SBX_ROOT/t32_candidates_nodocs.txt"
+    grep -v '^docs/' "$list" > "$list_nodocs"
+    _t32_scan_stale "$SBX_SRC" "$list_nodocs"
+    local expect_nodocs=0
+    for a in $_T32_ANCHORS; do
+        case "$a" in docs/*) ;; *) expect_nodocs=$((expect_nodocs + 1)) ;; esac
+    done
+    h_log "负向对照 8：砍掉 docs/* 后扫描了 $T32_SCAN_N 个文件、锚点命中 $T32_ANCHOR_N 个（期望 $expect_nodocs）"
+    h_check_eq "$expect_nodocs" "$T32_ANCHOR_N" "负向对照 8：候选清单砍掉 docs/* 后锚点护栏必须判红（证明它挡得住「砍一部分」）"
+    # 对照：这正是**文件数下限护栏挡不住**的那一刀（砍完之后文件数仍在下限之上）
+    h_check_ge "$_T32_SCAN_FLOOR" "$T32_SCAN_N" "负向对照 8 对照：砍掉 docs/* 后文件数仍在下限之上（文件数护栏挡不住这一刀）"
 
     # ── 负向对照 7：条件 5 的判定**不得随宿主 locale 变** ──
     # 背景：判据里若用中文标点字符类（[^，。；、]），在 C locale 下 grep 退化成**字节类**

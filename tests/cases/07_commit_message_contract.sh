@@ -136,6 +136,43 @@ _cm_exempt_reason() {
     return 1
 }
 
+# ── 用例总数一致性（Chief 10/24 派单）────────────────────────────
+#   规则：提交信息里**引用了**「总计 N 条」时，N 必须等于**该冻结点** `--list`
+#   的实际条数。引用错条数 = 拿旧台架的数字冒充新台架的结果 → 判红。
+#
+#   ★ 作用域：只对**候选范围最后一笔**（= BASE_SHA 那一笔）生效，
+#     不回溯历史 —— 历史提交当时的条数与今天不同，回溯会把历史全判红。
+#   ★ 「该冻结点的实际条数」怎么算：
+#     从冻结态 `git show <sha>:tests/run_tests.sh` 的 **CASES 登记表**数条目
+#     —— 这与 `--list` 打印的条数是同一个来源（stdout 每条登记 ID 一行）。
+#     不去 checkout 旧树、也不跑旧台架（那会改工作区 / 触发副作用）。
+#   ★ 不声明条数的提交信息：不判红（没有可核对的东西），但记一条提示。
+#
+# 从提交信息里抽出「用例总数」的声明值
+# 用法：_cm_claimed_case_count <提交信息>
+# 输出：单个数字 / 空串（没声明）/ "AMBIG:<数字列表>"（声明了多个不同数字）
+_cm_claimed_case_count() {
+    local msg="$1" nums
+    nums=$(printf '%s\n' "$msg" \
+        | grep -aoE '(总计|用例总数[^0-9]{0,8})[[:space:]]*[0-9]+[[:space:]]*条|[0-9]+[[:space:]]*条用例' \
+        | grep -aoE '[0-9]+' | sort -u | tr '\n' ' ')
+    nums=$(printf '%s' "$nums" | tr -s ' ' | sed 's/^ //; s/ $//')
+    case "$nums" in
+        '') printf '' ;;
+        *' '*) printf 'AMBIG:%s' "$nums" ;;
+        *) printf '%s' "$nums" ;;
+    esac
+}
+
+# 该冻结点的实际用例条数（CASES 登记表条目数）
+_cm_frozen_case_count() {
+    local sha="$1" raw n
+    raw=$(cd "$SBX_REPO" && git show "$sha:tests/run_tests.sh" 2>/dev/null)
+    [ -z "$raw" ] && { printf ''; return 0; }
+    n=$(printf '%s\n' "$raw" | grep -cE '^[[:space:]]*"T[0-9]{2}:case_')
+    printf '%s' "$n"
+}
+
 case_T40_commit_message_contract() {
     h_case_begin "T40" "提交信息声称全过必须引用唯一入口实测口径" \
         "仓库提交历史（扫描窗口 \$COMMIT_CHECK_N，默认 20 条，锚定 BASE_SHA）" \
@@ -301,6 +338,35 @@ case_T40_commit_message_contract() {
     fi
 
     h_check_eq "0" "$bad" "声称全过却没引用唯一入口实测口径的提交数"
+
+    # ── 用例总数一致性（Chief 10/24 派单）──────────────────────
+    #   规则：候选范围**最后一笔**（= BASE_SHA 那一笔）的提交信息里若引用了
+    #   「总计 N 条」，N 必须等于**该冻结点** `--list` 的实际条数。
+    #   引用错条数 = 拿旧台架的数字冒充新台架的结果 → 判红。
+    #   ★ 不回溯历史：历史提交当时的条数与今天不同，回溯会把历史全判红。
+    local tip_msg tip_claimed actual_n
+    tip_msg=$(git log -1 --format='%B' "$BASE_SHA" 2>/dev/null | tr -d '\r')
+    tip_claimed=$(_cm_claimed_case_count "$tip_msg")
+    actual_n=$(_cm_frozen_case_count "$BASE_SHA")
+    if [ -z "$actual_n" ]; then
+        h_fail "取不到该冻结点的用例条数（$BASE_SHA 的 tests/run_tests.sh 读不出来）—— 判据无法成立"
+    elif [ -z "$tip_claimed" ]; then
+        h_log "候选最后一笔没有引用「用例总数」→ 本条不适用（引用时必须与 --list 实测条数一致）"
+    elif [ "${tip_claimed#AMBIG:}" != "$tip_claimed" ]; then
+        h_fail "候选最后一笔引用了多个不同的用例总数（$tip_claimed）—— 口径不自洽"
+    else
+        h_log "候选最后一笔引用「总计 ${tip_claimed} 条」；该冻结点 --list 实际 ${actual_n} 条"
+        h_check_eq "$actual_n" "$tip_claimed" "候选最后一笔引用的用例总数 == 该冻结点 --list 的实际条数"
+    fi
+
+    # 判定器自检（负向对照）：声明一个错的条数 → 必须能被判红
+    local selfchk selfdiff
+    selfchk=$(_cm_claimed_case_count "自测：汇总: 总计 999 条，通过 999，失败 0")
+    h_check_eq "999" "$selfchk" "判定器自检：能从提交信息里抽出声明的用例总数"
+    if [ -n "$actual_n" ]; then
+        selfdiff=$([ "$selfchk" != "$actual_n" ] && echo 1 || echo 0)
+        h_check_eq "1" "$selfdiff" "判定器自检：条数不符（999 vs 实际 $actual_n）必须能判红"
+    fi
 
     # 扫描窗口本身要有效（防止 BASE_SHA 不存在之类导致 0 条扫描假绿）
     h_check_ge 1 "$scanned" "实际扫描到的提交条数"

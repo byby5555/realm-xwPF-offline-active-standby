@@ -20,6 +20,13 @@
 #     ④ 兼容：旧格式（TARGET 只有裸 host）——
 #        归属认得出 → 按 RULE_ID 补出端口；归属认不出 → 当无记录（不判故障）
 #
+# ★ 第 11 轮（Chief 派单）：探测超时预算 3s -> 10s（与 cases/11_latency.sh 同源）。
+#   判据上界同步放宽在 cases/11_latency.sh（时延那档）；本文件只判「记录归属」，不判时延。
+# ★ fixture 的 CONNECTION_TIMEOUT **保持 3 不动**（Chief 复核口径）：
+#   本文件里的 heredoc 规则是**测试夹具（输入）**，不是产品生成的规则文件 ——
+#   产品把默认预算改成 10 不影响夹具；改夹具会改掉夹具语义（可能连带打乱别的断言）。
+#   产品默认值那一侧的**真断言**在 cases/02_weight_active_standby.sh（读产品生成的 $rule）。
+#
 # ★ fixture 口径：健康状态 fixture 一律写**当前格式**（host:port）。
 #   写成裸 host 的旧格式，用例会退化成「旧格式兼容兜底分支」，
 #   精确索引这条主路径就没人测 —— fixture 的形态本身就是断言的一部分。
@@ -33,9 +40,12 @@
 # ── 修复前的真实实现（只给负向对照用）──
 #   f730c8b：最初的实现，读侧只用裸 host 建索引、也只按裸 host 查
 #   a7e23fc：TARGET 改 host:port 之后、但仍留着一份裸 host 宽键的那一版（N1-R1 的直接前态）
-_T52_PREFIX_SHA="f730c8b"
+#   ★ sha 来自**单一真源** tests/cases/00_common.sh 的 sbx_required_history_shas
+#     （跑批前预检用同一份清单检查对象在不在本地库 → 缺对象时用退出码 3 报，
+#      不会被误读成产品回归）。不要在这里写死 sha。
+_T52_PREFIX_SHA="$(sbx_history_sha t52-prefix)"
 _T52_PREFIX_MARK='health_status\["\$host"\]'
-_T52_PRE_N1R1_SHA="a7e23fc"
+_T52_PRE_N1R1_SHA="$(sbx_history_sha t52-pre-n1r1)"
 _T52_PRE_N1R1_MARK='health_status\["\$_row_target"\]'
 
 # 判定器：健康状态文件里，每个期望的 TARGET 都必须**恰好出现 1 条**

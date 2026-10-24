@@ -64,7 +64,12 @@
 #      **循环体内任意位置**（魔数会被「sleep 挪到第 7 行」误报）。
 #
 # 修复前冻结点（本次「交互读入 EOF 收口」之前的最后一个提交）
-_T54_PRE_FIX_SHA="a359301"
+#   ★ sha 从**历史对象清单**取（tests/cases/00_common.sh 的 sbx_required_history_shas）：
+#     清单是「用例取值」与「跑批前预检」的单一真源 —— 在这里写死的话，
+#     预检看不到这条依赖 → 那个 SHA 被 squash 抹掉时会表现成「用例红」
+#     （会被误读成产品回归，而实际是历史不可达）。
+_T54_PRE_FIX_SHA="$(sbx_history_sha t54-pre-fix 2>/dev/null || true)"
+[ -n "$_T54_PRE_FIX_SHA" ] || _T54_PRE_FIX_SHA="a359301"
 
 # 含 UI helper 的 4 个文件
 _T54_HELPER_HOSTS="lib/core.sh xwFailover.sh port-traffic-dog.sh speedtest.sh"

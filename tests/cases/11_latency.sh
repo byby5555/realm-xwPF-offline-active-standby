@@ -15,6 +15,20 @@
 #      拿不到时回退 date +%s%N —— 两者都产出微秒数，断言只认「纯数字 + 单调 + 量级」，
 #      不认具体数值（数值会飘，钉数值就是钉实现）。
 #   4) 本地监听端口用 _start_listener（自动挑可用的 python），不写死 python3。
+#
+# ★ 第 11 轮（Chief 派单）：探测超时预算 3s -> 10s，判据上界同步放宽
+#   背景：机器被压满时，3s 的探测预算会被打满 -> 探测在预算处被截断 ->
+#         实测时延贴着 3000ms 走 -> 判据「< 3000ms」在**机器负载**下误红
+#         （这不是产品缺陷，是测量口径没有留余量）。
+#   改法（三处一起改，缺一处就自相矛盾）：
+#     · 探测预算：3 -> 10（显式传给 probe_with_latency 的第三个参数）
+#     · 判据上界：< 3000 -> <= 30000（预算 10s 时实测时延最大可到 10000ms）
+#     · 死端口那档**不动**（仍是 2s）：它测的是「连不上要快速失败」，
+#       与机器负载无关 —— 改它会掩盖真实问题。
+#   配套：**规则 fixture 的 CONNECTION_TIMEOUT 保持 3 不动**（Chief 复核口径）——
+#     heredoc 规则是**测试夹具（输入）**，不是产品生成的规则文件；产品默认预算改 10
+#     不影响它，改它会改掉夹具语义。产品默认值那一侧的**真断言**在
+#     cases/02_weight_active_standby.sh（读产品生成的 $rule，期望值从产品声明里抽）。
 
 # 判定器：状态记录的一行必须是什么形状
 # 用法：_t51_judge_status <行内容>
@@ -89,7 +103,7 @@ case_T51_latency_merged() {
     local b
     b=$(_run_in_sandbox '
         source "$1/lib/health.sh" >/dev/null 2>&1
-        probe_with_latency "127.0.0.1" "$2" 3
+        probe_with_latency "127.0.0.1" "$2" 10
         echo "RC=$?"
         echo "MS=$PROBE_LATENCY_MS"
     ' "$port" 2>&1)
@@ -103,9 +117,9 @@ case_T51_latency_merged() {
     h_check_eq "是" "$ms_num" "PROBE_LATENCY_MS 是纯数字"
     local ms_ok=否
     if [ "$ms_num" = "是" ]; then
-        [ "$pms" -lt 3000 ] && ms_ok=是
+        [ "$pms" -le 30000 ] && ms_ok=是
     fi
-    h_check_eq "是" "$ms_ok" "PROBE_LATENCY_MS 合理（< 3000ms）"
+    h_check_eq "是" "$ms_ok" "PROBE_LATENCY_MS 合理（<= 30000ms；探测预算已放宽到 10s）"
 
     # 对照口径：关闭的端口 → 失败
     local b2

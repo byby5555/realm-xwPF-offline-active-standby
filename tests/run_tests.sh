@@ -16,7 +16,12 @@
 #   BASE_SHA 默认取当前 HEAD；正式跑批请显式指定，报告里必须写上这个 SHA。
 #   SHA 一变，旧结论全部作废，必须重跑。
 #
-# 退出码：全部通过 0；存在失败 非 0。
+# 退出码：
+#   0 = 全部通过
+#   1 = 存在用例失败
+#   2 = 冻结点 BASE_SHA 不存在（参数/用法错误），**或** 台架预检清单为空（台架配置错误）
+#   3 = 跑批前预检未通过：负向对照依赖的**历史对象**在本地对象库里找不到
+#       （克隆方式没把历史拉全，**不是**产品回归；修复命令见输出）
 #
 # 台架约定见 tests/TEST-HARNESS.md。
 
@@ -73,19 +78,37 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #           (c) 扫描层真违规行在两种 ambient locale 下都必须抓到
 #         · 负向对照 7 必须做在扫描层：正则层是**故意**两种 locale 各跑一遍的，
 #           拿它比判定会判红自己
-# v2.12.0：第 11 轮 —— T54 判定器补洞 + 判定器自检 + T53 阈值改相对判据
-#         · T54 判定器三处洞（组合盲区 / || 豁免面过宽 / 循环定位靠缩进+魔数）：
-#           静态③「含输入读入」独立于静态②的豁免面（含 read -n / read -rt）；
-#           静态②的 || 豁免改精确匹配（只放行 || VAR="" / || exit N，|| true 必须报）；
-#           静态③循环定位改 do/done 词计数配对（配对失败 fail-closed 报出），
-#           sleep 位置改「循环体内任意位置」（去掉「前 6 行」魔数）
-#         · 新增「判定器自检」：6 个合成探针，各自独立目录，如实标注「合成探针，
-#           不是历史实现」—— 判定器自身也要被负向对照覆盖，否则没人知道它判不判
-#         · T54 追加不变式：ui_read_default 的调用点不得传非空默认值
-#         · T53 负向对照的字节阈值改**相对判据**（bytes_old >= 20 x bytes_new，
-#           绝对兜底 1024）：原绝对阈值落在实测散布中间 → 约 40% 概率假红
-#           （审稿 §7.4 独立复现：同机同码连跑 5 次 = 108759 / 48246 / 34214 /
-#           32460 / 82449 字节）。与速率无关的强证据 rc_old == 124 保持不动
+# v2.14.0：第 12 轮（续）—— N4 健康探测端四组用例 + 登记表按编号分组
+#         · 新增 T85~T88（cases/20_n4_health_probe_regen_state.sh）：
+#           T85 生成物必须重新生成（装/升级路径跑完 health_check.sh 的内容或 mtime 必须变）
+#           T86 状态文件每轮原子重建（只留当前规则的行；删掉的规则不留孤儿行）
+#           T87 跨轮继承按**目标地址**（host:port）而不是按 RULE_ID
+#              ★ RULE_ID 连续性是这条的前提：旧格式状态行归属靠 RULE_ID，
+#                RULE_ID 不连续会重排 → 归属认不出 → **假绿**（原因写进用例注释）
+#           T88 负向对照：同一套判定器跑**修复前的真实旧实现** → 必须判红（判定器有牙齿）
+#         · 登记表按编号分组重排（T63-T67 / T68-T76 / T77-T84 / T85-T88），
+#           顺序只影响可读性，不影响执行顺序（执行顺序按登记顺序）
+# v2.13.0：第 12 轮 —— 主备切换可靠性收敛 + 台架自检三项
+#         · ① **--only 点名不存在的用例 → 退出码 4**（并打印未登记 ID 清单）
+#           背景：Chief 实测 `--only T99`（不存在的用例）EXIT=0 + 「总计 0 条」
+#           → **假绿**（点名了不存在的用例，退出码却是 0）。
+#           口径：0=通过 / 1=用例失败 / 2=台架自身或参数错误 / 3=历史对象缺失 /
+#                 4=--only 点名了未登记的用例 ID。
+#         · ② **登记表自检**（两个方向）：登记了但没实现 → 退出码 2；
+#           已定义但未登记 → 醒目告警（「用例文件在 ≠ 用例被跑过」= 零覆盖的假绿）。
+#           --list 时差集信息走 **stderr**，stdout 保持纯登记 ID 列表（供 T40 数条数）。
+#         · ③ **T40 增断言**：候选范围最后一笔引用的「总计 N 条」必须等于
+#           该冻结点 --list 的实际条数（只对最后一笔生效，不回溯历史）。
+#         · ④ **探测超时预算 3s → 10s**（健康探测端）：探针预算 + 规则 fixture 的
+#           CONNECTION_TIMEOUT 同步放宽，时延判据上界 <3000 → <=30000ms；
+#           死端口那档**不动**（它测的是「连不上要快速失败」，与负载无关）。
+#         · ⑤ **T20 必装清单改为「从产品自己声明里抽」**：产品正在删独立守护进程，
+#           写死的清单会把「产品已删」误判成「安装缺文件」→ 假红。
+#         · ⑥ 新增三组用例：T63-T67 质量指标只观测不动作 / T68-T76 主备切换可靠性
+#           / T77-T84 权重「10 独占」校验。
+#         · ⑦ 跑批自带 **mkdir 原子锁 + DONE 标记**：锁只告警不阻断（共享仓库多会话
+#           并行，硬拒绝会搞挂别人的批次）；DONE 标记区分「跑完」与「被中断」。
+#
 # v2.11.0：第 10 轮 —— T54 交互读入 EOF 收口的不变式
 #         · 静态四层（判据跑在冻结态 $SBX_SRC 上，不读工作区）：
 #           ① UI helper 的**份数**（恰为 4：lib/core.sh + 3 个独立脚本）与**逐字一致性**
@@ -99,6 +122,54 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #         · 负向对照 (a)：静态四层用**真实修复前实现**（修复前冻结点的产品文件树）
 #           跑同一套判定器 → 必须抓到违规（坏情况确实发生）
 #         · 负向对照 (b)：运行时层是注入式退化（ui_read_default 新引入，修复前无等价形态）
+# v2.12.2：第 9 轮（续）—— 修「预检退出码被一律映射成 3」
+#         · 上一版写成 `if ! history_preflight; then exit 3; fi` → 预检的**两种**失败
+#           （历史对象缺失 = 3 / 台架清单为空 = 2）都被报成 3，
+#           而空清单那条的输出里明明写着「退出码 2」→ **输出说了假话**。
+#         · 修法：退出码**原样透传**（`history_preflight || _pf_rc=$?` → `exit "$_pf_rc"`）。
+# v2.12.1：第 9 轮（续）—— 给历史对象预检补**防空过护栏**
+#         · 上一版有个静默放行的洞：若 sbx_required_history_shas 不可用
+#           （没 source 到 / 清单写坏），while 读不到任何行 → n_total=0
+#           → n_missing=0 → 直接 return 0 → **预检一个对象都没查却报「通过」**
+#           → 历史对象缺失会被静默吞掉（= 假绿）。
+#         · 修法：清单为空 → 响亮失败，退出码 2（台架配置错误，不是产品问题）。
+# v2.12.0：第 9 轮（续）—— 审稿复核的两条发现 + 历史对象预检
+#         · T32 锚点护栏（审稿 发现 1）：文件数下限护栏只防「全砍」，不防「砍一部分」
+#           （实测：砍掉 docs/* → 候选数 28→22 仍 ≥ 下限 → 那 6 份文档里的误导句式
+#           彻底无人检查而门禁是绿的）→ 改成「**锚点文件必须在范围内且被扫到**」
+#           （锚点 = 历史上真出过这个毛病的文件），并配负向对照 8：
+#           砍掉 docs/* 后锚点命中数必须掉下来 → 证明这条护栏有牙齿。
+#         · T32 子句级豁免（审稿 发现 2）：否定词「整行豁免」是漏判通道 ——
+#           「…两处必须同步，没有别的办法。」这类「肯定误导 + 句尾否定词」抓不到；
+#           而且旧负向对照 6(b) 把这种漏判写成了「正确行为」（期望值本身写错）。
+#           修法：豁免缩到**子句**——按核心短语「两处…同步」定位，同一子句内、
+#           否定词起点不晚于命中起点且词尾紧邻或覆盖它 → 豁免；否则计入违规。
+#           ★ 子句切分按**字节**（中文标点固定 3 字节）并钉 LC_ALL=C，
+#             不引入中文标点字符类（那正是 P1 的病根）。
+#           ★ 负向对照 6 拆成 (a)/(b-1)/(b-2)：(b-2) 期望「计入」= 新口径的牙齿。
+#         · T53「份数」不变式（Chief 提的 4 份实现怎么钉）：全仓 ui_read_into() {
+#           的定义份数 ≤ 4（lib/core.sh + 3 个独立脚本），**不许出现第 5 份副本**；
+#           配合成树自检（第 5 份必须被数到）防这条上限断言恒真。
+#         · T53 负向对照阈值修正：原用「正向上限 65536」当「坏情况下限」，
+#           而并发争用下旧实现只吐 63,155 B（余量 3%）→ --repeat 3 第 3 轮 flaky。
+#           改成「最差实测下限 16KB + 相对放大 ≥ 50 倍」（不受机器快慢影响）。
+#         · 跑批前预检（Chief 派单 P2）：负向对照依赖的历史对象在不在本地对象库
+#           —— 缺任一个 → **独立退出码 3** + 写清后果与修复命令（`git fetch --tags origin`），
+#           绝不混进「用例失败」（那会被误读成产品回归）。
+#           清单是**单一真源**（tests/cases/00_common.sh 的 sbx_required_history_shas），
+#           用例与预检共用；可选自愈开关 XWPF_FETCH_TAGS=1（默认不联网）。
+# v2.11.0：第 9 轮（续）—— T32 补回「第 3 轮放宽过的合法形态」分支（P2）
+#         · 起因：T32 的份数判据在后续重构里被钉成「== 1」→ 第 3 轮明确放宽过的
+#           「2 份 = 真源 + 生成脚本内的手工内联副本」（a9102c1 / b361ca8 的形态）
+#           这个**合法**形态会被误判红 —— 手工扫描口径认它（reports/round2-review.md），
+#           T32 却抓不住 → 按「并列分支」补回来。
+#         · 不变式本身不变：全仓份数 ∈ [1,2]（不许有第 3 份）+ 副本集中在 lib/health.sh
+#           + 生成物里恰好 1 份且与真源逐字一致。
+#         · 2 份形态的附加条件：两份必须在**同一文件**、其中一份位于生成器
+#           （health_check_script_body）的 heredoc 内、且两份**逐字一致**（无漂移）。
+#         · ★ 补回的分支必须当场证明它会判对 → 5 组合成探针树自检
+#           （单一真源 / 真源+内联副本 / 漂移 / 副本分散 / 第 3 份）。
+#           否则「2 份」这条分支在当前产品（1 份）下**一次都没被跑过** → 判定器写错也全绿。
 # v2.10.0：第 9 轮 —— T53 交互菜单 EOF 忙循环护栏
 #         · 第一层 · helper 契约：读到 EOF 时 helper 必须**终止调用方**（4 处实现：
 #           lib/core.sh + 3 个独立脚本各内置一份）—— 判据用**哨兵**（调用后打印的
@@ -114,7 +185,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #         · 负向对照：helper 层用注入式退化（helper 是新引入的，修复前没有等价形态，
 #           如实标注）；入口层用**真实修复前实现**（d0366b3 的 lib/）复现忙循环，
 #           断言的是「坏情况确实发生」（124 + 输出膨胀），不是「坏情况没发生」
-HARNESS_VERSION="v2.12.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive + negctl-selfcheck + t45-portable-equiv + t45-win-mv-truth + t32-locale-pin + t53-menu-eof + t54-ui-eof-closure-invariants + t54-judge-selfcheck + t53-rel-threshold)"
+HARNESS_VERSION="v2.14.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive + negctl-selfcheck + t45-portable-equiv + t45-win-mv-truth + t32-locale-pin + t53-menu-eof + t32-copy-form-2 + t32-anchor-guard + t32-clause-exempt + t53-helper-count + t53-neg-floor + history-preflight + preflight-empty-guard + preflight-exit-passthrough + t54-ui-eof-closure-invariants + t54-judge-selfcheck + t53-rel-threshold + only-unregistered-exit4 + registry-selfcheck + t40-case-count-contract + probe-budget-10s + install-list-from-product + t63-t67-quality-observation + t68-t76-switch-reliability + t77-t84-weight10-exclusive + t85-t88-n4-probe-regen + run-lock-done-marker)"
 
 # shellcheck source=lib/harness.sh
 . "$SCRIPT_DIR/lib/harness.sh"
@@ -122,6 +193,7 @@ HARNESS_VERSION="v2.12.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-m
 . "$SCRIPT_DIR/lib/sandbox.sh"
 
 ONLY=""
+ONLY_SET=0
 REPEAT=1
 CLEAN=0
 LIST=0
@@ -131,6 +203,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --only)
             ONLY="${2:-}"
+            ONLY_SET=1
             shift 2
             ;;
         --repeat)
@@ -170,6 +243,41 @@ if ! (cd "$REPO_ROOT" && git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null); then
     exit 2
 fi
 BASE_SHA="$(cd "$REPO_ROOT" && git rev-parse "$BASE_SHA" 2>/dev/null)"
+
+# ── 跑批锁（mkdir 原子锁）+ DONE 标记 ──────────────────────────
+#   背景（硬约束）：后台跑批会被并发起多实例 → 互相抢机器、抢沙箱。
+#   · 锁用 **mkdir**（原子操作：建不出来 = 已有同仓跑批在跑）。
+#   · **不阻断**：共享仓库里经常有多个会话同时跑批，硬拒绝会把别人的批次搞挂
+#     → 只大声告警并继续，同时把持有者 PID/起始时间写进锁目录，事后可查。
+#   · **DONE 标记**：跑批**正常结束**才写 <沙箱>/DONE（含退出码/台架版本/冻结点）；
+#     中途被杀 → 没有 DONE → 读日志的人一眼能分清「跑完了」和「被中断」，
+#     别拿半截日志当结论（本轮真踩过：被取消的跑批留下了孤儿进程和半截日志）。
+XWPF_LOCK_DIR="${TMPDIR:-/tmp}/xwpf-runlock-$(printf '%s' "$REPO_ROOT" | md5sum 2>/dev/null | cut -c1-10)"
+XWPF_LOCK_OWNED=0
+if mkdir "$XWPF_LOCK_DIR" 2>/dev/null; then
+    XWPF_LOCK_OWNED=1
+    printf 'pid=%s\nstart=%s\nrepo=%s\n' "$$" "$(date '+%Y-%m-%d %H:%M:%S')" "$REPO_ROOT" \
+        > "$XWPF_LOCK_DIR/owner" 2>/dev/null || true
+else
+    echo "⚠ 检测到同一仓库已有跑批在运行（锁: $XWPF_LOCK_DIR）"
+    echo "   持有者: $(tr '\n' ' ' < "$XWPF_LOCK_DIR/owner" 2>/dev/null)"
+    echo "   不阻断（共享仓库多会话并行），但并发会互相拖慢 ——"
+    echo "   引用结论前请确认没有别的批次正在改同一棵树。"
+fi
+
+_xwpf_finish() {
+    local rc=$?
+    if [ "${XWPF_LOCK_OWNED:-0}" = "1" ] && [ -d "$XWPF_LOCK_DIR" ]; then
+        rm -rf "$XWPF_LOCK_DIR" 2>/dev/null || true
+    fi
+    if [ -n "${SBX_ROOT:-}" ] && [ -d "$SBX_ROOT" ]; then
+        printf 'exit=%s\nfinished=%s\nharness=%s\nbase_sha=%s\n' \
+            "$rc" "$(date '+%Y-%m-%d %H:%M:%S')" "${HARNESS_VERSION:-}" "${BASE_SHA:-}" \
+            > "$SBX_ROOT/DONE" 2>/dev/null || true
+    fi
+}
+trap _xwpf_finish EXIT
+
 
 # 用例登记表：编号:函数名
 CASES=(
@@ -237,6 +345,38 @@ CASES=(
     "T53:case_T53_menu_eof_no_busy_loop"
     # —— 第 10 轮：交互读入 EOF 收口的不变式 ——
     "T54:case_T54_ui_eof_closure_invariants"
+    # —— 第 12 轮新增用例 ——
+    # 质量指标只观测不动作（T63~T67 · cases/17_n5_quality_observation.sh）
+    "T63:case_T63_latency_metric_observation_only"
+    "T64:case_T64_fail_count_window_observation_only"
+    "T65:case_T65_quality_threshold_injection_no_switch"
+    "T66:case_T66_quality_detector_selfcheck"
+    "T67:case_T67_observation_no_side_effect"
+    # 主备切换可靠性九组（T68~T76 · cases/18_failover_switch_reliability.sh）
+    "T68:case_T68_enter_active_standby"
+    "T69:case_T69_switch_away_on_failure"
+    "T70:case_T70_switch_back_on_recovery"
+    "T71:case_T71_no_flapping"
+    "T72:case_T72_probe_actually_runs"
+    "T73:case_T73_no_false_switch_slow_target"
+    "T74:case_T74_no_inherited_state"
+    "T75:case_T75_rollback_when_probe_fails"
+    "T76:case_T76_same_target_set"
+    # 权重 10 独占校验（T77~T84 · cases/19_weight_ten_exclusive.sh）
+    "T77:case_T77_weight10_exclusive_active_standby"
+    "T78:case_T78_weight10_exclusive_load_balance"
+    "T79:case_T79_weight10_must_be_rejected"
+    "T80:case_T80_weight10_reject_leaves_no_half_write"
+    "T81:case_T81_weight10_both_entries_rejected"
+    "T82:case_T82_weight10_reject_message_speaks_human"
+    "T83:case_T83_weight10_judge_selfcheck"
+    "T84:case_T84_weight10_negative_control_old_impl"
+    # N4 健康探测端：生成物重生成 / 状态文件原子重建 / 按地址继承 / 负向对照
+    # （T85~T88 · cases/20_n4_health_probe_regen_state.sh）
+    "T85:case_T85_probe_artifact_regenerated_on_install_and_update"
+    "T86:case_T86_health_status_rebuilt_atomically_each_round"
+    "T87:case_T87_health_status_inheritance_by_target_address"
+    "T88:case_T88_negative_control_old_impl"
 )
 
 for f in "$SCRIPT_DIR"/cases/*.sh; do
@@ -244,11 +384,202 @@ for f in "$SCRIPT_DIR"/cases/*.sh; do
     . "$f"
 done
 
+# ── 登记表自检（两个方向都要查）────────────────────────────────
+#   ① 登记了但**没实现**（case 函数不存在）→ 台架配置错误 → 退出码 2
+#      （否则跑到那条用例才炸成「command not found」，看起来像产品缺陷）
+#   ② **实现了但没登记** → 「用例文件在 ≠ 用例被跑过」= **零覆盖的假绿**
+#      （实测过：漏登记时 `--only T53` 返回「总计 0 条，通过 0，失败 0」，看着像绿）
+#   `--list` 时差集信息写 **stderr**，stdout 保持纯登记 ID 列表（供 T40 数条数）。
+REG_UNIMPL=0
+REG_UNREG=0
+REG_DUP=0
+
+defined_case_fns() {
+    declare -F | awk '{print $3}' | grep -E '^case_T[0-9]{2}_' | sort
+}
+
+registration_check() {
+    local c fn def_fn found seen
+    REG_UNIMPL=0; REG_UNREG=0; REG_DUP=0
+    seen=" "
+    for c in "${CASES[@]}"; do
+        fn="${c##*:}"
+        if ! declare -F "$fn" >/dev/null 2>&1; then
+            echo "  ✗ 登记了但没实现: ${c%%:*} -> $fn" >&2
+            REG_UNIMPL=$((REG_UNIMPL+1))
+        fi
+        case "$seen" in
+            *" ${c%%:*} "*)
+                echo "  ✗ 编号重复登记: ${c%%:*}" >&2
+                REG_DUP=$((REG_DUP+1))
+                ;;
+        esac
+        seen="$seen${c%%:*} "
+    done
+    for def_fn in $(defined_case_fns); do
+        found=0
+        for c in "${CASES[@]}"; do
+            if [ "${c##*:}" = "$def_fn" ]; then found=1; break; fi
+        done
+        if [ "$found" = "0" ]; then
+            echo "  ✗ 已定义但未登记（该用例不会被跑 = 零覆盖的假绿）: $def_fn" >&2
+            REG_UNREG=$((REG_UNREG+1))
+        fi
+    done
+}
+
+registration_check
+
 if [ "$LIST" = "1" ]; then
+    # stdout = 纯登记 ID 列表（T40 数条数就数这个）；差集信息走 stderr
     for c in "${CASES[@]}"; do
         echo "${c%%:*}"
     done
+    {
+        echo "（登记表：登记 ${#CASES[@]} 条；已定义但未登记 ${REG_UNREG} 条；登记但未实现 ${REG_UNIMPL} 条）"
+        if [ "$REG_UNREG" -gt 0 ]; then
+            echo "  ★ 上面的「已定义但未登记」意味着这些用例**根本不会被跑**（零覆盖的假绿）"
+            echo "    → 请把它们加进 tests/run_tests.sh 的 CASES 登记表。"
+        fi
+    } >&2
+    if [ "$REG_UNIMPL" -gt 0 ]; then
+        echo "汇总: 登记表与实现不一致（${REG_UNIMPL} 条登记了但没实现）—— 退出码 2" >&2
+        exit 2
+    fi
     exit 0
+fi
+
+# ── --only 点名校验：点名的 ID 必须已登记，否则非 0 退出 ──────────
+#   背景（Chief 10/24 派单）：`--only T99`（不存在的用例）实测 EXIT=0 + 「总计 0 条」
+#   → **假绿**：点名了不存在的用例，跑批却报「全过」。
+#   口径：点名的 ID 里只要有**未登记**的 → 打印未登记清单 → **退出码 4**
+#         （独立于 0=通过 / 1=用例失败 / 2=台架自身或参数错误 / 3=历史对象缺失）。
+if [ "$ONLY_SET" = "1" ]; then
+    _miss=""
+    _n_miss=0
+    _n_req=0
+    _old_ifs="$IFS"
+    IFS=','
+    for _id in $ONLY; do
+        [ -z "$_id" ] && continue
+        _n_req=$((_n_req+1))
+        _hit=0
+        for c in "${CASES[@]}"; do
+            if [ "${c%%:*}" = "$_id" ]; then _hit=1; break; fi
+        done
+        if [ "$_hit" = "0" ]; then
+            _miss="${_miss}    · ${_id}"$'\n'
+            _n_miss=$((_n_miss+1))
+        fi
+    done
+    IFS="$_old_ifs"
+    if [ "$_n_req" -eq 0 ]; then
+        echo "错误: --only 没有点名任何用例 ID" >&2
+        echo "汇总: --only 点名为空 —— 未跑任何用例，退出码 4" >&2
+        exit 4
+    fi
+    if [ "$_n_miss" -gt 0 ]; then
+        echo "=============================================================="
+        echo " ✗ --only 点名了**未登记**的用例 ID"
+        echo "=============================================================="
+        printf '%s' "$_miss"
+        echo "  （点名 ${_n_req} 个，其中 ${_n_miss} 个未登记）"
+        echo
+        echo "后果：未登记的 ID 会被**静默跳过** → 跑批只跑剩下那几条并报「全过」"
+        echo "      （= 假绿：点名了不存在的用例，退出码却是 0）。"
+        echo
+        echo "已登记的用例 ID（--list 可看全量）："
+        for c in "${CASES[@]}"; do echo "    ${c%%:*}"; done
+        echo
+        echo "汇总: --only 点名了 ${_n_miss} 个未登记的用例 ID —— 未跑任何用例，退出码 4"
+        exit 4
+    fi
+fi
+
+if [ "$REG_UNIMPL" -gt 0 ]; then
+    echo "汇总: 登记表与实现不一致（${REG_UNIMPL} 条登记了但没实现）—— 未跑任何用例，退出码 2" >&2
+    exit 2
+fi
+
+# ── 跑批前预检：负向对照依赖的历史对象在不在本地对象库里 ──────────
+#   背景（第 9 轮 · Chief 派单 P2）：负向对照用 `git show <SHA>:<path>` 取
+#   「修复前的真实旧实现」。堆叠 PR 全部 squash 合并后，main 的历史里
+#   **不再包含**这些旧 SHA；而 `git clone --single-branch` **不拉 tag**
+#   → 对象缺失 → 负向对照取不到 → **证明力归零**，门禁还会以「用例失败」的
+#   形式红 → **会被误读成产品回归**。
+#   所以缺任一个 → 用**独立退出码 3** 报（0=通过 / 1=用例失败 / 2=BASE_SHA 不存在 /
+#   3=历史对象缺失），并在输出里写清：缺哪个、后果、可执行的修复命令。
+#   ★ 清单来自 tests/cases/00_common.sh 的 sbx_required_history_shas
+#     —— 与用例取旧实现用的是**同一份真源**，不会两处漂移。
+#   ★ 默认**不联网**（台架要能在离线机器上跑）；要自愈必须显式 XWPF_FETCH_TAGS=1。
+history_preflight() {
+    local k sha desc missing="" n_missing=0 n_total=0
+    while read -r k sha desc; do
+        case "$k" in ''|'#'*) continue ;; esac
+        [ -n "${sha:-}" ] || continue
+        n_total=$((n_total + 1))
+        if ! (cd "$REPO_ROOT" && git cat-file -e "$sha^{commit}" 2>/dev/null); then
+            missing="${missing}    · ${k}  ${sha}  ${desc:-（无说明）}"$'\n'
+            n_missing=$((n_missing + 1))
+        fi
+    done < <(sbx_required_history_shas)
+
+    # ── 防空过护栏：清单本身必须非空 ───────────────────────
+    #   若 sbx_required_history_shas 不可用（没 source 到 / 清单写坏了），
+    #   上面的 while 读不到任何行 → n_total=0 → n_missing=0 → 直接 return 0
+    #   → **预检静默放行**（假绿）：历史对象一个都没查，却报「通过」。
+    #   所以清单为空 = **台架自身配置错误**，必须响亮地失败，不能当成通过。
+    if [ "$n_total" -eq 0 ]; then
+        echo "=============================================================="
+        echo " ✗ 台架预检自身异常：历史对象清单为空（sbx_required_history_shas 没产出任何条目）"
+        echo "=============================================================="
+        echo "后果：预检**一个历史对象都没查**就放行 → 历史对象缺失会被静默吞掉"
+        echo "      （= 假绿）。这是**台架配置错误**，不是产品问题。"
+        echo "检查：tests/cases/00_common.sh 的 sbx_required_history_shas 是否可执行、"
+        echo "      run_tests.sh 是否在预检之前 source 了 tests/cases/*.sh。"
+        echo
+        echo "汇总: 预检清单为空 —— 未跑任何用例，退出码 2（台架配置错误）"
+        return 2
+    fi
+
+    [ "$n_missing" -eq 0 ] && return 0
+
+    echo "=============================================================="
+    echo " ✗ 跑批前预检未通过：负向对照依赖的历史对象在本地对象库里找不到"
+    echo "=============================================================="
+    printf '%s' "$missing"
+    echo "  （共 $n_total 个历史对象，缺 $n_missing 个）"
+    echo
+    echo "后果：这些负向对照取不到「修复前的真实旧实现」→ 证明力归零；"
+    echo "      不预检直接跑的话，它们会以「用例失败」的形式红 —— 会被误读成产品回归。"
+    echo "      （这不是产品缺陷，是克隆方式没把历史拉全。）"
+    echo
+    echo "修复（取对象，不改历史）："
+    echo "  git fetch --tags origin"
+    echo "  # 或者重新完整克隆（**不要**用 --single-branch：它不拉 tag，旧 SHA 仍取不到）:"
+    echo "  git clone https://github.com/byby5555/realm-xwPF-offline-active-standby.git"
+    echo
+    echo "自愈开关（默认不联网；显式打开才会 fetch --tags）："
+    echo "  XWPF_FETCH_TAGS=1 bash tests/run_tests.sh --base-sha <sha>"
+    echo
+    echo "汇总: 预检未通过（历史对象缺失 $n_missing 个）—— 未跑任何用例，退出码 3"
+    return 3
+}
+
+# 可选自愈：显式开关才联网（默认离线）
+if [ "${XWPF_FETCH_TAGS:-0}" = "1" ]; then
+    echo "· XWPF_FETCH_TAGS=1 → 正在 git fetch --tags origin（自愈）"
+    (cd "$REPO_ROOT" && git fetch --tags origin 2>&1 | tail -3) || true
+fi
+
+# 退出码要**原样透传**，不能一律映射成 3：
+#   预检有两种失败 ——「历史对象缺失」(3) 与「台架清单为空」(2)。
+#   之前写成 `if ! history_preflight; then exit 3; fi` → 空清单也被报成 3，
+#   而输出里写着「退出码 2」→ **输出说了假话**（这正是 T40 那类问题）。
+_pf_rc=0
+history_preflight || _pf_rc=$?
+if [ "$_pf_rc" -ne 0 ]; then
+    exit "$_pf_rc"
 fi
 
 selected_cases() {

@@ -98,8 +98,8 @@ sbx_write_manifest() {
         echo "# 被测产物基线快照（冻结点机制）"
         echo "repo        : $SBX_REPO"
         echo "BASE_SHA    : $BASE_SHA"
-        echo "BASE_SHA 全 : $(git rev-parse "$BASE_SHA" 2>/dev/null)"
-        echo "BASE 标题   : $(git log -1 --format='%ad %s' "$BASE_SHA" 2>/dev/null)"
+        echo "BASE_SHA 全 : $(git -C "$SBX_REPO" rev-parse "$BASE_SHA" 2>/dev/null)"
+        echo "BASE 标题   : $(git -C "$SBX_REPO" log -1 --format='%ad %s' "$BASE_SHA" 2>/dev/null)"
         echo "harness     : $HARNESS_VERSION"
         echo "time        : $(date '+%Y-%m-%d %H:%M:%S %z')"
         echo "sandbox     : $SBX_ROOT"
@@ -116,7 +116,7 @@ sbx_write_manifest() {
             [ -z "$rel" ] && continue
             [ -f "$SBX_RAW/$rel" ] || continue
             printf '%s  %s\n' "$(sha256sum "$SBX_RAW/$rel" | cut -d' ' -f1)" "$rel"
-        done < <(git ls-tree -r --name-only "$BASE_SHA")
+        done < <(git -C "$SBX_REPO" ls-tree -r --name-only "$BASE_SHA")
     } > "$out"
 }
 
@@ -129,7 +129,7 @@ sbx_write_manifest() {
 #   $SBX_SRC  去 CR 的 LF 副本（静态检查用）
 #   $SBX_RUN  再加路径重定向 + root 模拟（功能测试用）
 sbx_export_frozen_tree() {
-    local rel
+    local rel n_exported=0
     while IFS= read -r rel; do
         [ -z "$rel" ] && continue
         case "$rel" in
@@ -137,12 +137,37 @@ sbx_export_frozen_tree() {
             *) continue ;;
         esac
         mkdir -p "$SBX_RAW/$(dirname "$rel")" "$SBX_SRC/$(dirname "$rel")"
-        if git show "$BASE_SHA:$rel" > "$SBX_RAW/$rel" 2>/dev/null; then
+        # ★ 用 `git -C "$SBX_REPO"`：**不能依赖当前工作目录**。
+        #   起因（第 13 轮实测踩到）：台架被从**仓库外面**启动时
+        #   （例如 `bash /path/to/clone/tests/run_tests.sh`），
+        #   裸 `git show` 会在「不是 git 仓库」的目录里跑 →
+        #   **冻结态导出 0 个文件** → 每条用例都因为「函数不存在 / 文件缺失」而红
+        #   → 满屏红看起来像「产品全坏」，实际是**台架自己错了**。
+        #   这个形态必须从根上堵死：导出与 cwd 解耦 + 导出为空就硬失败。
+        if git -C "$SBX_REPO" show "$BASE_SHA:$rel" > "$SBX_RAW/$rel" 2>/dev/null; then
             tr -d '\r' < "$SBX_RAW/$rel" > "$SBX_SRC/$rel"
+            n_exported=$((n_exported + 1))
         else
             echo "警告: 冻结态里取不到 $rel" >&2
         fi
-    done < <(git ls-tree -r --name-only "$BASE_SHA")
+    done < <(git -C "$SBX_REPO" ls-tree -r --name-only "$BASE_SHA")
+
+    # ── 硬护栏：冻结态导出为空 = 台架自身错误，不许当成「用例红」────────
+    #   被测产物一份都没导出来时，所有用例都会以「文件缺失 / 函数不存在」的形式红，
+    #   那个形态**会被误读成产品全坏**（实际是被测产物根本没进来）。
+    #   ⇒ 必须响亮地以退出码 2 停下（台架配置/环境错误，不是产品回归）。
+    if [ "$n_exported" -eq 0 ]; then
+        echo "==============================================================" >&2
+        echo " ✗ 台架预检自身异常：冻结态导出 **0 个文件**" >&2
+        echo "==============================================================" >&2
+        echo "后果：被测产物一份都没进沙箱 → 每条用例都会以「文件缺失 / 函数不存在」" >&2
+        echo "      的形式红 —— 那个形态会被误读成**产品全坏**，实际是**台架自己错了**。" >&2
+        echo "排查：① 冻结点 $BASE_SHA 在仓库 $SBX_REPO 里可达吗" >&2
+        echo "      ② 启动目录对吗（本台架的 git 调用已与 cwd 解耦，这里是双保险）" >&2
+        echo "      ③ 仓库里 .sh/.py/.service/.md 文件是不是一个都没有" >&2
+        echo "汇总: 冻结态导出为空 —— 未跑任何用例，退出码 2（台架自身错误）" >&2
+        exit 2
+    fi
 }
 
 # 可执行副本：只有 .sh 需要路径重定向（.py/.service 是被下载/被 systemd 读的）
@@ -157,7 +182,7 @@ sbx_build_run_copies() {
         [ -f "$SBX_SRC/$rel" ] || continue
         mkdir -p "$(dirname "$SBX_RUN/$rel")"
         sbx_redirect "$SBX_SRC/$rel" "$SBX_RUN/$rel"
-    done < <(git ls-tree -r --name-only "$BASE_SHA")
+    done < <(git -C "$SBX_REPO" ls-tree -r --name-only "$BASE_SHA")
 }
 
 # 离线镜像：模拟 GitHub raw 上的内容 = 冻结态的仓库文件（同样只来自 git show）
@@ -168,7 +193,7 @@ sbx_build_mirror() {
         [ -f "$SBX_SRC/$rel" ] || continue
         mkdir -p "$SBX_MIRROR/$(dirname "$rel")"
         cp "$SBX_SRC/$rel" "$SBX_MIRROR/$rel"
-    done < <(git ls-tree -r --name-only "$BASE_SHA")
+    done < <(git -C "$SBX_REPO" ls-tree -r --name-only "$BASE_SHA")
 }
 
 # 路径重定向：先换成 @SBX@ 占位符（避免真实路径里含 /tmp 被二次替换），再换真实前缀
