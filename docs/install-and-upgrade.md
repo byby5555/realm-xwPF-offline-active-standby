@@ -105,10 +105,16 @@ curl -fsSL https://v6.gh-proxy.org/https://raw.githubusercontent.com/byby5555/re
 | 3 | `_load_libs`：source 全部模块 | `xwPF.sh` 的 `_load_libs` |
 | 4 | `smart_install`（带 `_SKIP_SCRIPT_UPDATE=1`，**不再询问**是否更新脚本） | `lib/realm.sh` 的 `smart_install` |
 | 5 | 清理老机器上遗留的「主备池守护」残留（unit / drop-in 目录 / 二进制 / 版本指纹；池配置留档不删） | `xwPF.sh` 的主入口 install 分支（清理逻辑在 `lib/ui.sh` 里的老机器残留清理段） |
+| 6 | 探测超时预算迁移（老规则里的 3 秒抬到 10 秒）+ **重新生成探测端产物**，失败即**中断安装**（退出码 1） | `xwPF.sh` 的主入口 install 分支（真源 = `lib/health.sh` 的 `health_migrate_connection_timeout`、`health_check_script_regenerate`） |
 
 > **第 5 步为什么不能省**：产品已不再安装那个进程级主备池守护进程，但**老机器上还留着它**
 > —— service 可能还在跑（占着监听端口），unit / drop-in / 二进制也都在。
 > 不清 = 留下一个没人管、但还在占端口的僵尸守护。残留清单见 §5。
+>
+> **第 6 步为什么失败就中断**：装完但探测端产物还是旧的 = 健康探测**静默失效** ——
+> 探测端不再更新状态文件 → 权重 `10,0` 主备「该切不切」，而界面上看不出来。
+> 安装失败是**可恢复**的（重跑一次就行），功能坏掉是**不可见**的 ⇒ 宁可中断，
+> 也不能留一个「看起来装好了」的坏机器。三条路径的处置口径见 §2.4。
 
 `_bootstrap` 下载的文件清单（`xwPF.sh` 的 `_bootstrap`）：
 
@@ -131,6 +137,7 @@ curl -fsSL https://v6.gh-proxy.org/https://raw.githubusercontent.com/byby5555/re
 | `/etc/realm/config.json` | realm 工作配置 | `lib/core.sh` 的 `CONFIG_PATH` |
 | `/etc/realm/rules/` | 转发规则目录 | `lib/core.sh` 的 `RULES_DIR` |
 | `/etc/systemd/system/realm.service` | realm systemd unit | `lib/core.sh` 的 `SYSTEMD_PATH`、`lib/realm.sh` 的 `depend` |
+| `/var/log/xwPF/health-regenerate.log` | **仅在失败时写**：探测端产物重新生成失败的记录（每行一条，带时间戳 + 失败原因）；目录不存在会自动 `mkdir -p` | `lib/health.sh` 的 `health_regenerate_log_failure` |
 
 **按需下载**（用到才拉，不占安装体积）：
 
@@ -161,6 +168,45 @@ systemctl status realm --no-pager -l
 # 4. 进入菜单
 pf
 ```
+
+### 2.4 探测端重生成失败怎么处置
+
+「探测端产物」指 `/etc/realm/health/health_check.sh` —— 它才是健康探测真正执行的脚本，
+**真源唯一** = `lib/health.sh` 的 `health_check_script_regenerate`。
+装 / 升级不重新生成它，机器上跑的就是**旧产物** ⇒ 探测端静默失效。
+
+三条路径的处置**按路径分开**：
+
+| 路径 | 处置 | 退出码 | 源码位置 |
+|------|------|--------|----------|
+| 首次安装（`xwPF.sh install`） | **fail fast 中断**：醒目报错 + 可执行修复步骤 + 写日志 → **安装中断** | `1` | `xwPF.sh` 的主入口 install 分支 |
+| 首次安装（菜单 `1. 安装(更新)程序,脚本`） | **fail fast 中断**：醒目报错 + 可执行修复步骤 + 写日志 → 返回非 0（菜单把真实退出码传出） | `1` | `lib/realm.sh` 的 `smart_install`、`lib/ui.sh` 的 `show_menu`（菜单项 1） |
+| 升级（更新中心 → 更新脚本包） | **不中断整个升级**：脚本包已更新，继续更新 realm 主程序；但**返回非 0**，让调用方知道探测端是坏的 | `3` | `lib/update.sh` 的 `safe_update_scripts`、`lib/update.sh` 的 `update_center_menu` |
+
+升级路径的退出码约定（`lib/update.sh` 的 `safe_update_scripts`）：
+
+| 退出码 | 含义 |
+|--------|------|
+| `0` | 脚本包已更新，且探测端产物已重新生成 |
+| `1` | **脚本包本身没更新成**（下载失败 / 语法错 / 自检失败） |
+| `3` | 脚本包**已更新**，但探测端重生成失败（探测端不可用） |
+
+日志约定：
+
+- 路径：`/var/log/xwPF/health-regenerate.log`（`lib/health.sh` 的 `health_regenerate_log_failure`）
+- **只在失败时写**；每行一条，带时间戳 + 失败原因
+- 日志目录不存在会先 `mkdir -p`
+- **写日志本身失败不影响主流程** —— 不因为「记个日志失败」把安装或升级带崩
+
+手工修复（需 root）：
+
+```bash
+sudo bash -c 'source /usr/local/bin/lib/health.sh && health_check_script_regenerate'
+```
+
+> **老版本 / 降级的情况**：脚本包里根本没有 `health_check_script_regenerate` 时，
+> 升级路径按「无此能力」**跳过、不算失败**（用 `grep` 判能力是否存在）——
+> 否则老机器升级会被误判成失败。
 
 ---
 
