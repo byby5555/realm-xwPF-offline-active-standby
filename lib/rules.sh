@@ -2431,9 +2431,10 @@ configure_port_group_weights() {
     echo ""
     echo "请输入权重序列 (用逗号分隔):"
     echo -e "${WHITE}格式说明: 按服务器顺序输入权重值，如 \"2,1,3\"${NC}"
-    echo -e "${WHITE}权重范围: 0-10，数值越大分配流量越多${NC}"
+    echo -e "${WHITE}权重范围: 0-10；普通负载均衡下数值越大分配流量越多${NC}"
     echo -e "${GREEN}含 0 即自动主备: 如 \"10,0\" → 自动进入主备模式并开启主备路由${NC}"
-    echo -e "${BLUE}  权重>0 的目标当主，权重=0 的目标当备；主故障自动切备，主恢复自动切回${NC}"
+    echo -e "${BLUE}  主备模式下：权重数值大的排在前，同一时刻只有一个主承接流量；权重表示优先级，不是分流比例${NC}"
+    echo -e "${BLUE}  权重 0 的目标不参与主备；主故障自动切备，主恢复自动切回${NC}"
     echo ""
 
     read -p "权重序列: " weight_input
@@ -2598,7 +2599,7 @@ preview_port_group_weight_config() {
     # 权重含 0 → 预览里明确告知会自动进入主备模式
     if weights_contain_zero "$weight_input"; then
         echo -e "${GREEN}检测到权重 0，将自动启用主备模式 (active-standby):${NC}"
-        echo -e "  ${BLUE}· 权重 > 0 的目标为主，权重 = 0 的目标为备${NC}"
+        echo -e "  ${BLUE}· 权重数值大的排在前，同一时刻只有一个主承接流量；权重 0 的目标不参与主备（权重是优先级，不是分流比例）${NC}"
         echo -e "  ${BLUE}· 自动开启故障转移与健康检查：主故障自动切到备，主恢复后切回主${NC}"
         echo -e "  ${BLUE}· 健康检查探测方式: TCP 连接探测 (目标端口)，不是 ping${NC}"
         echo -e "  ${YELLOW}· 会拉起常驻健康检查服务（systemd timer，周期性探测目标端口，直到用故障转移菜单关闭）${NC}"
@@ -2630,11 +2631,24 @@ apply_port_group_weight_config() {
         if [ -f "$rule_file" ]; then
             if read_rule_file "$rule_file" && [ "$RULE_ROLE" = "1" ] && [ "$LISTEN_PORT" = "$port" ]; then
                 # 更新规则文件中的权重配置
-                # 对于第一个规则，存储完整权重；对于其他规则，存储对应的单个权重
+                #
+                # ★ 索引口径：用户填的权重序列是按**目标序号**编号的 ——
+                #   展示侧把每条规则的 REMOTE_HOST 按逗号展开成目标序列，
+                #   validate_weight_input 也是按目标数校验个数。
+                #   旧实现却按**规则序号**去取 weight_array[rule_index]，
+                #   两套口径不一致 → 一条规则含多个地址时，后续规则会拿到
+                #   别的目标的权重（串位）。这里改成按目标序号取。
+                #
+                #   落盘约定不变：
+                #     · 组内第一条规则存**完整**权重串（组权重串的落点）
+                #     · 其余规则存**自己那个目标**对应的单个权重（不含逗号，
+                #       因此不会覆盖组权重串 —— 读取侧取「含逗号的那份」）
                 local rule_index=0
+                local target_offset=0
                 local target_weight="$weight_input"
 
-                # 计算当前规则在同端口规则中的索引
+                # 计算当前规则在同端口规则中的序号，
+                # 以及它在**目标序列**里的起始下标（前面的规则各占多少个目标）
                 for check_rule_file in "${RULES_DIR}"/rule-*.conf; do
                     if [ -f "$check_rule_file" ]; then
                         if read_rule_file "$check_rule_file" && [ "$RULE_ROLE" = "1" ] && [ "$LISTEN_PORT" = "$port" ]; then
@@ -2642,18 +2656,26 @@ apply_port_group_weight_config() {
                                 break
                             fi
                             rule_index=$((rule_index + 1))
+                            # 该规则展开后占用的目标数（REMOTE_HOST 可能含多个地址）
+                            local n_targets=1
+                            if [[ "$REMOTE_HOST" == *","* ]]; then
+                                local -a _wi_hosts
+                                IFS=',' read -ra _wi_hosts <<< "$REMOTE_HOST"
+                                n_targets=${#_wi_hosts[@]}
+                            fi
+                            target_offset=$((target_offset + n_targets))
                         fi
                     fi
                 done
 
-                # 根据规则索引确定要存储的权重
+                # 按目标序号取权重（不再按规则序号）
                 if [ $rule_index -eq 0 ]; then
                     # 第一个规则存储完整权重
                     target_weight="$weight_input"
                 else
-                    # 其他规则存储对应位置的单个权重
+                    # 其他规则存储自己第一个目标对应的单个权重
                     IFS=',' read -ra weight_array <<< "$weight_input"
-                    target_weight="${weight_array[$rule_index]:-1}"
+                    target_weight="${weight_array[$target_offset]:-1}"
                 fi
 
                 if grep -q "^WEIGHTS=" "$rule_file"; then
