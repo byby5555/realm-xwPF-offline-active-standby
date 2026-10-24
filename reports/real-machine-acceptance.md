@@ -99,7 +99,8 @@ done
 | `bash -n` 报错 | 同样是 CRLF 或文件被截断（`_download` 的原子替换失败） |
 | `MISSING: jq` | `jq` 在 `lib/core.sh` 的 `REQUIRED_TOOLS` 里，应由安装器自动装；自动装失败要走 `docs/install-and-upgrade.md` 的离线装法 |
 
-**危险动作**：`install` 会覆盖 `/usr/local/bin/lib/*`、重建 `pf` 软链、**触发 `smart_install`（可能改 `/etc/realm` 配置）并 `systemctl enable xwpf-failover`**。业务机先备份 `/etc/realm`。
+**危险动作**：`install` 会覆盖 `/usr/local/bin/lib/*`、重建 `pf` 软链、**触发 `smart_install`（可能改 `/etc/realm` 配置）**。业务机先备份 `/etc/realm`。
+> **修订（2026-10-24 21:20）**：原文此处写「并 `systemctl enable xwpf-failover`」—— 该动作属**已废弃删除**的守护进程功能，已从本句移除。⚠️ 但**卸载/升级时仍要处理老机器上的残留**（守护进程 / unit / drop-in / 占用端口）—— 见 **A-15**。
 
 ---
 
@@ -657,6 +658,25 @@ journalctl -u realm-health-check.service -n 40 --no-pager | grep -E 'FAILURE|CON
 
 **前置**：A-3 完成；两个监听已起（见下）。
 
+> **★ 本节同时承载「负载均衡路径真机结论」（2026-10-24 21:20 迁入）**
+>
+> 用户裁定保留的三条路径是：**单端口中转**、**同端口多目标负载均衡（权重 5,5）**、**权重 10,0 主备**。
+> 「权重 10,0 主备」走的是 **realm 规则 `TARGET_STATES`**，由 `realm-health-check.timer` 驱动 —— **与被删除的进程级主备池是两套不同机制**。
+>
+> **五步状态迁移链（真机实测结果，证据目录 `/root/xwpf-evidence-20261024-190720-lb/`）**：
+>
+> | 步 | 动作 | **观察结果** | 机制落点 |
+> |---|---|---|---|
+> | ① | 权重设成 **5,5** | **生效模式 = `roundrobin`，权重 `5,5`** | 权重序列无 0 ⇒ 保持负载均衡模式，不进主备 |
+> | ② | 权重设成 **10,0** | **生效模式 = `active-standby`，且 `FAILOVER_ENABLED=true`（自动进主备）** | `lib/rules.sh` 的 `auto_enable_active_standby`：权重序列出现 0 ⇒ 规则 `BALANCE_MODE` 改写为 `active-standby` 并打开 `FAILOVER_ENABLED`（锚点 PR #4 = `a9102c1`） |
+> | ③ | **杀主**（主目标监听进程） | **权重翻 `0,1`**，**角色变 `DBACKUP`** | 健康检查连续 `FAILURE_THRESHOLD`（默认 2）次失败 ⇒ 判 `failed` ⇒ 写回权重 `0,1`（备接管） |
+> | ④ | **恢复主** | **权重翻 `1,0`**，**角色变 `DPRIMARY`** | 连续 `SUCCESS_THRESHOLD`（默认 2）次成功 **且** 已过 `RECOVERY_COOLDOWN`（默认 120）⇒ 严格主备切回 |
+> | ⑤ | 权重改回 **5,5** | **回到 `roundrobin`** | 权重序列无 0 ⇒ 退出主备形态，回到负载均衡 |
+>
+> **⚠️ 证据完整性声明（必须先看）**：第 ③④ 步的**观察结果**来自 **Chief 的实机复核**（2026-10-24）；**审稿本轮无 VPS 凭据**（凭据环境变量在会话压缩后丢失、无 SSH 私钥与 agent、免密登录被拒）⇒ **未进入该证据目录逐文件取证**，**具体证据文件名待补**。
+> ⇒ **拿不到来源的实测数字一律不写** —— 下面两条时间特性的**实测区间**同样标「待补」，取证命令见 **A-6.2**（在 VPS 上跑一条即可补齐）。
+> ⇒ `DBACKUP` / `DPRIMARY` 这两个角色标识在**仓库里 0 处命中**（全仓检索无）⇒ 它们是**真机上的运行时观察词**，不是本仓库常量，引用时必须带真机证据。
+
 **命令**
 
 ```bash
@@ -746,6 +766,75 @@ journalctl -u realm-health-check.service -n 40 --no-pager | grep -E 'RECOVERY|CO
 | 翻回成 `1,1` | 兜底逻辑或多主语义有问题（第 1 轮报告缺口 D） |
 
 **危险动作**：无（低危）。**注意**：本项天然耗时 > 2.5 分钟，验收窗口要留够。
+
+---
+
+### A-6.1　两条时间特性（机理与口径）
+
+> **本节迁入时间**：2026-10-24 21:20（从已废弃的 `reports/round3-failover-restart-storm-status.md` 迁出）。
+> **纪律**：**拿不到来源的数字不写**。下面凡标「**待补**」的，是审稿**确实没取到**（无 VPS 凭据），**不是**「忘了写」。
+> **代码口径锚点**：`7c95dca`（`lib/health.sh` 的健康检查体、`lib/failover.sh` 的默认值）；被测产物一律取自 `git show 7c95dca:<path>`。
+
+#### ① 硬故障检测耗时（负载均衡路径）
+
+由 **realm 侧健康检查**决定，三个参数相乘：
+
+| 参数 | 默认值 | 出处 |
+|---|---|---|
+| 健康检查周期 `HEALTH_CHECK_INTERVAL` | **4 秒** | `lib/failover.sh` 的默认值；生效值走 `lib/health.sh` 的 `get_effective_health_check_interval` |
+| 连续失败阈值 `FAILURE_THRESHOLD` | **2** | `lib/health.sh` 的健康检查体 |
+| 单次探测超时 `CONNECTION_TIMEOUT` | **3** | 同上 |
+
+⇒ **理论下限 ≈ 2 个周期 = 8 秒**（再加一次探测本身的耗时）。
+⇒ **实测区间：待补**（本轮无 VPS 凭据）—— 取证方式见 A-6.2。
+
+> **⚠️ 口径警告（重要，且已随旧功能删除而简化）**：本条**只指负载均衡路径**（`realm-health-check.timer` 驱动的权重翻转）。
+> 历史上还有一个「**直连池 8–10 秒切走**」的口径 —— 那是**另一个守护、另一套参数**（`cmd/xwpf-failover.py` 的 `interval_sec` / `fail_threshold` / `cooldown_sec`，作用对象是池内主备转发，不是规则权重）。
+> ⇒ **该直连池功能已随「主备池整块删除」作废** ⇒ 现版本**只剩负载均衡路径一条口径**，不再需要分清两个「8 秒」。
+> ⇒ **仍需记住的分清原则**（防未来再混）：引用检测耗时必须写清「**哪条路径**」—— 权重翻转的耗时 ≠ 守护进程切池内主备的耗时。
+
+#### ② 回切间隔（受冷却期约束）
+
+回切条件在 `lib/health.sh` 的健康检查体里，**三个条件同时成立**才翻回：
+
+```
+① status == failed                        （之前确实判过故障）
+② success_count >= SUCCESS_THRESHOLD(2)  （连续 2 次探测成功）
+③ current_time - failure_start_time >= RECOVERY_COOLDOWN(120)
+```
+
+**⇒ 关键机理：③ 的基准是 `failure_start_time`（故障**起始**时刻），不是「恢复时刻」。**
+
+由此推出的三条性质：
+
+1. **回切受冷却期约束，不是「一恢复就立刻切回」** —— 刚判故障就恢复，必须等满 120 秒。
+2. **故障持续得越久，恢复后到回切的等待越短** —— 若故障已持续超过 120 秒，恢复后 2 个周期（≈ 8 秒）即回切。
+3. ⇒ **「故障发生 → 权重翻回」的总时长 ≈ `RECOVERY_COOLDOWN` + 2 个周期**；而**「主恢复 → 权重翻回」的等待 = 120 − 已流逝的故障时长**（下界为 2 个周期）。
+
+**实测值 X 秒：待补** —— 取证方式见 A-6.2。
+
+> **验收等待值 ≠ 实测值**：`A-6` 里的 `sleep 140`（= 120 冷却 + 2 周期 + 余量）是**验收用的等待时长**，**不能**当作实测回切间隔写进任何结论。
+
+---
+
+### A-6.2　补齐两个实测数字的取证命令（在 VPS 上跑一条即可）
+
+```bash
+# 一次性取齐：检测耗时 + 回切间隔 + 全部证据
+D=/root/xwpf-evidence-20261024-190720-lb
+mkdir -p "$D"
+journalctl -u realm-health-check.service --no-pager -o short-iso \
+  | grep -E 'FAILURE|CONFIG|RECOVERY' | tee "$D/timeline.log"
+grep -v '^#' /etc/realm/health/health_status.conf | tee "$D/health_status.conf"
+grep -E '^(BALANCE_MODE|FAILOVER_ENABLED|WEIGHTS)=' /etc/realm/rules/rule-*.conf | tee "$D/rules.txt"
+jq -r '.endpoints[].balance' /etc/realm/config.json | tee "$D/balance.txt"
+ls -l "$D"
+```
+
+**怎么从 `timeline.log` 算那两个数**：
+- **检测耗时** = `[FAILURE] 目标 … 检测失败` 的时间戳 → 权重变成 `0,1` 的那轮 `[CONFIG]` 时间戳的差。
+- **回切间隔** = `[FAILURE]`（故障起始）→ `[RECOVERY] 目标 … 已恢复健康` 的差；**应当与 `RECOVERY_COOLDOWN=120` 吻合**（误差来自 2 个探测周期与探测耗时）。
+- **拿不到 `timeline.log` 的时间戳就写「待补」** —— **不要用 `sleep 140` 这种验收等待值冒充实测值**。
 
 ---
 
@@ -911,59 +1000,261 @@ systemctl list-unit-files | grep -E 'realm|xwpf' || echo "NO-UNIT-FILE-REGISTERE
 
 ---
 
-## A-10　`xwpf-failover` 的 active/passive 热切换（进程级）
+## A-10　~~`xwpf-failover` 的 active/passive 热切换（进程级）~~　**⛔ 已废弃，不再验**
 
-**验收目标**：`xwpf-failover` 守护进程（**与 A-3~A-6 的 LB 模式故障转移是两套东西**）能自动完成主备角色互换。
+> **⛔ 本项已删除（2026-10-24 21:20）**：用户裁定「**主备池模式的都抛弃**」⇒ 进程级主备池（独立守护进程 `cmd/xwpf-failover.py`、公开监听口 + 主/备后端、`failover.json` 池机制）**整块功能废弃删除**。
+> ⇒ 本项连同它守的「守护进程热切换 / 守护日志 / 守护退出码语义 / 崩溃循环限流 / drop-in / ETXTBSY（写正在执行的守护二进制）」**全部不再验收** —— 被守护的进程没了，守它的断言也没了意义。
+> ⇒ **历史留档**：`reports/round3-crashloop-review.md`（根因链）与 `reports/round3-failover-restart-storm-status.md`（处置状态）—— 两份文首均已加状态声明。
+> ⇒ ⚠️ **不要**把「进程级主备」与「权重主备」混为一谈：**权重 10,0 主备保留**（走 realm 规则 `TARGET_STATES`，由 `realm-health-check.timer` 驱动），它的验收项是 **A-3 / A-5 / A-6**。
 
-**前置**：**需要两台真实机器**（主 + 备），或一台机器 + 一个可被判定为故障的远端地址。本机无 Docker，无法本地模拟双节点。
+---
 
-**命令（主节点执行）**
+## A-11　保留路径一：普通单端口中转
 
-```bash
-echo "--- 守护进程状态 ---"
-systemctl status xwpf-failover --no-pager | head -20
-systemctl is-enabled xwpf-failover
+**验收目标**：一个监听口后挂**一个**目标，流量按该目标转发，**不进入**任何主备/负载均衡逻辑。
 
-echo "--- 池配置 ---"
-sudo cat /etc/xwpf/failover.json | jq . 2>/dev/null || sudo cat /etc/xwpf/failover.json
+**前置**：干净的 VPS，已 `pf install` 完成 A-1。
 
-echo "--- 版本记录（判定是否需要重装升级）---"
-sudo cat /usr/local/bin/.xwpf-failover-version 2>/dev/null || echo "NO-VERSION-FILE"
-
-echo "--- 日志：应出现 listening on 与状态迁移 ---"
-sudo journalctl -u xwpf-failover -n 60 --no-pager
-
-echo "--- 监听端口 ---"
-sudo ss -lntp | grep -E 'xwpf-failover|realm' || echo "NO-LISTEN"
-```
-
-**命令（制造主节点故障后，在另一台执行）**
+**命令**
 
 ```bash
-sudo journalctl -u xwpf-failover --since "-5 min" --no-pager | grep -Ei 'failover|switch|standby|active|promote'
-sudo cat /etc/xwpf/failover.json | jq . 2>/dev/null
+# 造一个后端
+python3 -m http.server 8443 --bind 127.0.0.1 >/tmp/acc-single.log 2>&1 & echo $! >/tmp/acc-single.pid
+sleep 1
+
+echo "--- 规则（应只有一条，且无 WEIGHTS 键）---"
+grep -H -E '^(LISTEN_PORT|REMOTE_HOST|REMOTE_PORT|BALANCE_MODE|FAILOVER_ENABLED|WEIGHTS)=' /etc/realm/rules/rule-*.conf
+
+echo "--- realm 实际生效的端点 ---"
+jq -r '.endpoints[] | "\(.listen) -> \(.remote) balance=\(.balance)"' /etc/realm/config.json
+
+echo "--- 健康探测不应被拉起（单端口不构成故障转移场景）---"
+systemctl is-enabled realm-health-check.timer 2>&1
+systemctl is-active  realm-health-check.timer 2>&1
 ```
 
 **期望结果（可判定）**
 
-1. `systemctl is-active xwpf-failover` → `active`；`is-enabled` → `enabled`。
-2. `/etc/xwpf/failover.json` 存在且是**合法 JSON**（`jq .` 不报错）。
-3. 日志里有 `listening on …` 字样（`cmd/README-failover.md` 的 `## Running` 一节明确以此为验收标志）。
-4. 主节点断连后，日志出现**状态迁移**记录（switch/standby/active/promote 之一），且池配置里的**主备角色互换**。
-5. 切换过程中**不需要人工干预**，且**不需要重启 realm 守护**（`cmd/README-failover.md` 的 `## Layout` 一节称它会 restart realm 与自身）。
+1. 规则里**没有** `WEIGHTS` 行；`BALANCE_MODE` 不是 `active-standby`。
+2. `config.json` 里该端点的 `balance` 是**单个**权重（不是逗号分隔的多目标串）。
+3. `realm-health-check.timer` 为 `disabled` / `inactive`（**不适用**则写「N/A，不阻塞」—— 单端口不触发探测是正确行为；**关键是它不得因为单端口就误判 failed**）。
+4. 转发可用：`curl -sS -o /dev/null -w '%{http_code}\n' --resolve "<监听域名>:<端口>" "http://<监听域名>:<端口>/"` 返回非 000（TLS 站点按实际协议验）。
 
 **失败判据与排查方向**
 
 | 现象 | 排查方向 |
 |---|---|
-| `systemctl is-active` → `inactive` | 没 `enable --now`；或 `/usr/local/bin/xwpf-failover` 不存在（安装时的 cmd 副本没落盘） |
-| 日志无 `listening on` | 守护进程起来了但没绑到端口 → 查池配置里的监听端口是否被占 |
-| 有迁移日志但角色没换 | 池配置写回失败 → 查 `/etc/xwpf/failover.json` 权限与 `jq` 是否可用 |
-| 切换后转发仍走旧主 | 探测端与守护端用了不同的目标列表 → 这是 **A-3~A-6（LB 模式）** 与 **A-10（进程级）** 两条链路的边界，**不要混用结论** |
+| 单端口也被写进 `WEIGHTS` | 权重写入入口没区分「单目标」与「多目标」；查 `lib/rules.sh` 的权重配置入口对单目标的处理 |
+| 单端口把后端判 `failed` | 探测端把不适用场景也纳入了；查 `lib/health.sh` 的健康检查体对「规则不是故障转移中转规则」的过滤（`RULE_ROLE=1` / `ENABLED=true` / `FAILOVER_ENABLED=true` 三个开关） |
+| `config.json` 的 `balance` 是 `1,0` 之类多值 | 端点生成端把权重串当成了多目标；查 `lib/realm.sh` 的 `generate_endpoints_from_rules` |
 
-**危险动作**：A-10 会**真的把流量切走**。必须在明确的双节点测试环境做；不要在承载真实流量的主节点上做故障注入。
+**危险动作**：写规则文件会触发 realm 重启 → 转发短暂中断。**验收前先备份** `/etc/realm/rules/` 与 `/etc/realm/config.json`；**验收后**删掉测试规则再 `pf --restart-service` 恢复。
 
 ---
+
+## A-12　保留路径二：同端口多目标负载均衡（权重 5,5）
+
+**验收目标**：一个监听口后挂**多个**目标、权重**相等**（`5,5`）⇒ 走**负载均衡**（不是主备），流量在多个目标间分摊。
+
+**前置**：两个后端监听已起（`127.0.0.1:8443` 与 `127.0.0.2:8443`）。
+
+**命令**
+
+```bash
+python3 -m http.server 8443 --bind 127.0.0.1 >/tmp/acc-lb-a.log 2>&1 & echo $! >/tmp/acc-lb-a.pid
+python3 -m http.server 8443 --bind 127.0.0.2 >/tmp/acc-lb-b.log 2>&1 & echo $! >/tmp/acc-lb-b.pid
+sleep 1
+
+echo "--- 下发权重 5,5（同端口多目标）---"
+# 第三个参数 1 = 跳过交互确认（无头环境必须传）
+source /usr/local/bin/lib/rules.sh
+apply_port_group_weight_config 18443 "5,5" 1
+
+echo "--- 规则 ---"
+grep -H -E '^(BALANCE_MODE|FAILOVER_ENABLED|WEIGHTS)=' /etc/realm/rules/rule-*.conf
+
+echo "--- 生效权重序列（应为 5,5）---"
+jq -r '.endpoints[].balance' /etc/realm/config.json
+
+echo "--- 探测端状态（两个目标都应 healthy）---"
+grep -v '^#' /etc/realm/health/health_status.conf
+```
+
+**期望结果（可判定）**
+
+1. `BALANCE_MODE` = **负载均衡模式**（realm 侧通常呈现为 `roundrobin`；规则文件里**不应**是 `active-standby`）。
+2. `FAILOVER_ENABLED` 的取值符合该模式的产品口径（等权负载均衡不触发主备切换）。
+3. 权重序列 = **`5,5`**。
+4. 状态文件里**两个目标都是 `healthy`**。
+5. **多次请求能落到不同后端**（真正的分摊，而不是全打一个）：连发 ≥ 10 次请求，两个后端的访问日志**都**有命中计数。
+
+**失败判据与排查方向**
+
+| 现象 | 排查方向 |
+|---|---|
+| 权重写成了 `10,0` 之类 | 下发时传错；重跑 `apply_port_group_weight_config 18443 "5,5" 1` |
+| 模式变成 `active-standby` | `auto_enable_active_standby` 的触发条件错了（**只有权重含 0 才该进主备**）→ 查 `lib/rules.sh` 的 `auto_enable_active_standby` |
+| 两个后端只有一个收到请求 | realm 的分摊没生效（配置没重新生成，或 realm 未重启）→ 看 `journalctl` 有没有 `[CONFIG]`；没有就 `pf --restart-service` |
+| 权重序列不是 `5,5` | 落盘约定：组内**第一条**规则存完整权重串、其余规则存自己那个目标的值 → 查 `lib/rules.sh` 的 `apply_port_group_weight_config` 与 `validate_weight_input` |
+
+**危险动作**：同 A-11（写规则 + 重启 realm）。**只允许在 `127.0.0.0/8` 上做**；**严禁动 22 端口**。
+
+---
+
+## A-13　保留路径三：权重 10,0 主备（杀主翻备 / 恢复翻回 / 回切冷却）
+
+**验收目标**：同端口多目标、权重 **`10,0`** ⇒ 自动进**主备**形态；主故障 ⇒ 翻备；主恢复 ⇒ **受 120 秒冷却约束**后翻回。
+
+**前置**：A-12 完成（已能下发多目标权重）。
+
+**命令**
+
+```bash
+echo "--- 下发权重 10,0（应自动进主备）---"
+source /usr/local/bin/lib/rules.sh
+apply_port_group_weight_config 18443 "10,0" 1
+
+echo "--- 规则：应是主备形态 ---"
+grep -H -E '^(BALANCE_MODE|FAILOVER_ENABLED|WEIGHTS|TARGET_STATES)=' /etc/realm/rules/rule-*.conf
+
+echo "--- 生效权重（应为 10,0）---"
+jq -r '.endpoints[].balance' /etc/realm/config.json
+
+echo "--- 探测端 timer 必须已拉起（没有探测就没有切换）---"
+systemctl is-enabled realm-health-check.timer
+systemctl is-active  realm-health-check.timer
+```
+
+**期望结果（可判定）**
+
+1. `BALANCE_MODE` = **`active-standby`**；`FAILOVER_ENABLED` = **`true`**。
+2. 权重序列 = **`10,0`**。
+3. `realm-health-check.timer` = **`enabled` + `active`**（**这是主备路径的命脉** —— 探测端没起来就永远不会切换）。
+4. **杀主 → 翻备**、**恢复主 → 翻回**：见 **A-5**（杀主翻 `0,1`）与 **A-6**（恢复翻回 `1,0`）。
+5. **回切冷却期生效**：见 **A-6** 的第 1 条期望（恢复后**立刻**读权重**仍是 `0,1`**）+ **A-6.1** 的机理（③ 的基准是 `failure_start_time`，`RECOVERY_COOLDOWN` 默认 120）。
+
+**失败判据与排查方向**
+
+| 现象 | 排查方向 |
+|---|---|
+| 权重含 0 但没进主备 | `auto_enable_active_standby` 没触发 → 查 `lib/rules.sh` 的 `auto_enable_active_standby`（锚点 `a9102c1`） |
+| 进了主备但 timer 没拉起 | 探测端没起来 ⇒ **永远不会切换**（静默失效）→ 查 `lib/rules.sh` 的 `ensure_health_check_service` 与 `start_health_check_service` |
+| timer 起来了但 `health_status.conf` 里没有这组规则的行 | 探测端没覆盖这组规则 → 查 `RULE_ROLE=1` / `ENABLED=true` / `FAILOVER_ENABLED=true` 三个开关 |
+| 主挂了权重不翻 | 状态没进 `failed` → 查 `FAILURE_THRESHOLD` / `CONNECTION_TIMEOUT`；进了但 config 没重生成 → 看 `journalctl` 有没有 `[CONFIG]` |
+| 恢复后立刻就翻回（没有冷却） | 冷却期判定失效 → 查规则文件里 `RECOVERY_COOLDOWN`（默认 120）是否真的落盘 |
+
+**危险动作**：同 A-11。**本项会真的把流量切走** —— 确认在测试环境；**严禁动 22 端口**。
+
+---
+
+## A-14　健康探测端确实在探测（保留路径的命脉）
+
+**验收目标**：健康探测端**真的在跑**，且产物与真源一致、状态文件不残留已删规则的行。
+
+> **为什么本项独立成条**：用户裁定保留的三条路径中，**只有权重主备依赖健康探测** —— 探测端不工作 ⇒ 主备永远不会切换 ⇒ **「静默失效」而非「失败」**。所以本项是保留路径的**命脉项**，不能并进 A-3 顺带看一眼。
+
+**命令**
+
+```bash
+echo "--- 探测 timer / service ---"
+systemctl is-enabled realm-health-check.timer
+systemctl is-active  realm-health-check.timer
+systemctl list-timers realm-health-check.timer --no-pager
+
+echo "--- 生成物在位 ---"
+ls -l /etc/realm/health/health_check.sh
+ls -l /etc/realm/health/health_status.conf
+
+echo "--- ★ 生成物内容必须与真源一致（唯一真源 = lib/health.sh 的 health_check_script_body）---"
+# 生成物应包含从真源机械抽取的实现；不一致 ⇒ 生成物是旧的（静默失效）
+grep -c 'check_connectivity' /etc/realm/health/health_check.sh
+
+echo "--- ★ 状态文件的最后检查时间必须随轮次前进（不能是静止的旧值）---"
+grep -v '^#' /etc/realm/health/health_status.conf
+sleep 15
+echo "--- 15 秒后再读一次，最后检查时间应更新 ---"
+grep -v '^#' /etc/realm/health/health_status.conf
+```
+
+**期望结果（可判定）**
+
+1. `realm-health-check.timer` = `enabled` + `active`；`list-timers` 能看到下次触发时间。
+2. `/etc/realm/health/health_check.sh` 存在且**非空**。
+3. **两次读取 `health_status.conf`，最后检查时间字段必须不同**（**第二次比第一次新**）⇒ 证明探测端**每轮都在跑**。若两次完全相同 ⇒ **探测端没跑**，无论日志里写了什么都判 FAIL。
+4. 状态文件里**只有当前存在的规则的行** —— 已删除的规则**不得残留**（残留行会让 `lib/realm.sh` 的 `generate_endpoints_from_rules` 按 `host:port` 建索引时命中一条**已经不存在的目标**，把流量判成 failed）。
+
+**失败判据与排查方向**
+
+| 现象 | 排查方向 |
+|---|---|
+| 最后检查时间两次相同 | 探测端没跑 → `systemctl status realm-health-check.service` 看 journal；或 `health_check.sh` 没被生成 |
+| 生成物内容与真源不一致 | 生成物是旧版本 ⇒ **静默失效**。写端唯一是 `lib/health.sh` 的 `health_check_script_body`（经 `start_health_check_service` 落盘）；**装 / 升级路径若不经过这个写点 ⇒ 生成物永远不更新** ⇒ 查 `update.sh` 与 install 两处是否都调到了写点 |
+| 状态文件有已删规则的残留行 | 状态文件不是「每轮原子重建、只留当前规则行」→ 查写端是否在每轮清掉旧行 |
+| 探测端把两个端口判成同一个 key | `TARGET` 口径问题（裸 host 宽键）→ 见 A-4 的三档判据 |
+
+**危险动作**：无（只读观测）。
+
+---
+
+## A-15　老机器残留清理（升级到新版本后）
+
+**验收目标**：**在装了旧版（主备池/守护进程时代）的机器上升级到新版本** ⇒ 旧的守护进程、unit、drop-in、`failover.json` 池配置**被卸载流程清理干净**，**不留占着端口的僵尸**。
+
+> **为什么必须单列一条**：删除功能最容易出的事故不是「删不掉」，而是**「删了一半」** —— 老机器上 `xwpf-failover.service` 还在跑、还在占着监听端口，界面却已经显示「该功能已移除」⇒ 端口冲突 + 僵尸进程 + 用户以为产品坏了。
+
+**前置**：一台**跑过旧版**的机器（真机 `103.42.31.186` 现跑两个池：旧池监听 `18443`、直连池监听 `18444`）；升级前先备份。
+
+**命令**
+
+```bash
+echo "=== 升级前快照（留证）==="
+systemctl list-unit-files | grep -E 'xwpf-failover' || echo NO-UNIT-FILE
+systemctl status xwpf-failover --no-pager | head -5 || true
+ss -lntp | grep -E 'xwpf-failover|:18443|:18444' || echo NO-LISTEN
+ls -l /etc/systemd/system/xwpf-failover.service.d/ 2>/dev/null || echo NO-DROPIN-DIR
+ls -l /etc/xwpf/ 2>/dev/null || echo NO-CONF-DIR
+
+echo "=== 升级（走更新中心或 pf install）==="
+# 升级后：
+
+echo "=== 升级后核对：守护相关残留应全部为空 ==="
+echo "--- 1) unit 文件 ---"
+ls /etc/systemd/system/ | grep -E 'xwpf-failover' && echo "★FAIL: 残留 unit" || echo "OK: 无残留 unit"
+
+echo "--- 2) drop-in 目录 ---"
+ls -d /etc/systemd/system/xwpf-failover.service.d 2>/dev/null && echo "★FAIL: 残留 drop-in 目录" || echo "OK: 无残留 drop-in"
+
+echo "--- 3) 进程 ---"
+pgrep -af 'xwpf-failover' && echo "★FAIL: 守护进程还在跑" || echo "OK: 无守护进程"
+
+echo "--- 4) 监听端口（18443 / 18444 不得还被旧守护占着）---"
+ss -lntp | grep -E ':18443|:18444' && echo "★FAIL: 旧端口仍被占用" || echo "OK: 无旧监听"
+
+echo "--- 5) 池配置目录 ---"
+ls -d /etc/xwpf 2>/dev/null && echo "★FAIL: 残留 /etc/xwpf" || echo "OK: 无 /etc/xwpf"
+
+echo "--- 6) 卸载后复核（走 pf → 8. 卸载服务）---"
+systemctl list-unit-files | grep -E 'xwpf-failover' && echo "★FAIL: 卸载后仍有 unit" || echo "OK: 卸载后无 unit"
+```
+
+**期望结果（可判定）**
+
+1. **升级后**：unit 文件、drop-in 目录、守护进程、`/etc/xwpf` 目录**全部不存在**；`18443` / `18444` **不再被旧守护占用**。
+2. **卸载后**：同样全部为空，且 `/etc/systemd/system/` 里 `xwpf-failover` **零命中**。
+3. **不得影响保留路径**：升级/卸载过程中，`realm-health-check.timer`、`/etc/realm/health/`、权重主备的规则与 `config.json` **不受损**（若被清掉 ⇒ 保留路径被误伤，是**阻断级**问题）。
+4. ⚠️ **真机 103 的特别提醒**：该机现在跑两个池（`18443` 旧池 / `18444` 直连池），**守护进程一旦不再监听，依赖这两个端口的转发就会断** ⇒ **必须先把流量迁到「同端口多目标 + 权重」路径**，再删守护。**顺序错了 = 真机断转发。**
+
+**失败判据与排查方向**
+
+| 现象 | 排查方向 |
+|---|---|
+| unit 残留但 `list-unit-files` 没有 | 只是 `/etc/systemd/system/` 里的孤儿文件 → 卸载流程漏了 `rm -f` |
+| 进程还在 | 只 `stop` 了 timer 没停 service，或守护进程没被 `disable` |
+| 端口还被占 | 守护没停干净（见上），或 realm 侧规则仍指向该端口 |
+| **保留路径的东西被一起清了** | 卸载/删除的**范围**过宽（把 `/etc/realm/health/` 或 health-check unit 当成守护的东西删了）→ 查卸载两阶段的路径清单 |
+| 老池在菜单里**列不出来也删不掉** | 兼容读取被一并删了 —— **老机器上已有的池必须仍能列出与删除**（产品只删「新建」路，兼容读取保留）⇒ 查读池/删池入口是否还在 |
+
+**危险动作**：**升级会改转发配置** ⇒ 先备份 `/etc/realm`、`/etc/xwpf`；**卸载会删全部规则与配置** ⇒ 确认是测试机或已备份。
 
 ## 11. 最小化 Debian 兼容性矩阵
 
@@ -1059,7 +1350,12 @@ done
 | A-7 | 无 nc 靠 /dev/tcp | ☐PASS ☐FAIL ☐BLOCKED | | 误判 failed 的目标数 = |
 | A-8 | journal + vacuum | ☐PASS ☐FAIL ☐BLOCKED | | 四类标记是否齐全 |
 | A-9 | 卸载残留清理 | ☐PASS ☐FAIL ☐BLOCKED | | 残留 unit / 进程数 = |
-| A-10 | xwpf-failover 热切换 | ☐PASS ☐FAIL ☐BLOCKED | | 需双节点 |
+| A-10 | ~~xwpf-failover 热切换~~ | **⛔ 已废弃删除，不再验** | | 功能已废弃（见该节状态说明） |
+| A-11 | 保留路径一：单端口中转 | ☐PASS ☐FAIL ☐BLOCKED | | 无 WEIGHTS 行 = / balance 是单值 = |
+| A-12 | 保留路径二：负载均衡 5,5 | ☐PASS ☐FAIL ☐BLOCKED | | 权重序列 = 5,5 / 两后端都收到请求 = |
+| A-13 | 保留路径三：权重 10,0 主备 | ☐PASS ☐FAIL ☐BLOCKED | | active-standby + FAILOVER_ENABLED=true / timer enabled+active |
+| A-14 | 健康探测端确实在探测 | ☐PASS ☐FAIL ☐BLOCKED | | **两次读取的最后检查时间必须不同** / 生成物与真源一致 / 无已删规则残留行 |
+| A-15 | 老机器残留清理 | ☐PASS ☐FAIL ☐BLOCKED | | 残留 unit / drop-in / 进程 / 占用端口数 = / 保留路径未被误伤 = |
 | A-X | 旧格式状态文件 → 仍能切换 | ☐PASS ☐FAIL ☐BLOCKED | | 老故障没被洗白 = / 迁完字段数 = |
 | A-Y | 同 host 两端口 → 互不覆盖 | ☐PASS ☐FAIL ☐BLOCKED | | 坏一个另一个仍 healthy = / 两形态各记一次 |
 | A-Z | 非 TTY 下 pf 快速退出 | ☐PASS ☐FAIL ☐BLOCKED | | rc≠124 / rc=0 / bytes≤64K / 输出命中入口提示语 |
