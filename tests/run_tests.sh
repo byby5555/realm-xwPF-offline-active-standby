@@ -377,6 +377,20 @@ CASES=(
     "T86:case_T86_health_status_rebuilt_atomically_each_round"
     "T87:case_T87_health_status_inheritance_by_target_address"
     "T88:case_T88_negative_control_old_impl"
+    # 静态 3（Chief r16 派单）：所有 while/until 循环里的输入读入必须 EOF 收口 + sleep 兜底
+    #   豁免仅限 herestring / 文件重定向 / xwpf:noninteractive-io 标记（fail-closed）
+    #   （T89~T92 · cases/21_static3_noninteractive_io.sh）
+    "T89:case_T89_static3_noninteractive_io_invariant"
+    "T90:case_T90_static3_covers_static2"
+    "T91:case_T91_static3_probe_unmarked_read_is_caught"
+    "T92:case_T92_static3_probe_marked_read_is_not_reported"
+    "T93:case_T93_static3_probe_matrix_vs_chief_contract"
+    # 迁移端认领一对一（Chief r17 派单 · 缺陷已由 84fe096 修掉）
+    #   负向对照锚点 sync-pre = 75379aa（= 84fe096^，修复前的真实实现）
+    #   （T94~T96 · cases/22_sync_claim_one_to_one.sh）
+    "T94:case_T94_sync_claim_one_to_one_six_scenarios"
+    "T95:case_T95_sync_negative_control_old_impl"
+    "T96:case_T96_sync_old_vs_current_must_differ"
 )
 
 for f in "$SCRIPT_DIR"/cases/*.sh; do

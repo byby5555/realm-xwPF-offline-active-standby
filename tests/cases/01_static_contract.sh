@@ -256,8 +256,18 @@ case_T05_failover_help_vs_docs() {
     # 文档侧：冻结态的 docs/ 与 README
     local cmds="toggle config status start stop restart-realm help"
     local c documented=0 missing=""
+    # ★ 只把**存在**的路径喂给 grep：
+    #   cmd/ 已在 2beb7bd 随「进程级主备池整块」删掉。路径列表里留着它的话，
+    #   grep 会因「No such file or directory」退出码 2 → 整条 if 判假 →
+    #   **7 个子命令全被算成「没文档」** → 假红（实测过：docs 里明明有
+    #   `xwFailover.sh config` 的说明，用例照样红）。
+    local paths=()
+    for p in "$SBX_SRC/docs" "$SBX_SRC/README.md" "$SBX_SRC/README_EN.md" "$SBX_SRC/cmd"; do
+        [ -e "$p" ] && paths+=("$p")
+    done
+    h_log "文档检索路径: ${paths[*]}"
     for c in $cmds; do
-        if grep -rEl "xwFailover\.sh[[:space:]]+${c}([^A-Za-z0-9_-]|$)" "$SBX_SRC/docs" "$SBX_SRC/README.md" "$SBX_SRC/README_EN.md" "$SBX_SRC/cmd" >/dev/null 2>&1; then
+        if grep -rEl "xwFailover\.sh[[:space:]]+${c}([^A-Za-z0-9_-]|$)" "${paths[@]}" >/dev/null 2>&1; then
             documented=$((documented + 1))
         else
             missing="$missing $c"

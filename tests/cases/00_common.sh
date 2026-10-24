@@ -26,6 +26,8 @@ n4-pre        f59e389  T85/T86 负向对照：生成物装/升级不重生成 + 
 inherit-pre   9dc5b56  T87/T88 负向对照：health_status_find_row 只比对目标地址、没看 RULE_ID 的那一版
 inherit-ok    f59e389  T87/T88「老实现本来是对的」：老实现用 grep 组合键（RULE_ID|地址），跑同一场景必须**不串**
 n4-del        2beb7bd  删除进程级主备池整块的那一版（补历史文件时取它的父提交）
+sync-pre      75379aa  T95/T96 负向对照：迁移端 sync_health_status_ids 只按目标地址认领、没改一对一的那一版（= 84fe096^）
+static3-pre   b9db576  T89/T93 负向对照：加 xwpf:noninteractive-io 标记**之前**的实现（循环头行上有无标记、无 EOF 收口的读入 ⇒ 静态 3 判红）
 EOF
 }
 
@@ -196,8 +198,13 @@ time.sleep(30)
 #            不一致 → 精确键查不到 → 行为改变）
 #   host:status = 目标地址 + 状态（healthy / failed）
 #
-# 注：第 1 列 RULE_ID 这里按顺序编号。RULE_ID 只在**旧格式**的归属回填里被用到，
-#     新格式（host:port）的读取路径不看这一列 —— 所以顺序编号不影响断言。
+# ★ 第 1 列 RULE_ID 的口径（2026-10-24 小编改）：**必须写「拥有该目标的规则」的 RULE_ID**。
+#   写端每行的 RULE_ID 都是「归属规则」的 ID（一条规则的多个目标 ⇒ 行行相同），
+#   读端按 **(RULE_ID, 目标地址) 组合键**查状态 ⇒ 这一列写错 ⇒ 精确键查不到
+#   ⇒ 目标被判成「无记录 = 健康」⇒ 该切不切。
+#   本 helper 按**位置顺序**编号 ⇒ 只适用于「每个目标各属一条规则、
+#   且规则 ID 与位置序号一致」的形态；**一条规则带多个目标**的用例
+#   必须改用 _write_health_for_rule（显式给归属规则 ID）。
 _write_health() {
     local file="$1" port="$2"
     shift 2
@@ -208,6 +215,23 @@ _write_health() {
         for pair in "$@"; do
             echo "${i}|${pair%%:*}:${port}|${pair##*:}|0|3|100|0"
             i=$((i + 1))
+        done
+    } > "$file"
+}
+
+# 写健康状态文件（**显式指定归属规则的 RULE_ID** —— 一条规则带多个目标时用这个）
+#
+# 用法：_write_health_for_rule <文件> <RULE_ID> <端口> <host:status> ...
+#   RULE_ID = 拥有这些目标的规则的 ID（写端就是这个值，同规则的多个目标行行相同）
+_write_health_for_rule() {
+    local file="$1" rule_id="$2" port="$3"
+    shift 3
+    mkdir -p "$(dirname "$file")"
+    {
+        echo "# Realm健康状态文件"
+        local pair
+        for pair in "$@"; do
+            echo "${rule_id}|${pair%%:*}:${port}|${pair##*:}|0|3|100|0"
         done
     } > "$file"
 }

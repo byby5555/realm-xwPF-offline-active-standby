@@ -153,29 +153,63 @@ _n4_run_round() {
 # ─────────────────────────────────────────────────────────────
 # helper · 判定器（判定器本身就是被测对象之一：恒真 = 假绿）
 # ─────────────────────────────────────────────────────────────
-# 判定器 A：健康状态文件必须**恰好**是期望的那些行
+# 判定器 A：健康状态文件按 **(RULE_ID, TARGET) 组合**逐项一致（**内容式**）
 #   用法：_n4_judge_status <文件> <期望...>；期望格式 "RULE_ID|TARGET|STATUS|FAIL_COUNT"
 #   输出："<PASS|FAIL>\t<说明>"
+#
+#   ★★ 审稿更正（组合键口径）—— 这三条是本判定器现在的全部依据：
+#     ① 「状态文件行数 == 被监控目标数」是**钉份数**、不是不变式 ⇒ **不再拿总行数当判据**。
+#     ② 「同一 target 出现两行」**本身不是缺陷**：两条**不同**规则合法指向同一个后端时，
+#        状态文件**就该有两行**（每条规则一行，各带自己的 RULE_ID）⇒ **不判 FAIL**。
+#        ⇒ 去重必须按 **(RULE_ID, TARGET) 组合**，不能按 target 单字段。
+#     ③ 真正判 FAIL 的只有：**同一条规则（RULE_ID）对同一个 target 出现两行** ⇒ 重复/残留。
+#
+#   ⇒ 本判定器做三件事，**全部是内容式**（不看总行数）：
+#     1) 每个期望组合键**恰好 1 行**且 status/fail_count 一致（缺行 → 判红；同一组合两行 → 判红）；
+#     2) 文件里**没有**不在期望集合中的行（多余行 = 被删规则的残留 = 孤儿行 ⇒ 判红）；
+#     3) 判红原因指到**具体哪个组合键**，不指笼统的「行数」。
 _n4_judge_status() {
     local file="$1"
     shift
-    local rows n_exp
-    rows=$(grep -v '^#' "$file" 2>/dev/null | grep -c . | tr -d ' ')
-    [ -z "$rows" ] && rows=0
-    n_exp=$#
-    if [ "$rows" != "$n_exp" ]; then
-        printf 'FAIL\t状态文件行数 = %s（期望 %s）\n' "$rows" "$n_exp"
-        return 1
-    fi
     local exp id tgt st fc c row status failc
+
+    # ── 第 1 步：多余行（孤儿）检查 —— 必须**排在最前** ──
+    #   理由：缺陷版的特征就是「留下了被删规则的那一行」。
+    #   若先查逐项一致，缺陷版会先命中「status/fail_count 不一致」
+    #   （探测手段差异也会造成这个）→ 判红原因指不到「孤儿」→
+    #   负向对照就变成在证明另一件事（断言与缺陷不对应 = 假证明）。
+    #   ★ 这一步**只查「这个组合键不该存在」**，不碰 status。
+    local allow="" rid rtgt _rest
+    for exp in "$@"; do
+        allow="${allow}${exp%%|*}|$(printf '%s' "${exp#*|}" | cut -d'|' -f1)
+"
+    done
+    if [ -f "$file" ]; then
+        # ★ `|| [ -n "${rid:-}" ]`：末行没有换行符时 read 返回非 0 →
+        #   不带这个守卫的话，**最后一行会被整个漏掉**（少判一个孤儿 = 漏绿）。
+        while IFS='|' read -r rid rtgt _rest || [ -n "${rid:-}" ]; do
+            case "$rid" in ''|'#'*) continue ;; esac
+            if ! printf '%s' "$allow" | grep -qxF "${rid}|${rtgt}"; then
+                printf 'FAIL\t多余的行：%s|%s 不在期望集合内（被删规则的残留 = 孤儿行）\n' "$rid" "$rtgt"
+                return 1
+            fi
+        done < "$file"
+    fi
+
+    # ── 第 2 步：逐个期望组合键 —— 恰好 1 行 + status/fail_count 一致 ──
     for exp in "$@"; do
         id="${exp%%|*}"; tgt=$(printf '%s' "${exp#*|}" | cut -d'|' -f1)
         st=$(printf '%s' "${exp#*|}" | cut -d'|' -f2)
         fc=$(printf '%s' "${exp#*|}" | cut -d'|' -f3)
         c=$(grep -c "^${id}|${tgt//./\\.}|" "$file" 2>/dev/null | tr -d ' ')
         [ -z "$c" ] && c=0
+        if [ "$c" = "0" ]; then
+            printf 'FAIL\t期望的组合键 %s|%s 一行都没有（该规则在状态文件里缺行）\n' "$id" "$tgt"
+            return 1
+        fi
         if [ "$c" != "1" ]; then
-            printf 'FAIL\tRULE_ID=%s TARGET=%s 的记录有 %s 条（期望恰好 1 条）\n' "$id" "$tgt" "$c"
+            printf 'FAIL\t组合键 %s|%s 出现 %s 行（同一 (RULE_ID,TARGET) 出现两行 = 重复/残留）\n' \
+                "$id" "$tgt" "$c"
             return 1
         fi
         row=$(grep "^${id}|${tgt//./\\.}|" "$file" 2>/dev/null | head -1)
@@ -187,7 +221,8 @@ _n4_judge_status() {
             return 1
         fi
     done
-    printf 'PASS\t%s 行与期望逐项一致\n' "$n_exp"
+
+    printf 'PASS\t%s 个组合键与期望逐项一致，且没有多余的（孤儿）行\n' "$#"
     return 0
 }
 
@@ -401,17 +436,23 @@ _n4_prepare_old_tree() {
 # ─────────────────────────────────────────────────────────────
 # 造「机器上已装的脚本包」：冻结态文件 + 把 core.sh 的版本号调旧
 #   （制造「有新版可装」——否则 safe_update_scripts 会直接判「已是最新」什么也不做）
+# ★ 安装目录必须是**产品 xwPF.sh 里写死的那个**（重定向后 = $SBX_ROOT/usr.local.bin）：
+#   更新流程最后一步是拿「刚装上去的 xwPF.sh」做自检（`xwPF.sh --help`），
+#   而它 source 的 lib 目录是**自己文件里写死的 INSTALL_DIR/LIB_DIR**。
+#   装到别处 → 自检找不到 lib → 「新脚本自检失败」→ **自动回滚** → 升级流程白跑。
 _n4_upgrade_site() {
     local site="$1"
+    local inst="$SBX_ROOT/usr.local.bin"
     rm -rf "$site"
-    mkdir -p "$site/install/lib" "$site/install/cmd" "$site/backup" "$site/staging" "$site/lock"
-    cp "$SBX_RUN/xwPF.sh" "$site/install/xwPF.sh" 2>/dev/null
+    mkdir -p "$site/backup" "$site/staging" "$site/lock" "$inst/lib" "$inst/cmd"
+    cp "$SBX_RUN/xwPF.sh" "$inst/xwPF.sh" 2>/dev/null
+    chmod +x "$inst/xwPF.sh" 2>/dev/null
     local f
     for f in "$SBX_RUN"/lib/*.sh; do
         [ -f "$f" ] || continue
-        cp "$f" "$site/install/lib/$(basename "$f")"
+        cp "$f" "$inst/lib/$(basename "$f")"
     done
-    sed -i 's/^SCRIPT_VERSION=".*"/SCRIPT_VERSION="v2.2.0"/' "$site/install/lib/core.sh" 2>/dev/null
+    sed -i 's/^SCRIPT_VERSION=".*"/SCRIPT_VERSION="v2.2.0"/' "$inst/lib/core.sh" 2>/dev/null
 }
 
 # 写升级场景脚本：source 冻结态产品代码 + 假下载源 → 跑 safe_update_scripts
@@ -423,8 +464,8 @@ _n4_write_upgrade_scenario() {
     cat > "$scen" <<'EOS'
 site="$1"
 mirror="$2"
-export INSTALL_DIR="$site/install"
-export LIB_DIR="$site/install/lib"
+export INSTALL_DIR="$SBX_ROOT/usr.local.bin"
+export LIB_DIR="$SBX_ROOT/usr.local.bin/lib"
 export CONFIG_DIR="$SBX_ROOT/realm"
 export UPDATE_BACKUP_DIR="$site/backup"
 export UPDATE_LOCK_DIR="$site/lock"
@@ -448,6 +489,7 @@ update_download_to() {
         echo "DL-MISS: $name" >&2
         return 1
     fi
+    chmod +x "$target" 2>/dev/null
     return 0
 }
 
@@ -622,7 +664,18 @@ case_T86_health_status_rebuilt_atomically_each_round() {
     local rows1
     rows1=$(grep -v '^#' "$status_file" 2>/dev/null | grep -c . | tr -d ' ')
     [ -z "$rows1" ] && rows1=0
-    h_check_eq "2" "$rows1" "第一轮之后：状态文件里两条规则各一行（恰好 2 行）"
+    h_log "第一轮之后的数据行数 = $rows1（仅供参考，不作判据）"
+
+    # ★ 内容式判据（**不再钉「恰好 N 行」** —— 钉份数不是不变式，审稿已撤销这条）：
+    #   不变式 = 「组合键集合 == 期望集合，且每个 (RULE_ID,TARGET) 组合键只有一行」。
+    #   两条规则指向**不同**目标时文件里恰好两行，但那是「恰好」而非「必须恰好」；
+    #   真正要判红的是：某个组合键出现两行（重复），或出现期望集合外的行（孤儿）。
+    local j1
+    j1=$(_n4_judge_status "$status_file" \
+        "1|127.0.0.1:$_N4_PORT_A|healthy|0" \
+        "2|127.0.0.1:$_N4_PORT_B|healthy|0")
+    h_log "第一轮内容式判定: $(printf '%s' "$j1" | cut -f1) —— $(printf '%s' "$j1" | cut -f2-)"
+    h_check_contains "$j1" "PASS" "第一轮之后：两条规则的 (RULE_ID,TARGET) 组合键各恰好一行、状态一致"
 
     # 删掉 rule-2，再跑一轮
     rm -f "$SBX_ROOT/realm/rules/rule-2.conf"
@@ -633,11 +686,11 @@ case_T86_health_status_rebuilt_atomically_each_round() {
 
     j=$(_n4_judge_status "$status_file" "1|127.0.0.1:$_N4_PORT_A|healthy|0")
     h_log "状态判定: $(printf '%s' "$j" | cut -f1) —— $(printf '%s' "$j" | cut -f2-)"
-    h_check_contains "$j" "PASS" "删掉规则后：状态文件里只剩当前规则的行（恰好 1 行、逐项一致）"
+    h_check_contains "$j" "PASS" "删掉规则后：状态文件里只剩当前规则的组合键（逐项一致、无多余行）"
 
-    # 被删规则的那一行必须**消失**
+    # 被删规则的那一行必须**消失**（按 (RULE_ID, TARGET) 组合查，不按 target 单字段）
     local orphan
-    orphan=$(grep -c "2|127.0.0.1:$_N4_PORT_B|" "$status_file" 2>/dev/null | tr -d ' ')
+    orphan=$(grep -c "^2|127.0.0.1:$_N4_PORT_B|" "$status_file" 2>/dev/null | tr -d ' ')
     [ -z "$orphan" ] && orphan=0
     h_check_eq "0" "$orphan" "删掉的规则不能留在状态文件里（孤儿行数 = 0）"
 
@@ -647,16 +700,55 @@ case_T86_health_status_rebuilt_atomically_each_round() {
     h_check_contains "$j" "PASS" "重建后的状态文件：每行都是完整记录、没有半截行、没有半写残留"
 
     # ── 判定器自检（恒真 = 假绿）：造一份带孤儿行的文件 → 判定器必须判红 ──
+    #   ★ mkdir -p：这三个探针文件都写在 $SBX_ROOT/n4/ 下，
+    #     而该目录**只有 _n4_prepare_old_tree / _n4_judge_artifact 才会建**。
+    #     单跑 T86（不走 T85）时目录不存在 → `cat >` 失败 → 探针文件是空的/不存在
+    #     → 判定器读到空文件 → 报「缺行」而不是「孤儿」→ 自检指向了错误的原因。
+    #     ⇒ 写之前必须自己建目录（不能依赖别的用例的副作用）。
+    mkdir -p "$SBX_ROOT/n4"
     local probe_file="$SBX_ROOT/n4/t86_orphan.conf"
     cat > "$probe_file" <<EOF
 # Realm健康状态文件
 1|127.0.0.1:$_N4_PORT_A|healthy|0|3|100|0|12|12
 2|127.0.0.1:$_N4_PORT_B|healthy|0|3|100|0|12|12
 EOF
+    # 存在性断言：探针文件必须真的写出来了（写失败 → 判定器读到空文件 →
+    #   报「缺行」而不是「孤儿」→ 自检指向错误的原因 = 假绿）
+    #   ★ 数**数据行**（排除 # 注释行），不是文件的物理行数。
+    h_check_eq "2" "$(grep -v '^#' "$probe_file" 2>/dev/null | grep -c . | tr -d ' ')" \
+        "判定器自检 · 前置：孤儿行探针文件必须真的写出来（含 2 条数据行）"
     j=$(_n4_judge_status "$probe_file" "1|127.0.0.1:$_N4_PORT_A|healthy|0")
     h_log "孤儿行探针判定: $(printf '%s' "$j" | cut -f1) —— $(printf '%s' "$j" | cut -f2-)"
     h_check_contains "$j" "FAIL" "判定器自检：文件里留着被删规则的孤儿行时判定器必须判红"
-    h_check_contains "$j" "行数" "判定器自检：判红原因指到「行数」"
+    h_check_contains "$j" "孤儿" "判定器自检：判红原因指到「孤儿行」"
+
+    # ── 判定器自检 · 绿的一侧：两条**不同**规则合法指向**同一**后端 ⇒ 状态文件就该有两行
+    #    （每条规则一行，各带自己的 RULE_ID）⇒ **不判 FAIL**（审稿更正②）
+    #    这是「不钉份数、不按 target 单字段去重」这条口径的正面证明：
+    #    旧判定器按「行数 == 期望条数」判 → 这种情况会被误判成 FAIL。
+    local shared="$SBX_ROOT/n4/t86_shared_target.conf"
+    cat > "$shared" <<EOF
+# Realm健康状态文件
+1|127.0.0.1:$_N4_PORT_A|healthy|0|3|100|0|12|12
+2|127.0.0.1:$_N4_PORT_A|healthy|0|3|100|0|12|12
+EOF
+    j=$(_n4_judge_status "$shared" \
+        "1|127.0.0.1:$_N4_PORT_A|healthy|0" \
+        "2|127.0.0.1:$_N4_PORT_A|healthy|0")
+    h_log "同后端双规则判定: $(printf '%s' "$j" | cut -f1) —— $(printf '%s' "$j" | cut -f2-)"
+    h_check_contains "$j" "PASS" "判定器自检 · 绿侧：两条不同规则合法指向同一后端（状态文件两行）必须判绿 —— 不判 FAIL"
+
+    # ── 判定器自检 · 红的一侧：**同一条规则**对**同一个 target** 出现两行 ⇒ 重复 ⇒ 必须判红
+    local dup="$SBX_ROOT/n4/t86_dup_key.conf"
+    cat > "$dup" <<EOF
+# Realm健康状态文件
+1|127.0.0.1:$_N4_PORT_A|healthy|0|3|100|0|12|12
+1|127.0.0.1:$_N4_PORT_A|failed|2|0|100|0|12|12
+EOF
+    j=$(_n4_judge_status "$dup" "1|127.0.0.1:$_N4_PORT_A|healthy|0")
+    h_log "同规则重复行判定: $(printf '%s' "$j" | cut -f1) —— $(printf '%s' "$j" | cut -f2-)"
+    h_check_contains "$j" "FAIL" "判定器自检 · 红侧：同一条规则对同一 target 出现两行（重复/残留）必须判红"
+    h_check_contains "$j" "重复" "判定器自检 · 红侧：判红原因指到「重复」"
 
     # ── 真实缺陷版（n4-pre = f59e389）：它的状态文件**不是**每轮重建 → 判定器必须判红 ──
     local oldtree
@@ -680,27 +772,29 @@ EOF
     j=$(_n4_judge_status "$status_file" "1|127.0.0.1:$_N4_PORT_A|healthy|0")
     h_log "缺陷版 · 判定: $(printf '%s' "$j" | cut -f1) —— $(printf '%s' "$j" | cut -f2-)"
     h_check_contains "$j" "FAIL" "负向对照：缺陷版（$_N4_PRE_SHA）留下孤儿行时，判定器必须判红"
-    h_check_contains "$j" "行数" "负向对照：判红原因指到「行数」"
+    h_check_contains "$j" "孤儿" "负向对照：判红原因指到「孤儿行」"
 }
 
 # ─────────────────────────────────────────────────────────────
 # T87 · 跨轮继承的键 = RULE_ID + 目标地址（组合键）
 # ─────────────────────────────────────────────────────────────
 case_T87_health_status_inheritance_by_target_address() {
-    h_case_begin "T87" "跨轮继承必须用组合键（RULE_ID + 目标地址）：同 ID 新建不继承老 failed；换了 RULE_ID、地址相同也不许拿别人的那行（不串）" \
+    h_case_begin "T87" "跨轮继承必须用组合键（RULE_ID + 目标地址）：同 ID + 不同地址 ⇒ 不继承；不同 ID + 同地址 ⇒ 不串；同 ID + 同地址 ⇒ 必须继承" \
         "沙箱 rules（RULE_ID 连续）+ 冻结态探测端生成物" \
         "删规则 → 新建规则（换 ID / 同地址）→ 跑一轮探测 → 判状态文件" \
-        "同 ID 新建（地址不同）初始 healthy、失败计数 0；换 ID 同地址时新规则不得拿到别人的记录（不串）"
+        "同 ID + 不同地址不继承老 failed；不同 ID + 同地址不拿别人的那行（不串）；同 ID + 同地址必须延续失败计数（继承）"
 
     local j status_file
     status_file="$(_n4_status_file)"
     _n4_listener "$_N4_PORT_A"
+    _n4_listener "$_N4_PORT_B"
 
     # ──────────────────────────────
     # 场景 A（判据 b）：删掉 rule-1，再新建**同 ID**、**不同地址**的 rule-1
     #   ★ RULE_ID 连续：这里只有一条规则，ID=1 → 不会触发 reorder_rule_ids 重排。
     #   ★ 老记录用**新格式**（host:port）→ 与新规则的地址不同 → 不得继承。
     # ──────────────────────────────
+    _n4_listener "$_N4_PORT_B"    # 新规则的地址必须可达：否则失败计数是 1（探测失败），不是继承来的
     _n4_reset_rules
     _n4_make_rule "$SBX_ROOT/realm/rules/rule-1.conf" 1 9501 "127.0.0.1" "$_N4_PORT_A"
     cat > "$status_file" <<EOF
@@ -738,18 +832,47 @@ EOF
 # Realm健康状态文件
 2|127.0.0.1:$_N4_PORT_A|failed|3|0|100|0
 EOF
-    _n4_gen_probe "$SBX_RUN" "$(_n4_probe_script)"
-    _n4_run_round "$(_n4_probe_script)"
-    h_log "场景 B · 第一轮之后: $(grep -v '^#' "$status_file" 2>/dev/null | tr '\n' ' ')"
-
+    # ★ 这里**不再先跑一轮**：老记录的 success_count 必须是 0。
+    #   先跑一轮会把它 +1（1 → 下一轮 2）→ 够 SUCCESS_THRESHOLD(2) →
+    #   触发「恢复」分支 → 状态翻回 healthy → **串的信号被抹掉**（缺陷版看起来像不串）。
     rm -f "$SBX_ROOT/realm/rules/rule-2.conf"
     _n4_make_rule "$SBX_ROOT/realm/rules/rule-1.conf" 1 9502 "127.0.0.1" "$_N4_PORT_A"
     _n4_run_round "$(_n4_probe_script)"
-    h_log "场景 B · 第二轮之后: $(grep -v '^#' "$status_file" 2>/dev/null | tr '\n' ' ')"
+    h_log "场景 B · 换 ID 同地址之后: $(grep -v '^#' "$status_file" 2>/dev/null | tr '\n' ' ')"
 
     j=$(_n4_judge_row_status "$status_file" "1|127.0.0.1:$_N4_PORT_A|healthy")
     h_log "场景 B 判定（当前实现）: $(printf '%s' "$j" | cut -f1) —— $(printf '%s' "$j" | cut -f2-)"
     h_check_contains "$j" "PASS" "场景 B：换了 RULE_ID、地址相同 → 新规则不得拿到别人的那行（不串）"
+
+    # ──────────────────────────────
+    # 场景 C（组合键的另一半方向）：**同 RULE_ID + 同目标地址 ⇒ 必须继承**
+    #   ★ 这一条是「不许过度严格」的护栏：只验「不继承」的话，一个**永远不继承**
+    #     （每轮都把失败计数重置）的实现也能全绿 —— 那是另一种坏，而且更隐蔽。
+    #   判据怎么才能区分「继承了」与「没继承」（两者最后都是 failed）：
+    #     老行 FAIL_COUNT=1，目标**不可达** → 本轮探测失败：
+    #       继承了 → fail_count = 1+1 = **2**（延续老计数）
+    #       没继承 → 老行认不出 → 新行从 0 起 → fail_count = 0+1 = **1**
+    #     ⇒ 断 FAIL_COUNT 恰为 2 就能把两种实现分开（不是恒真断言）。
+    #   ★ 用不可达端口（PORT_C）：这样只动「继承」这一条，探测结果恒为失败。
+    # ──────────────────────────────
+    _n4_reset_rules
+    _n4_make_rule "$SBX_ROOT/realm/rules/rule-1.conf" 1 9501 "127.0.0.1" "$_N4_PORT_C"
+    cat > "$status_file" <<EOF
+# Realm健康状态文件
+1|127.0.0.1:$_N4_PORT_C|failed|1|0|100|100|12|12
+EOF
+    _n4_run_round "$(_n4_probe_script)"
+    h_log "场景 C · 同 ID 同地址再跑一轮之后: $(grep -v '^#' "$status_file" 2>/dev/null | tr '\n' ' ')"
+
+    j=$(_n4_judge_row_status "$status_file" "1|127.0.0.1:$_N4_PORT_C|failed")
+    h_log "场景 C 判定: $(printf '%s' "$j" | cut -f1) —— $(printf '%s' "$j" | cut -f2-)"
+    h_check_contains "$j" "PASS" "场景 C：同 RULE_ID + 同目标地址 ⇒ 状态必须延续（不得每轮重置）"
+
+    local fc_c
+    fc_c=$(grep "^1|127.0.0.1:$_N4_PORT_C|" "$status_file" 2>/dev/null | head -1 | cut -d'|' -f4)
+    [ -z "$fc_c" ] && fc_c="(无)"
+    h_log "场景 C 失败计数 = $fc_c（继承则 1→2；没继承则 0→1）"
+    h_check_eq "2" "$fc_c" "场景 C：同 ID 同地址必须延续失败计数（继承 ⇒ 1+1=2；没继承 ⇒ 0+1=1）"
 
     # ── 负向对照 1 · 缺陷版（inherit-pre = 9dc5b56）：必须**真的串** ──
     #   ★ 存在性断言：health_status_find_row 在这一版才存在；
@@ -773,11 +896,11 @@ EOF
 # Realm健康状态文件
 2|127.0.0.1:$_N4_PORT_A|failed|3|0|100|0
 EOF
-    _n4_run_round "$pre_probe"
+    # ★ 同上：不先跑一轮（success_count 必须留在 0，否则「恢复」会把串的信号抹掉）
     rm -f "$SBX_ROOT/realm/rules/rule-2.conf"
     _n4_make_rule "$SBX_ROOT/realm/rules/rule-1.conf" 1 9502 "127.0.0.1" "$_N4_PORT_A"
     _n4_run_round "$pre_probe"
-    h_log "负向对照 1 · 缺陷版第二轮之后: $(grep -v '^#' "$status_file" 2>/dev/null | tr '\n' ' ')"
+    h_log "负向对照 1 · 缺陷版换 ID 同地址之后: $(grep -v '^#' "$status_file" 2>/dev/null | tr '\n' ' ')"
 
     j=$(_n4_judge_row_status "$status_file" "1|127.0.0.1:$_N4_PORT_A|healthy")
     h_log "负向对照 1 · 判定: $(printf '%s' "$j" | cut -f1) —— $(printf '%s' "$j" | cut -f2-)"
@@ -895,11 +1018,11 @@ EOF
 # Realm健康状态文件
 2|127.0.0.1:$_N4_PORT_A|failed|3|0|100|0
 EOF
-        _n4_run_round "$probe"
+        # ★ 不先跑一轮：老记录的 success_count 必须是 0，否则「恢复」会把串的信号抹掉
         rm -f "$SBX_ROOT/realm/rules/rule-2.conf"
         _n4_make_rule "$SBX_ROOT/realm/rules/rule-1.conf" 1 9502 "127.0.0.1" "$_N4_PORT_A"
         _n4_run_round "$probe"
-        h_log "$t_label · 第二轮之后的状态文件: $(grep -v '^#' "$status_file" 2>/dev/null | tr '\n' ' ')"
+        h_log "$t_label · 换 ID 同地址之后的状态文件: $(grep -v '^#' "$status_file" 2>/dev/null | tr '\n' ' ')"
 
         j=$(_n4_judge_row_status "$status_file" "1|127.0.0.1:$_N4_PORT_A|healthy")
         h_log "$t_label · 判定: $(printf '%s' "$j" | cut -f1) —— $(printf '%s' "$j" | cut -f2-)"

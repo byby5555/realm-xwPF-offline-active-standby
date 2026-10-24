@@ -355,27 +355,27 @@ case_T29_active_standby_six_states() {
     rm -f "$rules"/rule-*.conf
     _make_rule "$rules/rule-1.conf" 8080 "active-standby" "true" "1,0,0" "10.0.0.1,10.0.0.2,10.0.0.3"
 
-    _write_health "$health" 8080 "10.0.0.1:healthy" "10.0.0.2:healthy" "10.0.0.3:healthy"
+    _write_health_for_rule "$health" 1 8080 "10.0.0.1:healthy" "10.0.0.2:healthy" "10.0.0.3:healthy"
     b=$(_gen_balance); h_log "场景1 平时 -> $b"
     h_check_contains "$b" "roundrobin: 1, 0, 0" "场景1 平时"
 
-    _write_health "$health" 8080 "10.0.0.1:failed" "10.0.0.2:healthy" "10.0.0.3:healthy"
+    _write_health_for_rule "$health" 1 8080 "10.0.0.1:failed" "10.0.0.2:healthy" "10.0.0.3:healthy"
     b=$(_gen_balance); h_log "场景2 主挂 -> $b"
     h_check_contains "$b" "roundrobin: 0, 1, 0" "场景2 主挂"
 
-    _write_health "$health" 8080 "10.0.0.1:failed" "10.0.0.2:failed" "10.0.0.3:healthy"
+    _write_health_for_rule "$health" 1 8080 "10.0.0.1:failed" "10.0.0.2:failed" "10.0.0.3:healthy"
     b=$(_gen_balance); h_log "场景3 主+备1挂 -> $b"
     h_check_contains "$b" "roundrobin: 0, 0, 1" "场景3 主+备1挂"
 
-    _write_health "$health" 8080 "10.0.0.1:healthy" "10.0.0.2:failed" "10.0.0.3:healthy"
+    _write_health_for_rule "$health" 1 8080 "10.0.0.1:healthy" "10.0.0.2:failed" "10.0.0.3:healthy"
     b=$(_gen_balance); h_log "场景4 主恢复 -> $b"
     h_check_contains "$b" "roundrobin: 1, 0, 0" "场景4 主恢复（严格切回主）"
 
-    _write_health "$health" 8080 "10.0.0.1:healthy" "10.0.0.2:failed" "10.0.0.3:healthy"
+    _write_health_for_rule "$health" 1 8080 "10.0.0.1:healthy" "10.0.0.2:failed" "10.0.0.3:healthy"
     b=$(_gen_balance); h_log "场景5 备1单挂 -> $b"
     h_check_contains "$b" "roundrobin: 1, 0, 0" "场景5 备1单挂"
 
-    _write_health "$health" 8080 "10.0.0.1:failed" "10.0.0.2:failed" "10.0.0.3:failed"
+    _write_health_for_rule "$health" 1 8080 "10.0.0.1:failed" "10.0.0.2:failed" "10.0.0.3:failed"
     b=$(_gen_balance); h_log "场景6 全挂 -> $b"
     h_check_contains "$b" "roundrobin: 1, 0, 0" "场景6 全挂兜底（不断流）"
 }
@@ -394,24 +394,24 @@ case_T30_exclude_mode_five_states() {
     rm -f "$rules"/rule-*.conf
     _make_rule "$rules/rule-1.conf" 8080 "roundrobin" "true" "1,1,1" "10.0.0.1,10.0.0.2,10.0.0.3"
 
-    _write_health "$health" 8080 "10.0.0.1:healthy" "10.0.0.2:healthy" "10.0.0.3:healthy"
+    _write_health_for_rule "$health" 1 8080 "10.0.0.1:healthy" "10.0.0.2:healthy" "10.0.0.3:healthy"
     n=$(_gen_target_count); h_log "场景7 全健康 -> 目标数 $n"
     h_check_eq "3" "$n" "场景7 全健康 → 3 个目标"
 
-    _write_health "$health" 8080 "10.0.0.1:failed" "10.0.0.2:healthy" "10.0.0.3:healthy"
+    _write_health_for_rule "$health" 1 8080 "10.0.0.1:failed" "10.0.0.2:healthy" "10.0.0.3:healthy"
     n=$(_gen_target_count); h_log "场景8 主挂 -> 目标数 $n"
     h_check_eq "2" "$n" "场景8 主挂 → 剔除后 2 个"
 
-    _write_health "$health" 8080 "10.0.0.1:failed" "10.0.0.2:failed" "10.0.0.3:healthy"
+    _write_health_for_rule "$health" 1 8080 "10.0.0.1:failed" "10.0.0.2:failed" "10.0.0.3:healthy"
     n=$(_gen_target_count); h_log "场景9 主+备1挂 -> 目标数 $n"
     h_check_eq "1" "$n" "场景9 主+备1挂 → 只剩 1 个"
 
-    _write_health "$health" 8080 "10.0.0.1:failed" "10.0.0.2:failed" "10.0.0.3:failed"
+    _write_health_for_rule "$health" 1 8080 "10.0.0.1:failed" "10.0.0.2:failed" "10.0.0.3:failed"
     n=$(_gen_target_count); h_log "场景10 全挂 -> 目标数 $n"
     h_check_eq "1" "$n" "场景10 全挂 → 保留第一个"
 
     _make_rule "$rules/rule-1.conf" 8080 "roundrobin" "false" "1,1,1" "10.0.0.1,10.0.0.2,10.0.0.3"
-    _write_health "$health" 8080 "10.0.0.1:failed" "10.0.0.2:failed" "10.0.0.3:failed"
+    _write_health_for_rule "$health" 1 8080 "10.0.0.1:failed" "10.0.0.2:failed" "10.0.0.3:failed"
     n=$(_gen_target_count); h_log "场景11 failover off -> 目标数 $n"
     h_check_eq "3" "$n" "场景11 failover off → 不过滤，3 个都在"
 }

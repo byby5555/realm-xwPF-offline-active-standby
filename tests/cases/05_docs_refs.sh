@@ -28,8 +28,14 @@
 #   断言的是「**坏情况确实被检出**」，不是「好情况没发生」（后者恒真，等于没断言）。
 
 # 文档来源：冻结态里的 docs/、cmd/、根 README（中英文）
+# ★ 只输出**存在**的路径：cmd/ 已在 2beb7bd 随主备池整块删掉，
+#   把不存在的路径喂给 grep 会让它退出码 2（虽然匹配仍会打印，但那是运气，
+#   换个 grep 变体就可能整个静默）。路径清单必须**与冻结态实际有的目录一致**。
 _doc_sources() {
-    printf '%s\n' "$SBX_SRC/docs" "$SBX_SRC/cmd" "$SBX_SRC/README.md" "$SBX_SRC/README_EN.md"
+    local p
+    for p in "$SBX_SRC/docs" "$SBX_SRC/cmd" "$SBX_SRC/README.md" "$SBX_SRC/README_EN.md"; do
+        [ -e "$p" ] && printf '%s\n' "$p"
+    done
 }
 
 # 符号是否在该文件里定义：函数 `name()` 或变量赋值 `name=`

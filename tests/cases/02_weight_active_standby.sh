@@ -143,7 +143,29 @@ case_T14_active_standby_rule_state() {
         fi
     else
         h_log "产品声明的 CONNECTION_TIMEOUT 默认值 = $ct_def"
-        h_check_file_has "$rule" "CONNECTION_TIMEOUT=\"$ct_def\"" "CONNECTION_TIMEOUT（跟产品声明的默认值）"
+        # ★ 断言方向（Chief 复核口径 + 产品真实契约）：
+        #   产品的 `_ensure_rule_field_default` 是「**缺字段时**补默认值」，**不覆盖已有值**。
+        #   所以「规则里 CONNECTION_TIMEOUT == 产品默认值」这条断言只有在**字段缺失**时才成立
+        #   —— 拿夹具里已写着 CONNECTION_TIMEOUT="3" 的规则去比，必然红，而且红的原因会被
+        #   误读成「产品没写默认值」。分两段验，缺一不可：
+        #     ① 已有值路径（当前规则）：产品**不得**覆盖运维已设的值 → 必须还是 3。
+        #     ② 缺字段路径：把该字段删掉再跑一次 → 产品必须补上**它自己声明**的默认值。
+        #   ★ 期望值仍从产品声明里抽 → 产品改默认值，台架不用改（不会假红）。
+        h_check_file_has "$rule" 'CONNECTION_TIMEOUT="3"' \
+            "CONNECTION_TIMEOUT（已有值时不得被默认值覆盖：夹具写的 3 必须保持 3）"
+
+        # ② 缺字段路径：删掉该字段 → 再跑一次 auto_enable_active_standby
+        sed -i '/^CONNECTION_TIMEOUT=/d' "$rule"
+        _run_in_sandbox '
+            source "$1/lib/core.sh" >/dev/null 2>&1
+            source "$1/lib/rules.sh" >/dev/null 2>&1
+            auto_enable_active_standby 8080 >/dev/null 2>&1
+        ' >/dev/null
+        local ct_after
+        ct_after=$(sed -n 's/^CONNECTION_TIMEOUT="\([0-9]\+\)".*/\1/p' "$rule" 2>/dev/null | head -1)
+        h_log "删掉字段后重跑，规则里的 CONNECTION_TIMEOUT = ${ct_after:-<取不到>}"
+        h_check_file_has "$rule" "CONNECTION_TIMEOUT=\"$ct_def\"" \
+            "CONNECTION_TIMEOUT（缺字段时必须补上产品自己声明的默认值）"
     fi
     h_check_file_has "$rule" 'RECOVERY_COOLDOWN="120"' "RECOVERY_COOLDOWN"
 }
