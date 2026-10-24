@@ -453,7 +453,12 @@ failover_pool_create_direct() {
         fi
     fi
 
-    failover_pool_write_json_direct "$name" "$public_listen" "$primary_addr" "$(IFS=,; echo "${backups[*]}")"
+    # 写配置失败必须当场报错：下面的 echo 会把函数返回码覆盖成 0，
+    # 不检查的话菜单照样打印「已创建主备池」，而配置根本没写进去。
+    if ! failover_pool_write_json_direct "$name" "$public_listen" "$primary_addr" "$(IFS=,; echo "${backups[*]}")"; then
+        echo -e "${RED}写入主备池配置失败${NC}"
+        return 1
+    fi
 
     echo -e "${GREEN}已创建主备池 '$name' (direct 模式, 不走 realm)${NC}"
     echo -e "  公开监听: ${YELLOW}${public_listen}${NC}"
@@ -615,7 +620,13 @@ failover_pool_create() {
     bas_csv="$(IFS=,; echo "${backups[*]}")"
     brs_csv="$(IFS=,; echo "${backup_rule_ids[*]}")"
 
-    failover_pool_write_json "${name}" "${public_listen}" "${primary_internal_port}" "${primary_rule_id}" "${bps_csv}" "${bas_csv}" "${brs_csv}"
+    # 同上：写配置失败必须当场报错，不能被后面的 echo 覆盖返回码。
+    # 注意此模式（realm 回环）在写配置**之前**已经生成过 realm 规则，
+    # 所以失败时提示里要说明可能留下了半成品。
+    if ! failover_pool_write_json "${name}" "${public_listen}" "${primary_internal_port}" "${primary_rule_id}" "${bps_csv}" "${bas_csv}" "${brs_csv}"; then
+        echo -e "${RED}写入主备池配置失败（realm 回环规则可能已生成，请检查后手工清理）${NC}"
+        return 1
+    fi
 
     echo -e "${GREEN}已创建主备池 '${name}'${NC}"
     echo -e "  公开监听: ${YELLOW}${public_listen}${NC}"
