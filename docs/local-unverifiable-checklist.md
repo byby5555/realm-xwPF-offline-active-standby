@@ -88,8 +88,9 @@
 | 权重下发的形态转换 | 走 `lib/rules.sh` 的 `auto_enable_active_standby` | 权重序列出现 0 ⇒ 改写 `BALANCE_MODE` 为 `active-standby` 并打开 `FAILOVER_ENABLED` | 形态**对不对**可验；**规则被不被探**不可验 ⇒ **§3** |
 | `balance` 字符串的拼装格式 | 读 `lib/realm.sh` 的 endpoint 生成段 | 恒为 `"$strategy: $w1, $w2"`；`remote` 恒为 string | **格式**可验；**realm 收不收**不可验 ⇒ **§4** |
 | 状态文件的行生成与跨轮继承 | 读 `lib/health.sh` 的 `health_status_find_row` / `get_health_status_record` | 按 **(RULE_ID, 目标地址) 组合键**继承（两者都要对上，缺一即认不出旧行 → 从零重新计数）；同 target 取第一行 | 逻辑可验；**跨轮 + timer** 不可验 ⇒ **§2** |
+| 读端查状态（决定谁当主） | 读 `lib/realm.sh` 的 `generate_endpoints_from_rules` | 也按 **(RULE_ID, 目标地址) 组合键**查：归属规则 = 该目标在本端口组里归属的那条规则（先声明者为准）⇒ 两条规则共用同一后端时**各看各的那一行**，不塌缩（塌缩 = 真挂了的不切 + 健康的被拖着切，两个方向都误切） | 逻辑可验；**realm 收不收**不可验 ⇒ **§4** |
 | 状态文件的整份原子重建 | 读 `lib/health.sh` 的健康检查体 | 每轮快照旧文件 → 只写本轮被监控目标 → 整份覆盖 | 写法可验；**没被监控 ⇒ 从没重建**不可验 ⇒ **§3** |
-| 删规则后的状态行过户与丢弃 | 读 `lib/rules.sh` 的 `sync_health_status_ids` | 一行状态只被**一条**规则认领：`RULE_ID` 与行首一致者优先，再退到「还没认领过这个目标」的候选；这个目标已经没有规则了 ⇒ 整行丢弃 | 逻辑可验；**真机上跑几轮之后剩什么**不可验 |
+| 删规则后的状态行过户与丢弃 | 读 `lib/rules.sh` 的 `sync_health_status_ids` | 一行状态只被**一条**规则认领：`RULE_ID` 与行首一致者优先，再退到「还没认领过这个目标」的候选；候选**只认被健康检查监控的规则**（`RULE_ROLE=1` + `ENABLED=true` + `FAILOVER_ENABLED=true`）⇒ 没开故障转移的规则不会抢走被监控规则的行（抢走 = 失败状态丢失 = 该切不切）；这个目标已经没有规则了 ⇒ 整行丢弃 | 逻辑可验；**真机上跑几轮之后剩什么**不可验 |
 | `config.json` 形态护栏（不合法就不写） | 读 `lib/realm.sh` 的 `generate_endpoints_from_rules` 与 `lib/core.sh` 的 `realm_config_shape_validate` | 目标地址形态非法 / 策略名形态非法 / 权重个数与目标数不符 ⇒ **不生成、不写盘、返非 0**；写盘走「临时文件 → 校验 → 原子 mv」；应用后 realm 不 active ⇒ 回滚配置并返非 0 | **构造期与写盘前**可验；**realm 收不收**不可验 ⇒ **§4** |
 | 菜单标题与菜单项 | 跑 `lib/ui.sh` 的菜单函数 | 「故障转移管理（规则级）」及三个菜单项可见 | 可验 |
 | 探测间隔与检测耗时 | —— | —— | **不可验** ⇒ **§1** |
