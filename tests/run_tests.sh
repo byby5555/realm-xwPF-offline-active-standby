@@ -24,6 +24,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # 台架版本：台架自身的改动会让旧报告的结论打折，改了台架就 bump
+# v2.7.0：第 8 轮 —— T34 加固（小编 R3-D01 交付后暴露出的两个盲区）
+#         · T34 行号引用从「兜底（文件缺失 / 行号越界才红）」收紧成**硬断言：必须为 0**
+#           —— 旧口径下「行号漂了但仍在文件范围内」是绿的，那正是 D-01 那类静默漂移
+#         · T34 解析器扩展到**英文所有格写法**（`lib/core.sh`'s `REQUIRED_TOOLS`）
+#           —— 旧正则只认中文「的」式 → README_EN.md 的引用完全不被检查
+#         · 配套加「英文写法命中数 ≥ 1」护栏 → 防止「正则扩了但没匹配上」的静默退化
+#         · T34 补**判定器自检**（合成探针树）：两条新断言各有一个反例，
+#           断言的是「坏情况确实被检出」—— 怎么写都绿的断言等于没有断言
 # v2.6.0：第 7 轮收尾（续）—— 跟随产品 N1-R1（去掉裸 host 宽键兜底）
 #         · T51 展示端断言改成「旧格式记录查不到就当无记录、不跨端口污染」
 #           —— 旧口径「按裸 host 兜底命中」会把同 host 另一个端口的记录显示成这条目标的
@@ -45,7 +53,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #         · tests/test_update.sh、tests/test_latency.sh 改薄封装（消除第二入口）
 #         · jq 桩扩能力：数组下标路径、-e 退出码语义、JSON 对象字面量；
 #           并把 `..` 这类「会被静默误解」的语法显式判为不支持
-HARNESS_VERSION="v2.6.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key)"
+HARNESS_VERSION="v2.7.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive)"
 
 # shellcheck source=lib/harness.sh
 . "$SCRIPT_DIR/lib/harness.sh"
