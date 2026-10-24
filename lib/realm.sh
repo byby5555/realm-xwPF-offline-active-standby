@@ -250,32 +250,17 @@ install_realm() {
             echo -e "${RED}✗ 文件不存在，继续在线下载${NC}"
         fi
         
-        ARCH=$(uname -m)
-        # 检测 libc 类型（Alpine 使用 musl）
-        local libc_suffix="gnu"
-        if [ -f /etc/alpine-release ]; then
-            libc_suffix="musl"
+        # 架构型号 → 官方资产名（与更新中心共用 detect_realm_asset_name，不会两边对不上）
+        local asset_name
+        asset_name=$(detect_realm_asset_name)
+        if [ -z "$asset_name" ]; then
+            echo -e "${RED}不支持的CPU架构: $(uname -m)${NC}"
+            echo -e "${YELLOW}支持的架构: x86_64, aarch64, armv7l${NC}"
+            exit 1
         fi
 
-        case $ARCH in
-            x86_64)
-                ARCH="x86_64-unknown-linux-${libc_suffix}"
-                ;;
-            aarch64)
-                ARCH="aarch64-unknown-linux-${libc_suffix}"
-                ;;
-            armv7l|armv6l|arm)
-                ARCH="armv7-unknown-linux-gnueabihf"
-                ;;
-            *)
-                echo -e "${RED}不支持的CPU架构: ${ARCH}${NC}"
-                echo -e "${YELLOW}支持的架构: x86_64, aarch64, armv7l${NC}"
-                exit 1
-                ;;
-        esac
-
-        DOWNLOAD_URL="https://github.com/zhboner/realm/releases/download/${LATEST_VERSION}/realm-${ARCH}.tar.gz"
-        echo -e "${BLUE}目标文件: realm-${ARCH}.tar.gz${NC}"
+        DOWNLOAD_URL="https://github.com/zhboner/realm/releases/download/${LATEST_VERSION}/${asset_name}"
+        echo -e "${BLUE}目标文件: ${asset_name}${NC}"
 
         local file_path="$(pwd)/realm.tar.gz"
         local sources=(

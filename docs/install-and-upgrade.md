@@ -221,6 +221,45 @@ bash /usr/local/bin/xwPF.sh
 
 ## 4. 升级
 
+### 4.0 更新中心（推荐）
+
+主菜单 `9. 检查更新 / 安全更新`（`lib/ui.sh` 的 `show_menu`）→ `update_center_menu`
+（`lib/update.sh` 的 `update_center_menu`）：
+
+```
+=== 版本对照 ===
+  realm 主程序  v2.9.3  → v2.9.6
+    架构型号: realm-x86_64-unknown-linux-gnu.tar.gz
+  脚本包       v2.2.1  → v2.2.1
+```
+
+能查能升的东西：
+
+| 对象 | 当前版本从哪来 | 最新版本从哪来 | 更新动作 |
+|------|----------------|----------------|----------|
+| realm 主程序 | `realm --version` | GitHub `releases/latest` 的 `tag_name` | `safe_update_realm`（`lib/update.sh`） |
+| 脚本包 | `lib/core.sh` 的 `SCRIPT_VERSION` | 远端 `lib/core.sh` 的 `SCRIPT_VERSION` | `safe_update_scripts`（`lib/update.sh`） |
+| 架构型号 | `detect_realm_asset_name`（`lib/core.sh`） | 同左 | CPU 架构 + libc（gnu/musl）→ 官方资产名 |
+
+**安全更新的五条纪律**（`lib/update.sh`）：
+
+1. **先下载到 staging，全部校验通过才动现有文件**
+   → 下载中断时现有文件一个字节都没被碰过，不会出现「半新半旧」的脚本
+2. **更新前备份**到 `/usr/local/bin/.xwpf-backup/<类型>-<时间戳>/`，保留最近 5 份
+   （`update_backup_dir_create` / `update_backup_file`）
+3. **sha256 校验**：realm 安装包按 GitHub release asset 的 `digest` 校验
+   （`update_realm_asset_digest`），对不上直接拒绝安装
+4. **更新后验证**：新二进制要能执行**且版本号与目标一致**、脚本要能正常启动；
+   验证不过自动回滚（`update_restore_backup`），并把服务恢复到更新前的状态
+5. **失败不 exit 整个脚本** → 回到菜单
+
+并发保护：更新期间用 `mkdir` 原子锁（`update_lock_acquire`），进程被 kill 留下的
+陈旧锁会自动识别并接管。
+
+> 脚本包更新会替换**正在运行的** `xwPF.sh`。bash 是按需读取脚本文件的，
+> 所以更新完成后必须退出当前进程（`update_center_menu` 负责 `exit`），
+> 提示「重新运行 pf 后生效」。
+
 ### 4.1 升级脚本
 
 ```bash

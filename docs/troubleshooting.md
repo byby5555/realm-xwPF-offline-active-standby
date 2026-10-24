@@ -477,3 +477,36 @@ journalctl -u realm-health-check.service -n 50 --no-pager
 ```
 
 > ⚠️ 贴日志前请自行检查里面有没有真实服务器地址、内网 IP 或敏感信息。
+
+---
+
+## 11. 更新失败
+
+更新中心（主菜单 `9. 检查更新 / 安全更新`）失败时，**现有版本不会被破坏** ——
+先看它属于哪一类：
+
+| 提示 | 原因 | 怎么办 |
+|------|------|--------|
+| `sha256 校验不通过，拒绝安装` | 下载到的包与上游对不上（下载损坏 / 代理劫持） | 换个网络或加速源重试；**不要**手工解压安装 |
+| `新二进制无法执行或不是有效程序` | 架构不匹配（armv7 拿了 x86_64 的包） | 检查 `detect_realm_asset_name` 推出来的资产名与 `uname -m` 是否匹配 |
+| `新二进制版本与目标不符` | 拿到的不是目标版本（代理返回了旧包） | 换个源重试 |
+| `新版本启动失败，自动回滚` | 新版 realm 起不来（配置不兼容等） | 已自动回滚到旧版本；看 `journalctl -u realm -n 50` 定位原因 |
+| `下载 xxx 失败，现有文件未改动` | 网络/代理问题 | 现有文件完好，直接重试即可 |
+| `语法检查失败: xxx` | 下载到的脚本不完整 | 现有文件未动，重试 |
+| `另一个更新进程正在运行` | 有人正在更新 | 等它结束；进程被 kill 留下的陈旧锁会自动接管 |
+| `获取上游最新版本失败` | 拿不到 GitHub release 信息 | 检查网络；脚本会退回解析 release 页面 |
+
+### 手工回滚
+
+更新前的备份都在 `/usr/local/bin/.xwpf-backup/`（保留最近 5 份）：
+
+```bash
+ls -1dt /usr/local/bin/.xwpf-backup/*/ | head
+# 例如把 realm 回滚到某一份
+cp -p /usr/local/bin/.xwpf-backup/realm-20261024-120000/usr/local/bin/realm /usr/local/bin/realm
+chmod +x /usr/local/bin/realm
+systemctl restart realm
+```
+
+脚本包的回滚同理（把 `scripts-时间戳/` 里的文件拷回原位）。
+

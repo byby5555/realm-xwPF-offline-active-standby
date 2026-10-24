@@ -98,6 +98,40 @@ wget -qO- https://v6.gh-proxy.org/https://raw.githubusercontent.com/byby5555/rea
 ```
 If the mirror is down, retry a few times or switch to another proxy with built-in acceleration.
 
+### Check & Safe-Update (built into the menu)
+
+The main menu's **`9. 检查更新 / 安全更新`** opens the update center:
+
+```bash
+sudo pf
+```
+
+```
+=== 版本对照 ===
+  realm 主程序  v2.9.3  → v2.9.6
+    架构型号: realm-x86_64-unknown-linux-gnu.tar.gz
+  脚本包       v2.2.1  → v2.2.1
+
+1. 全部安全更新（脚本包 + realm 主程序）
+2. 只更新 realm 主程序
+3. 只更新脚本包
+4. 重新检查版本
+0. 返回主菜单
+```
+
+A "safe update" never leaves the machine in a broken state:
+
+1. **Everything is downloaded to a staging area and fully verified before any existing file is touched** —
+   an interrupted download can never leave a half-updated script set
+2. **The current version is backed up** to `/usr/local/bin/.xwpf-backup/` (last 5 kept)
+3. **sha256 verification** — the realm package is checked against the GitHub release digest; a mismatch aborts the install
+4. **Post-update verification** — the new binary must run and report the expected version, the scripts must start
+   cleanly; if not, the update is **rolled back automatically**
+5. **Failures never exit the whole script** — you land back in the menu with the service in its previous state
+
+CPU architecture is handled too: the update center picks the official package matching the current
+architecture and libc (gnu / musl).
+
 ### One-Click Uninstall (built into the menu)
 
 Once installed, the main menu ships with an **uninstall** option:

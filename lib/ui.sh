@@ -934,6 +934,7 @@ show_menu() {
         echo -e "${BLUE}6.${NC} 端口流量狗（统计端口流量）"
         echo -e "${BLUE}7.${NC} 中转网络链路测试"
         echo -e "${RED}8.${NC} 卸载服务"
+        echo -e "${BLUE}9.${NC} 检查更新 / 安全更新"
         echo -e "${YELLOW}0.${NC} 退出"
         echo ""
 
@@ -976,6 +977,10 @@ show_menu() {
                 check_dependencies
                 uninstall_realm
                 read -p "按回车键继续..."
+                ;;
+            9)
+                # 更新中心：查版本 + 安全更新（备份/校验/验证/回滚）
+                update_center_menu
                 ;;
             0)
                 echo -e "${BLUE}感谢使用xwPF 网络转发管理脚本！${NC}"

@@ -71,11 +71,14 @@ BLUE='\033[0;34m'
 WHITE='\033[1;37m'
 NC='\033[0m'
 
-REALM_PATH="/usr/local/bin/realm"
-CONFIG_DIR="/etc/realm"
+REALM_PATH="${REALM_PATH:-/usr/local/bin/realm}"
+CONFIG_DIR="${CONFIG_DIR:-/etc/realm}"
 CONFIG_PATH="${CONFIG_DIR}/config.json"
 SYSTEMD_PATH="/etc/systemd/system/realm.service"
 RULES_DIR="${CONFIG_DIR}/rules"
+# 安装目录（xwPF.sh 会先定义 INSTALL_DIR，这里给默认值，测试可注入）
+INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
+LIB_DIR="${LIB_DIR:-${INSTALL_DIR}/lib}"
 # 健康状态文件：故障转移的探测结果落盘处（主备切换据此翻转权重）
 # 用变量统一，避免各处硬编码路径不一致（lib/rules.sh 之前引用过未定义的 $HEALTH_STATUS_FILE）
 HEALTH_STATUS_FILE="${HEALTH_STATUS_FILE:-${CONFIG_DIR}/health/health_status.conf}"
@@ -204,6 +207,41 @@ detect_system() {
         echo -e "${RED}错误: 未找到支持的 init 系统${NC}"
         exit 1
     fi
+}
+
+# 按当前 CPU 架构与 libc 推导 realm 官方 release 的安装包名（资产名）
+# 架构「型号」迭代时只改这一处：安装与更新共用同一份映射，不会对不上
+#   x86_64  → realm-x86_64-unknown-linux-{gnu|musl}.tar.gz
+#   aarch64 → realm-aarch64-unknown-linux-{gnu|musl}.tar.gz
+#   armv7   → realm-armv7-unknown-linux-{gnueabihf|musleabihf}.tar.gz
+# 取不到映射时返回空（调用方负责报错）
+detect_realm_asset_name() {
+    local arch libc_suffix="gnu"
+    arch=$(uname -m 2>/dev/null)
+
+    # Alpine 用 musl，其余用 gnu
+    if [ -f /etc/alpine-release ]; then
+        libc_suffix="musl"
+    fi
+
+    case "$arch" in
+        x86_64|amd64)
+            echo "realm-x86_64-unknown-linux-${libc_suffix}.tar.gz"
+            ;;
+        aarch64|arm64)
+            echo "realm-aarch64-unknown-linux-${libc_suffix}.tar.gz"
+            ;;
+        armv7l|armv6l|arm)
+            if [ "$libc_suffix" = "musl" ]; then
+                echo "realm-armv7-unknown-linux-musleabihf.tar.gz"
+            else
+                echo "realm-armv7-unknown-linux-gnueabihf.tar.gz"
+            fi
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
 }
 
 # 统一包安装分发
