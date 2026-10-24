@@ -69,31 +69,35 @@ detect_virtualization() {
 
 
 # 统一下载函数
+# 统一「下载到临时文件 → 校验 → 原子替换」：
+# 禁止对已存在的目标文件做断点续传（curl -C - / wget -c 只校验 HTTP Range 的起点，
+# 不校验本地内容与远端是否一致，远端变长时会把新版本追加到旧内容后面，
+# 生成大小正常但内容损坏的文件）
 download_from_sources() {
     local url="$1"
     local target_path="$2"
     local dl_connect_timeout="${DOWNLOAD_CONNECT_TIMEOUT:-15}"
+    local tmp="${target_path}.tmp.$$"
 
-    # 断点续传优先：若存在部分文件则继续下载
-    if [ -f "$target_path" ] && [ -s "$target_path" ]; then
-        if curl -fL --retry 8 --retry-delay 2 --connect-timeout "$dl_connect_timeout" --max-time 0 -C - "$url" -o "$target_path"; then
-            echo -e "${GREEN}✓ 下载成功(断点续传)${NC}" >&2
-            return 0
-        fi
-    fi
+    rm -f "${target_path}.tmp" "$tmp"
 
     # 全量下载（带重试）
-    if curl -fL --retry 8 --retry-delay 2 --connect-timeout "$dl_connect_timeout" --max-time 0 "$url" -o "$target_path"; then
+    if curl -fL --retry 8 --retry-delay 2 --connect-timeout "$dl_connect_timeout" --max-time 0 "$url" -o "$tmp" && [ -s "$tmp" ]; then
+        mv -f "$tmp" "$target_path"
         echo -e "${GREEN}✓ 下载成功${NC}" >&2
         return 0
     fi
 
-    # wget 兜底，同样支持断点续传
-    if wget -c --tries=10 --timeout=30 -O "$target_path" "$url"; then
-        echo -e "${GREEN}✓ 下载成功(wget断点续传)${NC}" >&2
+    rm -f "$tmp"
+
+    # wget 兜底
+    if wget --tries=10 --timeout=30 -O "$tmp" "$url" && [ -s "$tmp" ]; then
+        mv -f "$tmp" "$target_path"
+        echo -e "${GREEN}✓ 下载成功(wget)${NC}" >&2
         return 0
     fi
 
+    rm -f "$tmp"
     echo -e "${RED}✗ 下载失败${NC}" >&2
     return 1
 }

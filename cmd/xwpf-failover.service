@@ -1,6 +1,6 @@
 [Unit]
 Description=xwpf-failover — active/passive TCP failover proxy (xwPF)
-Documentation=https://github.com/byby5555/realm-xwPF-offline
+Documentation=https://github.com/byby5555/realm-xwPF-offline-active-standby
 After=network.target realm.service
 Wants=realm.service
 

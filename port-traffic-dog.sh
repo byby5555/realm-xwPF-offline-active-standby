@@ -18,7 +18,11 @@ readonly NC='\033[0m'
 # 网络超时设置
 readonly SHORT_CONNECT_TIMEOUT=5
 readonly SHORT_MAX_TIMEOUT=7
-readonly SCRIPT_URL="https://raw.githubusercontent.com/zywe03/realm-xwPF/main/port-traffic-dog.sh"
+# 脚本/模块下载超时（文件较大，SHORT_MAX_TIMEOUT 秒不够，必须单独放宽）
+readonly DOWNLOAD_CONNECT_TIMEOUT=15
+readonly DOWNLOAD_MAX_TIMEOUT=180
+# 自更新地址必须指向本 fork，否则更新后会被上游版本覆盖且无法自愈
+readonly SCRIPT_URL="https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-active-standby/main/port-traffic-dog.sh"
 readonly SHORTCUT_COMMAND="dog"
 
 detect_system() {
@@ -2342,15 +2346,36 @@ import_config() {
 }
 
 # 统一下载函数
+# 统一「下载到 .tmp → 校验 → 原子替换」：
+# -f 让 404 等错误响应直接失败（否则错误页面会被当成内容保存下来）
+# 下载失败时清理临时文件，不留半截文件在目标路径
 download_with_sources() {
     local url=$1
     local output_file=$2
+    local tmp_file="${output_file}.tmp"
 
-    if curl -sL --connect-timeout $SHORT_CONNECT_TIMEOUT --max-time $SHORT_MAX_TIMEOUT "$url" -o "$output_file" 2>/dev/null; then
-        if [ -s "$output_file" ]; then
+    rm -f "$tmp_file"
+
+    # curl 优先：带重试，max-time 按大文件放宽
+    if curl -fL --retry 3 --retry-delay 2 --connect-timeout $DOWNLOAD_CONNECT_TIMEOUT --max-time $DOWNLOAD_MAX_TIMEOUT "$url" -o "$tmp_file" 2>/dev/null && [ -s "$tmp_file" ]; then
+        if mv -f "$tmp_file" "$output_file"; then
             echo -e "${GREEN}下载成功${NC}"
             return 0
         fi
+        rm -f "$tmp_file"
+    else
+        rm -f "$tmp_file"
+    fi
+
+    # wget 兜底
+    if wget -q --tries=3 --timeout=$DOWNLOAD_CONNECT_TIMEOUT -O "$tmp_file" "$url" 2>/dev/null && [ -s "$tmp_file" ]; then
+        if mv -f "$tmp_file" "$output_file"; then
+            echo -e "${GREEN}下载成功(wget)${NC}"
+            return 0
+        fi
+        rm -f "$tmp_file"
+    else
+        rm -f "$tmp_file"
     fi
 
     echo -e "${RED}下载失败${NC}"
@@ -2358,23 +2383,28 @@ download_with_sources() {
 }
 
 # 下载通知模块
+# 逐文件从本 fork 仓库 raw 下载并原子替换：
+# 禁止 rm -rf 整个目录——上游仓库没有 wecom.sh，整目录覆盖会静默删掉企业微信通知模块
 download_notification_modules() {
     local notifications_dir="$CONFIG_DIR/notifications"
-    local temp_dir=$(mktemp -d)
-    local repo_url="https://github.com/zywe03/realm-xwPF/archive/refs/heads/main.zip"
+    local base="https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-active-standby/main/notifications"
+    local n tmp
 
-    # 下载解压复制清理：每次都覆盖更新确保版本一致
-    if download_with_sources "$repo_url" "$temp_dir/repo.zip" &&
-       (cd "$temp_dir" && unzip -q repo.zip) &&
-       rm -rf "$notifications_dir" &&
-       cp -r "$temp_dir/realm-xwPF-main/notifications" "$notifications_dir" &&
-       chmod +x "$notifications_dir"/*.sh; then
-        rm -rf "$temp_dir"
-        return 0
-    else
-        rm -rf "$temp_dir"
-        return 1
-    fi
+    mkdir -p "$notifications_dir"
+
+    for n in telegram.sh wecom.sh; do
+        tmp="${notifications_dir}/${n}.tmp"
+        rm -f "$tmp"
+        if ! download_with_sources "$base/$n" "$tmp" || [ ! -s "$tmp" ]; then
+            # 下载失败只清理临时文件，保留已有模块
+            rm -f "$tmp"
+            return 1
+        fi
+        chmod +x "$tmp"
+        mv -f "$tmp" "${notifications_dir}/${n}"
+    done
+
+    return 0
 }
 
 # 安装(更新)脚本
