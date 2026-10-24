@@ -1,16 +1,18 @@
 # 被测产物基线快照（冻结点机制）
 repo        : /c/Users/liwend/.minimax-agent-cn/projects/realm-xwPF-offline-active-standby
-BASE_SHA    : 1f98d4472f61c13c705378ffbdf89041502af94a
-BASE_SHA 全 : 1f98d4472f61c13c705378ffbdf89041502af94a
-BASE 标题   : Sat Oct 24 16:04:06 2026 +0800 docs(审稿): 第 3 轮崩溃循环复核报告入库（N2 修复方向 + 定量更正）
-harness     : v2.6.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key)
-time        : 2026-10-24 16:04:44 +0800
-sandbox     : /tmp/xwpf-sbx.nlMRp1
+BASE_SHA    : ed7a5bd37798b6473613fab8a83d15064fdbbdd1
+BASE_SHA 全 : ed7a5bd37798b6473613fab8a83d15064fdbbdd1
+BASE 标题   : Sat Oct 24 16:36:34 2026 +0800 test(台架): 第 8 轮 —— T34 加固（行号引用硬断言 0 + 英文所有格写法 + 判定器自检）
+harness     : v2.7.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive)
+time        : 2026-10-24 16:37:10 +0800
+sandbox     : /tmp/xwpf-sbx.a4fTd6
 
 --- 当前工作区 HEAD（仅供对照，不作为被测产物）---
-head        : 1f98d4472f61c13c705378ffbdf89041502af94a
+head        : ed7a5bd37798b6473613fab8a83d15064fdbbdd1
 
 --- git status --porcelain（跑批时刻的工作区状态）---
+ M tests/BASELINE-round7.md
+?? reports/round3-vps-live-verification.md
 
 --- sha256（冻结态原始 blob = 本次被测产物，git show $BASE_SHA:<path>）---
 5ff152f64acc20af1b741b9c06e472ea498b155e17c41922fba78473b3d8fb2b  README.md
@@ -49,14 +51,14 @@ fda683c526ae711bb954f9ae8cdae450704b91fe57b95cdf19952f92634cfde5  tests/BASELINE
 b604059b7ba859641aaa15f70c39fec1557163af3d62b45b0a50cce51aefcc8f  tests/BASELINE-round5.md
 854261f9edff00b5cd8a47f3beddc7f1c8be5f443566e38eb939164c27e37c01  tests/BASELINE-round6.md
 b30c362d843d59b49f3265221c4bb3b43007b769af7dc759a3f69828887cdb3b  tests/BASELINE-round7.md
-246a120ea5e21047cc8a23176109c990c8bb06f0df24487a7609c4928e6caad6  tests/README.md
-2042361880ca1d2d6460fb98b2f44023f3e64e700d86c16f812d29e1eabaf988  tests/TEST-HARNESS.md
+8afd4250577ca8e16ee0ff5328760b744c2771014fe7433629155feac9ee718d  tests/README.md
+a73313b7ab2a1e40ced84b234d14361d1eca49a498e492f0e467d126a762fdd6  tests/TEST-HARNESS.md
 dda838f2fe10fca98e88020697b877582fe2c0980c067a3669717b4872c5002e  tests/cases/00_common.sh
 ee20273ad38a9077671d83c6b69007f382ff22d1a7dff698b613790f2f449fe1  tests/cases/01_static_contract.sh
 c202ae688d4f1b44374407b1ca95c2d65e9be2fe72c7a27c6dcb9847ffca73a4  tests/cases/02_weight_active_standby.sh
 324e1f152d66cadee5d000a1670e7833f52cfa913708c20f1e476db1a7a64269  tests/cases/03_failover_runtime.sh
 35716319686504dd51f3d429d929fbfd826a349cfab7b43ff1e2449e7a45b013  tests/cases/04_legacy_merged.sh
-e1986d407129f31abe23c75cb205b5406eae5cb0983de38fc5ca5698ed796b49  tests/cases/05_docs_refs.sh
+cf0c577beaeaf33b17acfdbc07cc4f295663aafb8481a7c72de758ad6e111a4a  tests/cases/05_docs_refs.sh
 2a1888918fa2df658c4bbf7f66b929acc8efcfd24477c6d084457707ea7698b1  tests/cases/06_recent_behaviours.sh
 53f13dc31d158b1c90d48039a0200e5e863b5f477084e4b029c63a393e5ba5d8  tests/cases/07_commit_message_contract.sh
 547e9d96580a684564e3c9806d1e1b448069d56d091285faf1f81fa87a69df36  tests/cases/08_weight_index_and_priority.sh
@@ -66,7 +68,7 @@ a2149eb33af2239d88acacee16d739c681c6df536feed63e1647cc604a308788  tests/cases/10
 12985c17da26af1f348f1997a5d0c6c7f61e5d7a543126fbcc25877996cdbd77  tests/cases/12_health_target_scope.sh
 2e52e1a92f6edea7f487e72b879dbdd20369d0cf0a3541b04418a2d528c75141  tests/lib/harness.sh
 b8946df65e1900e342ee42683bfb9372722c1e157e326b55ffccc635634490ca  tests/lib/sandbox.sh
-650074de5af9cb6fed23d0a00da4cd7f78565060293ea38dce8355659b073c1f  tests/run_tests.sh
+320bc1714896df8e7846aa378421454f6d030c8ab579389f83e751fe252f9285  tests/run_tests.sh
 7cd44123187c9521f6b9fdf84160c1ff1d70e153756936aa2a085e13093fe072  tests/shims/jq_impl.py
 1d6de139b630373bcaec8f47073ecd2e7faae576068b18599bc87f62baf858cf  tests/test_active_standby.sh
 9390ec654caa0cafef9b8d65f55743bf8aa627eb48a544caeebb7c11bce31e4d  tests/test_connectivity.sh

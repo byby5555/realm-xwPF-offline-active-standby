@@ -11,9 +11,9 @@
 >    —— 台架两条断言更新到新口径，并补上 N1 真正触发的形态（同一端口组内、同 host 不同端口）。
 >    上表里的冻结点与结果以**最终那次实测**为准；本文件是这一轮工作的完整记录。
 >
-> > 指纹清单（[`tests/baseline-manifest.txt`](./baseline-manifest.txt)）里 `harness` 行写的是 `v2.5.0`：
-> > 那是**那次实测当时**的台架版本（实测产物不手工改）。此后只把版本串 bump 到 `v2.6.0`
-> > —— **纯字符串、无行为变化**；指纹清单里每个被测文件的 sha256 仍然有效。
+> > 指纹清单（[`tests/baseline-manifest.txt`](./baseline-manifest.txt)）指向的实测冻结点是 `ed7a5bd`
+> > （`harness` 行 `v2.7.0`）—— 报告与指纹**指向同一次实测**，不出现「报告说 A、指纹说 B」。
+> > 上一版（`1f98d44` / `v2.6.0`）的 52/52 结论同样成立：那之后**产品代码零变化**，只动了台架与报告。
 
 ---
 
@@ -21,15 +21,15 @@
 
 | 项 | 值 |
 |----|----|
-| **冻结点 BASE_SHA** | `805dc5ef92b9c2296e953220538274ae4cf22f00`（短号 `805dc5e`） |
-| 冻结点标题 | `test(台架): 第 7 轮收尾 —— 跟随健康状态 TARGET 口径变更（host:port）` |
-| **台架版本** | `v2.5.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport)` |
+| **冻结点 BASE_SHA** | `ed7a5bd37798b6473613fab8a83d15064fdbbdd1`（短号 `ed7a5bd`）—— **指纹清单指向的实测冻结点** |
+| 冻结点标题 | `test(台架): 第 8 轮 —— T34 加固（行号引用硬断言 0 + 英文所有格写法 + 判定器自检）` |
+| **台架版本** | `v2.7.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive)` |
 | 产物来源 | `git show $BASE_SHA:<path>`（**不读工作区**） |
 | **产物指纹** | [`tests/baseline-manifest.txt`](./baseline-manifest.txt) |
-| 跑批命令 | `bash tests/run_tests.sh --base-sha 805dc5e --repeat 3` |
-| **结果** | **总计 52 条，通过 52，失败 0** |
-| **多轮一致性** | **3 轮结果向量逐字符一致** |
-| **门禁退出码** | **0** |
+| 跑批命令 | `bash tests/run_tests.sh --base-sha ed7a5bd` |
+| **结果** | **总计 52 条，通过 52，失败 0**（沙箱 `/tmp/xwpf-sbx.a4fTd6` 逐条核对：52 条用例的 `.fails` **全部为空**） |
+| **多轮一致性** | 台架换版（v2.7.0）后为 **1 轮实测**（同一台架在 `1f98d44` 上亦 52/52、退出码 0）；v2.6.0 时代的 3 轮逐字符一致结论见 0.1 |
+| **门禁退出码** | **0**（v2.7.0 台架 @ `1f98d44` 的完整实测；@ `ed7a5bd` 那轮 52 条全跑完、汇总行未落盘，故以沙箱证据为准） |
 | 越界残留 | **0 处** |
 
 **结果向量（× 3 轮，逐字符相同）：**
@@ -37,6 +37,20 @@
 ```
 T01=PASS;T02=PASS;…;T51=PASS;T52=PASS;
 ```
+
+### 0.1 阿测的独立复跑与复核（同一台架、同一份产品代码）
+
+指纹清单指向的 `1f98d44` 这轮由小编实测并提交指纹（提交 `318fb02`）。阿测**不采信转述**，自己做了两件事：
+
+| 动作 | 冻结点 | 命令 | 结果 | 证据 |
+|------|--------|------|------|------|
+| **独立复跑 3 轮** | `63d9813` | `bash tests/run_tests.sh --base-sha 63d9813 --repeat 3` | **52/52 全绿**、**3 轮结果向量逐字符一致**、**退出码 0**、**越界残留 0 处** | 沙箱 `/tmp/xwpf-sbx.3q41lY`（`cases/` 下每条用例的 stdout / log / notes / fails / meta） |
+| **复核 `1f98d44` 那轮** | `1f98d44` | 直接读用例产物，不重跑 | 52 条用例的 `.fails` **全部为空**（0 条有失败记录） | 沙箱 `/tmp/xwpf-sbx.nlMRp1/cases/` |
+
+> **为什么两个冻结点都算数**：产品代码在 `63d9813` → `1f98d44` → `318fb02` 之间**零变化**
+> （`git diff --name-only 63d9813 318fb02 -- lib cmd docs notifications xwPF.sh xwFailover.sh xw_realm_OCR.sh port-traffic-dog.sh speedtest.sh README.md README_EN.md` 输出为空），
+> 两处台架版本都是 `v2.6.0`。变的只有 `reports/`（审稿报告入库）与指纹文件本身 ——
+> 这两个都不在被测行为路径上，所以两个冻结点的 52/52 对**当前树**同样成立。
 
 ---
 
@@ -267,7 +281,7 @@ T30 的「failover off → 不过滤」场景里读侧按端口组扫**所有**�
 
 ## 6. 与本轮并行发生的产品改动（由小编提交）
 
-跑批期间工作区被并行改动，**冻结点因此重取过三次**（本轮最终跑批冻结点 = `805dc5e`）：
+跑批期间工作区被并行改动，**冻结点因此重取过多次**（指纹清单指向的实测冻结点 = `ed7a5bd`）：
 
 | 提交 | 内容 | 对台架的影响 |
 |------|------|--------------|
@@ -277,8 +291,13 @@ T30 的「failover off → 不过滤」场景里读侧按端口组扫**所有**�
 | `bfc99d3` | **N1-R1**：去掉裸 host 宽键兜底；认不出归属 → 当无记录；消费端与展示端的宽键回退全去掉 | **台架两条断言按新口径改写**（T51 展示端不再兜底、T52「认不出归属 → 当无记录」）；T52 补上 N1 真正触发的形态（同端口组同 host 不同端口）；详见 4.3 / 4.4 |
 
 | `68f19cc` | 菜单侧取健康记录时改正过时注释（docs only） | 无行为影响；产品侧最后一次变更 |
-| `805dc5e` | **台架提交**（只改 `tests/`，不动产品代码） | 本轮台架 11 个文件入库；最终跑批冻结点取这里（同时含产品代码与台架） |
-> 五处产品改动都在冻结点 `805dc5e` 里，**报告与结论只对 `805dc5e` 成立**。
+| `805dc5e` | **台架提交**（只改 `tests/`，不动产品代码） | 本轮台架 11 个文件入库；在这一版上已跑出 52/52 全绿 |
+| `63d9813` | 台架版本 bump v2.6.0 + 指纹/报告续写（只改 `tests/`，不动产品代码） | 台架 bump 之后复跑：52/52 全绿、3 轮结果向量逐字符一致、退出码 0（阿测实测，见 0.1） |
+| `1f98d44` | 审稿的第 3 轮崩溃循环复核报告入库（只加 `reports/`，不动产品代码） | 入库后重测仍 52/52，指纹刷新为这一版（提交 `318fb02`） |
+| `318fb02` | 产物指纹刷新到 `1f98d44`（只改 `tests/`，不动产品代码） | 报告与指纹同源的那一笔 |
+| `ed7a5bd` | **台架 v2.7.0**：T34 加固（行号引用硬断言 0 + 英文所有格写法 + 判定器自检） | **指纹清单指向的实测冻结点**：换台架后复测 52/52，指纹刷新为这一版 |
+> 五处产品改动都在冻结点 `ed7a5bd` 里，**报告与结论对 `ed7a5bd` 成立**；
+> 产品代码在 `63d9813` → `1f98d44` → `318fb02` → `ed7a5bd` 之间**零变化** → 对当前树同样成立（见 0.1）。
 > SHA 一变，旧结论作废必须重跑。
 
 ---
@@ -308,7 +327,10 @@ BASE_SHA=<sha> bash tests/run_tests.sh --repeat 3 # 正式跑批建议连跑 3 �
 | 第 6 轮 | `b9b4c5e` | v2.3.0 | 40/40 ✅ 全绿 |
 | 第 7 轮 | `f730c8b` | v2.4.0 | 51/51 ✅ 全绿（补盲区 + T32 形态无关化） |
 | 第 7 轮·收尾 | `a7e23fc` | v2.5.0 | 51/51 ✅ 全绿（跟随 TARGET 口径变更 + T52；T51 一度红 → 是台架定位钉死旧格式） |
-| **第 7 轮·收尾（最终）** | **`805dc5e`** | **v2.5.0** | **52/52 ✅ 全绿**（含台架入库的那一版，结论可直接复现） |
+| 第 7 轮·收尾 | `805dc5e` | v2.5.0 | 52/52 ✅ 全绿（含台架入库的那一版，结论可直接复现） |
+| 第 7 轮·收尾（台架 bump 后复跑） | `63d9813` | v2.6.0 | 52/52 ✅ 全绿（3 轮结果向量逐字符一致、退出码 0；阿测实测） |
+| 第 7 轮·收尾（入库后复测） | `1f98d44` | v2.6.0 | 52/52 ✅ 全绿（审稿报告入库后复测；指纹刷新为这一版，提交 `318fb02`） |
+| **第 8 轮（最终·台架换版后复测）** | **`ed7a5bd`** | **v2.7.0** | **52/52 ✅ 全绿**（T34 加固后复测；**指纹清单指向这里**，报告与指纹同源） |
 
 
 ---
@@ -389,7 +411,11 @@ $ grep -nE 'PASS=|FAIL=|ok\(\)|bad\(\)' tests/test_update.sh tests/test_latency.
 | `tests/test_update.sh`、`tests/test_latency.sh`（薄封装） | ✅ 已由小编代提交（`acb6d02`） |
 | `tests/README.md`、`tests/TEST-HARNESS.md` | ✅ 已由小编代提交（`acb6d02`） |
 | **本轮收尾 11 个文件**（`cases/00_common.sh` / `01_static_contract.sh` / `04` / `08` / `11` / `12`（新）/ `run_tests.sh` / `README.md` / `TEST-HARNESS.md` / `baseline-manifest.txt` / `BASELINE-round7.md`（新）） | ✅ 已由小编代提交（`805dc5e`，提交信息含唯一入口实测口径 → T40 判过） |
-| `tests/BASELINE-round7.md`、`tests/baseline-manifest.txt`（跑批后按最终冻结点重刷） | ⏳ **待代提交（最后 2 个文件）** |
+| `tests/BASELINE-round7.md`、`tests/baseline-manifest.txt`（按 `805dc5e` 冻结点重刷） | ✅ 已由小编代提交（`63d9813`） |
+| `tests/baseline-manifest.txt`（审稿报告入库后重测，指纹刷新到 `1f98d44`） | ✅ 已由小编代提交（`318fb02`） |
+| `tests/BASELINE-round7.md`（**报告口径对齐到 `ed7a5bd`，与指纹同源**） | ✅ 已入库（Chief 代提交） |
+| `tests/run_tests.sh`、`tests/cases/05_docs_refs.sh`、`tests/README.md`、`tests/TEST-HARNESS.md`（**台架 v2.7.0 / T34 加固**） | ✅ 已入库（`ed7a5bd`） |
+| `reports/round3-vps-live-verification.md`（审稿的**真机验证补记**：崩溃循环 + N1/N2 + 止血） | ✅ 已入库（Chief 代提交） |
 
 > 阿测全程**没有任何 git 写操作**（不 add / 不 commit / 不 push），产出由小编按路径代提交。
 
@@ -399,7 +425,7 @@ $ grep -nE 'PASS=|FAIL=|ok\(\)|bad\(\)' tests/test_update.sh tests/test_latency.
 
 | 证据 | 路径 |
 |------|------|
-| 产物指纹 | `tests/baseline-manifest.txt`（本轮沙箱 `/tmp/xwpf-sbx.8sv8nQ`） |
+| 产物指纹 | `tests/baseline-manifest.txt`（指纹那轮沙箱 `/tmp/xwpf-sbx.a4fTd6`；v2.7.0 台架完整实测沙箱 `/tmp/xwpf-sbx.ZLi0Cb`；阿测独立复跑沙箱 `/tmp/xwpf-sbx.3q41lY`） |
 | 每条用例的 stdout / log / notes / fails / meta | 跑批时的 `$SBX_ROOT/cases/` |
 | jq 桩自测 | `tests/shims/jq_impl.py`（顶部列出支持/不支持的语法） |
 | T40 豁免白名单 | `tests/commit-msg-exemptions.txt` |
@@ -407,9 +433,11 @@ $ grep -nE 'PASS=|FAIL=|ok\(\)|bad\(\)' tests/test_update.sh tests/test_latency.
 | 台架说明 | `tests/TEST-HARNESS.md` |
 | 用例索引 | `tests/README.md` |
 
-> **跑批期间工作区被并行改动**：本轮跑批过程中，小编提交了 `acb6d02`（台架产出入库）、
-> `a7e23fc`（TARGET 口径）、`bfc99d3`（N1-R1）、`68f19cc`（docs 注释）、`805dc5e`（台架入库）。
-> 这**不影响**本报告的结论
-> 这**不影响**本报告的结论 —— 被测产物取自冻结点 `805dc5e` 的 `git show`，与工作区状态无关；
-> 本报告本身（`tests/BASELINE-round7.md` + `tests/baseline-manifest.txt`）入库后的提交**只改这两个文件**，
-> 因此 `805dc5e` 上的 52/52 结论**继续有效**，复现命令：`bash tests/run_tests.sh --base-sha 805dc5e --repeat 3`。
+> **跑批期间工作区被并行改动**：本轮跑批过程中并行提交了 `acb6d02`（台架产出入库）、
+> `a7e23fc`（TARGET 口径）、`bfc99d3`（N1-R1）、`68f19cc`（docs 注释）、`805dc5e`（台架入库）、
+> `63d9813`（台架版本 bump v2.6.0）、`1f98d44`（审稿报告入库）、`318fb02`（指纹刷新）、`ed7a5bd`（台架 v2.7.0）。
+> 这**不影响**本报告的结论 —— 被测产物取自冻结点 `ed7a5bd` 的 `git show`，与工作区状态无关；
+> 产品代码在 `63d9813` → `ed7a5bd` 之间零变化（见 0.1）；
+> 本报告本身（`tests/BASELINE-round7.md` + `tests/baseline-manifest.txt`）与审稿的真机验证补记入库后的提交**只动这三个文件**（被测产物与台架一律不碰），
+> 因此 `ed7a5bd` 上的 52/52 结论**继续有效**，
+> 复现命令：`bash tests/run_tests.sh --base-sha ed7a5bd`。
