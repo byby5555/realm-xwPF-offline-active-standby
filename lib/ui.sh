@@ -306,10 +306,38 @@ _cleanup_legacy_failover_daemon() {
     systemctl stop xwpf-failover >/dev/null 2>&1 || true
     systemctl disable xwpf-failover >/dev/null 2>&1 || true
     # 兜底：不在 systemd 管辖下的残留进程（它还占着 18443 / 18444）
-    if pgrep -f "xwpf-failover" >/dev/null 2>&1; then
-        pkill -f "xwpf-failover" >/dev/null 2>&1 || true
+    #
+    # ★ 不用 `pkill -f`：它是按**整条命令行**匹配的 ——
+    #   凡命令行里出现 "xwpf-failover" 的进程都会被杀，包括调用本函数的
+    #   shell 自己、用户的 grep / tail、甚至 bash -c 的那一层
+    #   ⇒ 自杀会让清理半途而废（unit 还没删、退出码诡异），比不清理更糟。
+    # ⇒ 改成：pgrep 拿 PID → 排除自身与父进程 → 逐个精确 kill。
+    local _pid _self _ppid _killed _cmdline
+    _self=$$
+    _ppid=${PPID:-0}
+    _killed=0
+    for _pid in $(pgrep -f "xwpf-failover" 2>/dev/null); do
+        [ "$_pid" = "$_self" ] && continue
+        [ "$_pid" = "$_ppid" ] && continue
+        [ "$_pid" = "1" ] && continue
+        # /proc 可读时再确认一次：命令行确实指向守护本体（同名目录/日志不算）
+        if [ -r "/proc/$_pid/cmdline" ]; then
+            _cmdline=$(tr '\0' ' ' < "/proc/$_pid/cmdline" 2>/dev/null || true)
+            case "$_cmdline" in
+                *xwpf-failover*) ;;
+                *) continue ;;
+            esac
+        fi
+        kill "$_pid" 2>/dev/null && _killed=1
+    done
+    if [ "$_killed" = "1" ]; then
         sleep 1
-        pkill -9 -f "xwpf-failover" >/dev/null 2>&1 || true
+        for _pid in $(pgrep -f "xwpf-failover" 2>/dev/null); do
+            [ "$_pid" = "$_self" ] && continue
+            [ "$_pid" = "$_ppid" ] && continue
+            [ "$_pid" = "1" ] && continue
+            kill -9 "$_pid" 2>/dev/null || true
+        done
         cleaned=1
     fi
 
@@ -380,7 +408,12 @@ uninstall_realm_stage_one() {
         bash "/etc/realm/xwFailover.sh" stop >/dev/null 2>&1
     fi
 
-    pgrep "realm" >/dev/null 2>&1 && { pkill -f "realm"; sleep 2; pkill -9 -f "realm" 2>/dev/null; }
+    # ★ `pkill -x realm`（**精确进程名**）而不是 `pkill -f realm`：
+    #   -f 是按**整条命令行**匹配的 ⇒ 凡命令行里带 "realm" 的进程都被杀
+    #   （用户自己的 tail / vim、甚至调用本脚本的那层 shell）
+    #   ⇒ 自杀会让卸载**半途而废**（文件还没清完就死了），比不杀更糟。
+    #   守护进程的进程名就是 realm（/usr/local/bin/realm），-x 足够精确。
+    pgrep -x "realm" >/dev/null 2>&1 && { pkill -x "realm" 2>/dev/null; sleep 2; pkill -9 -x "realm" 2>/dev/null; }
 
     # 清理文件
     cleanup_files_by_paths "$REALM_PATH" "$CONFIG_DIR" "$SYSTEMD_PATH" "/etc/realm"
