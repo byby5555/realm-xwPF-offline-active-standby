@@ -15,6 +15,10 @@ Wants=realm.service
 # ★ 本文件由 pf install / 更新中心从 cmd/xwpf-failover.service 重装覆盖，
 #   直接改 /etc/systemd/system/xwpf-failover.service 会被冲掉；
 #   要改本机参数请用 drop-in：systemctl edit xwpf-failover
+#
+# ★ pf install 还会写一份同内容的 drop-in
+#   /etc/systemd/system/xwpf-failover.service.d/10-crash-loop-guard.conf
+#   （每次 install / 升级都重写同一路径）—— 两处内容一致，哪边生效结果相同。
 StartLimitIntervalSec=60
 StartLimitBurst=3
 # 显式写死：默认值可被系统级 DefaultStartLimitAction 覆盖，

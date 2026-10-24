@@ -248,6 +248,19 @@ systemctl daemon-reload
 systemctl restart xwpf-failover
 ```
 
+`pf install` writes one drop-in of its own:
+
+```
+/etc/systemd/system/xwpf-failover.service.d/10-crash-loop-guard.conf
+```
+
+It carries the same rate-limit and restart values as the main unit and is
+**rewritten at the same path on every install / upgrade**. That is
+deliberate: a hand-made drop-in overrides the main unit, so a machine that
+already had one at *that* path would otherwise end up with two different
+sets of values. A drop-in under any *other* name is left alone — overriding
+the shipped values is the operator's call.
+
 For example, to relax the restart rate limit on a busy box:
 
 ```ini

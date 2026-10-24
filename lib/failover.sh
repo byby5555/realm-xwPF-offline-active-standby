@@ -795,6 +795,70 @@ failover_install_check() {
         return $?
     fi
 
+    # ★ 已装且版本一致 → **仍要**保证崩溃循环防护 drop-in 在位。
+    #   老机器可能是「守护已装、但 drop-in 是人工建的旧版或压根没有」→
+    #   只在重装时写 drop-in 会让这些机器永远拿不到产品口径。
+    if ! failover_write_crash_loop_guard; then
+        return 0
+    fi
+    systemctl daemon-reload || true
+
+    return 0
+}
+
+# === 崩溃循环防护 drop-in（单一真源） ===
+# 落点：/etc/systemd/system/xwpf-failover.service.d/10-crash-loop-guard.conf
+# ★ 路径写成 ${VAR:-默认} 而不是硬编码：
+#   ① 台架/单测可以把落点指到沙箱目录（否则测试会往真机路径写文件）；
+#   ② 运维临时换落点时不用改代码。默认仍是标准 systemd drop-in 目录。
+XWPF_FAILOVER_DROPIN_DIR="${XWPF_FAILOVER_DROPIN_DIR:-/etc/systemd/system/xwpf-failover.service.d}"
+XWPF_FAILOVER_DROPIN_FILE="${XWPF_FAILOVER_DROPIN_FILE:-${XWPF_FAILOVER_DROPIN_DIR}/10-crash-loop-guard.conf}"
+
+# 每次 install / 升级都重写**同一个路径**的这份文件：
+#   · 覆盖同名的人工文件 → 两边口径不打架
+#   · 别的名字的人工文件 → 仍然生效（用户主权，产品不越权删）
+# 先写 .tmp.$$ 再 mv → 不留半成品（systemd 读到半截文件会直接拒载该 drop-in）
+failover_write_crash_loop_guard() {
+    local dir="${XWPF_FAILOVER_DROPIN_DIR}"
+    local file="${XWPF_FAILOVER_DROPIN_FILE}"
+    local tmp="${file}.tmp.$$"
+    if ! mkdir -p "$dir" 2>/dev/null; then
+        echo -e "${YELLOW}警告: 无法创建 drop-in 目录: ${dir}${NC}"
+        return 1
+    fi
+    if ! cat > "$tmp" <<'DROPIN'
+# realm-xwPF 崩溃循环防护 drop-in
+#
+# ★ 本文件由 pf install / 更新中心**自动生成，并在每次 install / 升级时重写同一路径**。
+#   手改会在下次 install / 升级时被覆盖 —— 要改本机参数请另起文件名
+#   （systemctl edit xwpf-failover），那是你的主权范围。
+#
+#   · StartLimit* 三件套 = 崩溃循环的物理刹车：60 秒内最多 3 次，超限后 systemd 停手
+#   · Restart=always（**不要**改成 on-failure）：
+#       守护异常退出时退出码非 0（见 cmd/xwpf-failover.py 的退出码语义），
+#       但 always 还有一道纵深 —— 退出码语义万一被改坏，always 仍会把它拉起
+#       （响亮地失败），on-failure 会让守护静默消失、转发悄悄断。
+#   · 同样的键在主 unit cmd/xwpf-failover.service 里也有一份 → 哪边生效结果相同。
+[Unit]
+StartLimitIntervalSec=60
+StartLimitBurst=3
+StartLimitAction=none
+
+[Service]
+Restart=always
+RestartSec=5s
+DROPIN
+    then
+        rm -f "$tmp" 2>/dev/null
+        echo -e "${YELLOW}警告: 写入 drop-in 失败: ${file}${NC}"
+        return 1
+    fi
+    if ! mv -f "$tmp" "$file" 2>/dev/null; then
+        rm -f "$tmp" 2>/dev/null
+        echo -e "${YELLOW}警告: 安装 drop-in 失败: ${file}${NC}"
+        return 1
+    fi
+    chmod 0644 "$file" 2>/dev/null || true
     return 0
 }
 
@@ -847,6 +911,8 @@ failover_install_files() {
         echo -e "${RED}安装失败: ${XWPF_FAILOVER_UNIT}${NC}"
         return 1
     fi
+    # 崩溃循环防护 drop-in：每次 install / 升级都重写同一路径（覆盖同名人工文件）
+    failover_write_crash_loop_guard || true
     systemctl daemon-reload || true
 
     # 记录已安装版本，供下次比对决定是否重装

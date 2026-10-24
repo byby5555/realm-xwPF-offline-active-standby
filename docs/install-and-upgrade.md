@@ -106,6 +106,7 @@ curl -fsSL https://v6.gh-proxy.org/https://raw.githubusercontent.com/byby5555/re
 | 4 | `smart_install`（带 `_SKIP_SCRIPT_UPDATE=1`，**不再询问**是否更新脚本） | `lib/realm.sh` 的 `smart_install` |
 | 5 | `failover_install_check`：安装/升级 `xwpf-failover` 守护进程 | `lib/failover.sh` 的 `failover_install_check` |
 | 6 | **只装不启**：守护已安装但**不启动**。启动入口是「主备池管理 → 启停守护」 | `xwPF.sh` 的主入口 install 分支 |
+| 7 | 写崩溃循环防护 drop-in `/etc/systemd/system/xwpf-failover.service.d/10-crash-loop-guard.conf`（每次 install / 升级都重写同一路径）+ `daemon-reload` | `lib/failover.sh` 的 `failover_write_crash_loop_guard` |
 
 > **为什么 install 不再 `systemctl enable --now`**：`/etc/xwpf/failover.json` 只有「建立主备池」才会生成。装完就启 → 守护读不到配置 → `sys.exit(1)` → `Restart=always` 每 `RestartSec` 拉一次 → 崩溃循环（根因链见 `reports/round3-crashloop-review.md`）。菜单文案一直写的是「先建池，再启守护」，现在安装流程与它对齐了。
 
