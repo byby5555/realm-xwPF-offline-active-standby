@@ -360,6 +360,13 @@ CASES=(
     #   ★ Chief 审 N5 落树时发现的缺陷：采样块里又探测了一遍 ⇒ 探测次数翻倍，
     #     且采样口径可能与本轮 status 判定来自不同的探测结果（指标与切换决策对不上）。
     "T109:case_T109_quality_one_sample_per_cycle"
+    # 探测端时间源单位契约 + 失败样本时延分布（T110~T113 · cases/23_probe_time_and_fail_latency.sh）
+    #   ★ T110：now_us 两条分支单位不一致（纳秒 vs 微秒）⇒ 老 bash 机器上时延被放大 1000 倍。
+    #   ★ T111/T112/T113：失败样本的时延没进窗口 ⇒ 用户拍板的「失败率 + 失败时延分布」口径只落了一半。
+    "T110:case_T110_now_us_unit_consistent"
+    "T111:case_T111_fail_latency_recorded_in_window"
+    "T112:case_T112_fail_latency_rolls_with_window"
+    "T113:case_T113_fail_latency_in_stats_and_display"
     # 主备切换可靠性九组（T68~T76 · cases/18_failover_switch_reliability.sh）
     "T68:case_T68_enter_active_standby"
     "T69:case_T69_switch_away_on_failure"
@@ -417,10 +424,12 @@ REG_UNREG=0
 REG_DUP=0
 
 defined_case_fns() {
-    # ★ 编号位数放宽到 2~3 位：T100 起（T108/T109 …）也是合法用例号 ——
+    # ★ 编号位数放宽到 **2 位及以上**（不写死上限）：T100 起（T108/T109 …）也是合法用例号 ——
     #   写死两位数 ⇒ 三位数的用例函数**查不出来** ⇒ 「实现了但没登记」这条护栏
     #   对三位数编号**静默失效** ⇒ 漏登记时没人拦（= 零覆盖的假绿）。
-    declare -F | awk '{print $3}' | grep -E '^case_T[0-9]{2,3}_' | sort
+    #   ★ 上限也不能写死：写死「2~3 位」⇒ 将来出现四位数编号时**原样复发**
+    #     （静默失效、不报错）⇒ 只写「至少 2 位」。
+    declare -F | awk '{print $3}' | grep -E '^case_T[0-9]{2,}_' | sort
 }
 
 registration_check() {

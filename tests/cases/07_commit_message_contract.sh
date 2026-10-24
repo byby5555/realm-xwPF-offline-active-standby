@@ -153,6 +153,31 @@ _cm_exempt_reason() {
 # 输出：单个数字 / 空串（没声明）/ "AMBIG:<数字列表>"（声明了多个不同数字）
 _cm_claimed_case_count() {
     local msg="$1" nums
+    # ★ 收窄到**声明句式**（缺陷修复 2026-10-25 · Chief 裁决）：
+    #   只认两种「总数声明」短语：
+    #     ① 「总计 N 条」   —— 带计数单位「条」
+    #     ② 「用例总数 N」  —— 「用例」本身就是计数单位，单位可省（「本冻结点用例总数 90」）
+    #   **不认**裸「N 条用例」—— 那是**描述性提及**（「本次新增 1 条用例」说的是
+    #   这次改了什么，不是「声明用了 N 条」）⇒ 拿描述当声明 = **假红**
+    #   （红的是提交信息，不是产品；603c8ff 那批就是这么自伤的）。
+    #   ★ **不要求**同一行出现「汇总」：那会留一个「换个措辞就绕过判据」的缺口
+    #     ——「本冻结点用例总数 90」这种自然写法也得被检查到。
+    #   ★ 判别力自证见下面的反例自检⑦（旧宽规则会把「新增 1 条用例」抽成 1）。
+    nums=$(printf '%s\n' "$msg" \
+        | grep -aoE '总计[[:space:]]*[0-9]+[[:space:]]*条|用例总数[[:space:]]*[0-9]+' \
+        | grep -aoE '[0-9]+' | sort -u | tr '\n' ' ')
+    nums=$(printf '%s' "$nums" | tr -s ' ' | sed 's/^ //; s/ $//')
+    case "$nums" in
+        '') printf '' ;;
+        *' '*) printf 'AMBIG:%s' "$nums" ;;
+        *) printf '%s' "$nums" ;;
+    esac
+}
+
+# 旧宽规则（**只用于判别力自证**：证明收窄是真的修掉了假红，不是把检查改没了）
+#   旧规则有一条宽分支「[0-9]+[[:space:]]*条用例」⇒ 把描述性提及抽成「声明」。
+_cm_claimed_case_count_old_wide() {
+    local msg="$1" nums
     nums=$(printf '%s\n' "$msg" \
         | grep -aoE '(总计|用例总数[^0-9]{0,8})[[:space:]]*[0-9]+[[:space:]]*条|[0-9]+[[:space:]]*条用例' \
         | grep -aoE '[0-9]+' | sort -u | tr '\n' ' ')
@@ -169,10 +194,11 @@ _cm_frozen_case_count() {
     local sha="$1" raw n
     raw=$(cd "$SBX_REPO" && git show "$sha:tests/run_tests.sh" 2>/dev/null)
     [ -z "$raw" ] && { printf ''; return 0; }
-    # ★ 编号位数放宽到 2~3 位（T100 起合法）：写死两位数 ⇒ 三位数用例（T108/T109 …）
+    # ★ 编号位数放宽到 **2 位及以上**（不写死上限）：写死两位数 ⇒ 三位数用例（T108/T109 …）
     #   **不计入** ⇒ 本计数与 `--list` 条数、汇总行「总计 N 条」三数对不上
     #   ⇒ 提交信息里声明的 N 会被判红（而且是假的红：真实条数没错，是本计数漏了）。
-    n=$(printf '%s\n' "$raw" | grep -cE '^[[:space:]]*"T[0-9]{2,3}:case_')
+    #   ★ 上限也不能写死：「2~3 位」⇒ 将来出现四位数编号时**原样复发**（少算 = 假红）。
+    n=$(printf '%s\n' "$raw" | grep -cE '^[[:space:]]*"T[0-9]{2,}:case_')
     printf '%s' "$n"
 }
 
@@ -256,6 +282,32 @@ case_T40_commit_message_contract() {
     sc_res=$(_cm_evaluate "$sc_msg"); sc_status="${sc_res%%|*}"
     [ "$sc_status" = "OK" ] && sc_good_exit_ok=1
     h_check_eq "OK" "$sc_status" "反例自检⑥：唯一入口+冻结点SHA+退出码 → 放行"
+
+    # (7) ★ 描述性提及**不得**被当成声明（负向对照）
+    #   「新增 1 条用例」= 描述这次改了什么，**不是**「声明用了 1 条」⇒ 抽数必须为空。
+    #   ★ 这条自检是**必需**的：缺陷之所以能长期潜伏，正是因为原来只有正例自检
+    #     （能抽出 999）而**没有**「描述性提及不得被抽成声明」这一侧的对照。
+    local sc_desc sc_desc_empty sc_desc_old
+    sc_desc=$(_cm_claimed_case_count "fix(x): 新增 1 条用例")
+    sc_desc_empty=$([ -z "$sc_desc" ] && echo 1 || echo 0)
+    h_check_eq "1" "$sc_desc_empty" "反例自检⑦：描述性提及「新增 1 条用例」不得被抽成声明（抽数必须为空）"
+
+    #   ★ 判别力自证：**旧宽规则**在同一句上确实抽出了 1（那就是假红的来源）
+    #     ⇒ 证明上面那条不是「把检查改没了」才过的。
+    sc_desc_old=$(_cm_claimed_case_count_old_wide "fix(x): 新增 1 条用例")
+    h_check_eq "1" "$sc_desc_old" "判别力自证：旧宽规则会把「新增 1 条用例」抽成 1（缺陷真实存在，收窄后为空）"
+
+    # (8) ★ 「无单位的总数写法」也要被检查到（防止口径被收窄成只认「汇总」行）
+    #   「本冻结点用例总数 90」= 总数声明 ⇒ 必须抽出 90。
+    local sc_total sc_total_num
+    sc_total=$(_cm_claimed_case_count "fix(x): 本冻结点用例总数 90")
+    sc_total_num=$([ "$sc_total" = "90" ] && echo 1 || echo 0)
+    h_check_eq "1" "$sc_total_num" "反例自检⑧：「用例总数 90」这种无单位写法必须被抽成 90（不许因口径收窄而漏检）"
+
+    # (9) ★ 带单位的声明句式照旧能抽到（正向对照）
+    local sc_shu
+    sc_shu=$(_cm_claimed_case_count "汇总: 总计 90 条，通过 90，失败 0")
+    h_check_eq "90" "$sc_shu" "反例自检⑨：「总计 90 条」抽到 90（正向对照）"
 
     # 自检本身也做一次「抓到/放过」的计数护栏（防空过）
     local sc_caught=$((sc_bad_noclaim_ok + sc_bad_nocaliber + sc_bad_otherentry))
