@@ -275,27 +275,29 @@ chmod +x "$BUSY"
 "$BUSY" >/dev/null 2>&1 &
 BUSY_PID=$!
 sleep 1
-if cp -p "$BUSY" "$SANDBOX/busy.copy" 2>/dev/null; then
+# 注意：ETXTBSY 出现在「**写**到正在被执行的文件」时，
+#       从它读出去（cp busy busy.copy）不会触发 —— 探测必须往它身上写。
+printf 'x' > "$SANDBOX/busy.src"
+if cp -p "$SANDBOX/busy.src" "$BUSY" 2>/dev/null; then
     CP_BUSY=ok
 else
     CP_BUSY=fail
 fi
 if [ "$CP_BUSY" = "fail" ]; then
-    # 本机支持 ETXTBSY：直接覆盖会失败，但 mv 覆盖必须成功
+    # 本机支持 ETXTBSY：直接覆盖会失败，但 mv 覆盖式恢复必须成功
     BAK2="$SANDBOX/backup/busy-bak"
-    mkdir -p "$BAK2"
     rel="tmp/$(basename "$SANDBOX")/busy.sh"
     mkdir -p "$BAK2/$(dirname "$rel")"
     printf '#!/bin/bash\necho restored\n' > "$BAK2/$rel"
     out=$(update_restore_backup "$BAK2" 2>&1); rc=$?
     check "ETXTBSY 环境下恢复仍然成功" "$rc" "0"
-    check "恢复后的文件内容正确" "$(cat "$BUSY" 2>/dev/null)" "restored"
+    check "恢复后的文件内容正确" "$(grep -c 'restored' "$BUSY" 2>/dev/null)" "1"
 else
-    echo "  [SKIP] 本机不支持 ETXTBSY（Windows），跳过覆盖正在执行文件的用例"
+    echo "  [SKIP] 本机不支持 ETXTBSY（无法写正在执行的文件），跳过该用例"
 fi
 kill "$BUSY_PID" 2>/dev/null
 wait "$BUSY_PID" 2>/dev/null
-rm -f "$SANDBOX/busy.copy" "$SANDBOX/busy.copy2"
+rm -f "$SANDBOX/busy.src"
 
 echo "=============================================="
 echo "L. 自动回滚：新版本起不来 → 停服务 → 恢复旧版本 → 再拉起"
