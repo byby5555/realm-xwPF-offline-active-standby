@@ -16,6 +16,20 @@ CASE_FAILS=""
 CASE_LOG=""
 CASE_META=""
 
+# ★ 已知缺陷 / 预期红标注（审稿第 18 次修订 ⑤）
+#   有些用例在**当前冻结点**上就是判红的 —— 因为产品缺陷还没修（读端组合键等）。
+#   这类用例必须**显式声明**，否则整批红会被误读成「台架坏了」。
+#   ★ 用法：h_case_begin 之后调用 h_case_expect_fail "<理由>"
+#   ★ 为什么落文件而不是全局变量：用例函数在 run_one 的**子 shell** 里跑
+#     （out=$( ( set +e; "$fn" ) 2>&1 )）⇒ 子 shell 里设的全局变量传不出来。
+CASE_EXPECT_FAIL=""
+
+h_case_expect_fail() {
+    CASE_EXPECT_FAIL="1"
+    printf '%s\n' "$1" > "$SBX_ROOT/cases/${CASE_ID}.expect_fail"
+    h_log "★ 本条在当前冻结点预期为 FAIL（已知缺陷）：$1"
+}
+
 h_case_begin() {
     # 登记表的编号优先（RUNNER_CASE_ID 由 run_tests.sh 注入），避免用例内部编号写错导致串账
     CASE_ID="${RUNNER_CASE_ID:-$1}"
@@ -30,6 +44,8 @@ h_case_begin() {
     : > "$CASE_NOTES"
     : > "$CASE_FAILS"
     : > "$CASE_LOG"
+    # 上一轮若声明过「预期红」，本轮没声明 ⇒ 必须清掉（否则标注会跨轮残留）
+    rm -f "$SBX_ROOT/cases/$CASE_ID.expect_fail"
     printf '%s\t%s\t%s\t%s\t%s\n' "$CASE_ID" "$CASE_TITLE" "$CASE_PREREQ" "$CASE_CMD" "$CASE_EXPECT" > "$CASE_META"
 }
 

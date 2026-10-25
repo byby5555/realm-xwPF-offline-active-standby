@@ -236,6 +236,8 @@ sbx_install_shims() {
     #   ⇒ 沙箱提供一份真 bash：路径映射管的是「被测产物里引用的路径」，
     #     解释器本身必须是真能跑的那个。
     #   ★ 不进越界扫描范围（sbx_escape_scan 只扫 $SBX_RUN）。
+    #   ★ 不要为了「省掉一份拷贝」把它删掉换成像样的替代品：替代品只能覆盖
+    #     个别脚本（镜像里那一份），而**所有**被直接执行的冻结态脚本都依赖它。
     local _bash
     _bash=$(command -v bash 2>/dev/null)
     if [ -n "$_bash" ] && [ -x "$_bash" ]; then

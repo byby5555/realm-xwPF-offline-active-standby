@@ -22,6 +22,13 @@
 #   2 = 冻结点 BASE_SHA 不存在（参数/用法错误），**或** 台架预检清单为空（台架配置错误）
 #   3 = 跑批前预检未通过：负向对照依赖的**历史对象**在本地对象库里找不到
 #       （克隆方式没把历史拉全，**不是**产品回归；修复命令见输出）
+#   4 = --only 点名了未登记的用例 ID（一个用例都不会跑 ⇒ 原来会静默「全过」＝假绿）
+#   5 = 有已知缺陷未修：用例显式声明 h_case_expect_fail 且确实判红
+#       （不计入「失败」，但**仍然是非 0** ⇒ 按纪律不可合并、不可 push；
+#         缺陷修好后该条会转绿、届时必须撤掉标注，否则台架会判红提醒）
+#
+# 汇总行格式：汇总: 总计 N 条，通过 N，失败 N，预期红 N
+#   「预期红」= 本批声明为「已知缺陷预期红」的条数；恒为 0 时不影响「总计/通过/失败」三个数。
 #
 # 台架约定见 tests/TEST-HARNESS.md。
 
@@ -78,6 +85,23 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #           (c) 扫描层真违规行在两种 ambient locale 下都必须抓到
 #         · 负向对照 7 必须做在扫描层：正则层是**故意**两种 locale 各跑一遍的，
 #           拿它比判定会判红自己
+# v2.15.0：第 19 轮 —— 读端塌缩回归用例（T114）+ 已知缺陷「预期红」标注机制
+#         · 新增 T114（cases/24_readend_collapse_t114.sh）：两条规则共用同一后端
+#           host:port 时，读端必须按 (RULE_ID, 目标) 组合键各读各的 status
+#           ——真挂的要切（该切不切）、健康的不能被拖着切（不该切却切）
+#           · 判据落在产出物上（输出里那个 endpoint 的权重序列第一个权重），
+#             钉「主位 ↔ 备位」关系不钉字面量；多组对照只让一个变量在变
+#           · 负向对照（readend-pre = 63b6ec9，读端建键不含 RULE_ID 的那一版）
+#             用**同一套场景、同一套判定器**必须判红 ⇒ 坏情况确实发生、牙齿成立
+#           · ★ pre-tree 必须走沙箱同一条路径重定向（sbx_redirect）：老树写死的是
+#             生产路径，不重定向会读真实系统目录（Linux 上就是生产目录）而且
+#             读不到 fixture ⇒ 读端静默返回空 ⇒ 对照静默失效
+#         · 新增 h_case_expect_fail：用例可声明「本条在当前冻结点预期为 FAIL」
+#           —— 声明且确实判红 ⇒ 记 EXPECT_FAIL（不计入失败，退出码 5）；
+#              声明却判绿 ⇒ 判 FAIL（缺陷修好了要撤标注 / 用例被改废了 ⇒ 恒绿）
+#           —— 两边都报出来，不默默放过（它当场抓到过一次「标注方向反了」）
+#         · 退出码语义补齐：4（--only 点名未登记）与 5（已知缺陷预期红在位）
+#         · 汇总行新增末列「预期红 N」
 # v2.14.0：第 12 轮（续）—— N4 健康探测端四组用例 + 登记表按编号分组
 #         · 新增 T85~T88（cases/20_n4_health_probe_regen_state.sh）：
 #           T85 生成物必须重新生成（装/升级路径跑完 health_check.sh 的内容或 mtime 必须变）
@@ -185,7 +209,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #         · 负向对照：helper 层用注入式退化（helper 是新引入的，修复前没有等价形态，
 #           如实标注）；入口层用**真实修复前实现**（d0366b3 的 lib/）复现忙循环，
 #           断言的是「坏情况确实发生」（124 + 输出膨胀），不是「坏情况没发生」
-HARNESS_VERSION="v2.14.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive + negctl-selfcheck + t45-portable-equiv + t45-win-mv-truth + t32-locale-pin + t53-menu-eof + t32-copy-form-2 + t32-anchor-guard + t32-clause-exempt + t53-helper-count + t53-neg-floor + history-preflight + preflight-empty-guard + preflight-exit-passthrough + t54-ui-eof-closure-invariants + t54-judge-selfcheck + t53-rel-threshold + only-unregistered-exit4 + registry-selfcheck + t40-case-count-contract + probe-budget-10s + install-list-from-product + t63-t67-quality-observation + t68-t76-switch-reliability + t77-t84-weight10-exclusive + t85-t88-n4-probe-regen + run-lock-done-marker)"
+HARNESS_VERSION="v2.15.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive + negctl-selfcheck + t45-portable-equiv + t45-win-mv-truth + t32-locale-pin + t53-menu-eof + t32-copy-form-2 + t32-anchor-guard + t32-clause-exempt + t53-helper-count + t53-neg-floor + history-preflight + preflight-empty-guard + preflight-exit-passthrough + t54-ui-eof-closure-invariants + t54-judge-selfcheck + t53-rel-threshold + only-unregistered-exit4 + registry-selfcheck + t40-case-count-contract + probe-budget-10s + install-list-from-product + t63-t67-quality-observation + t68-t76-switch-reliability + t77-t84-weight10-exclusive + t85-t88-n4-probe-regen + run-lock-done-marker + t114-readend-collapse + expect-fail-exit5)"
 
 # shellcheck source=lib/harness.sh
 . "$SCRIPT_DIR/lib/harness.sh"
@@ -406,7 +430,9 @@ CASES=(
     "T94:case_T94_sync_claim_one_to_one_six_scenarios"
     "T95:case_T95_sync_negative_control_old_impl"
     "T96:case_T96_sync_old_vs_current_must_differ"
+    "T114:case_T114_readend_collapse_same_target_two_rows"
 )
+
 
 for f in "$SCRIPT_DIR"/cases/*.sh; do
     # shellcheck source=/dev/null
@@ -694,8 +720,28 @@ run_one() {
     RESULT_CMDS+=("$(awk -F'\t' '{print $4}' "$SBX_ROOT/cases/$id.meta" 2>/dev/null)")
     RESULT_EXPECTS+=("$(awk -F'\t' '{print $5}' "$SBX_ROOT/cases/$id.meta" 2>/dev/null)")
     RESULT_ACTUALS+=("$actual")
+
+    # ★ 已知缺陷 / 预期红（审稿第 18 次修订 ⑤）
+    #   用例可在 h_case_begin 之后调 h_case_expect_fail "<理由>"，声明
+    #   「本条在当前冻结点预期为 FAIL（产品缺陷还没修）」。
+    #   · 声明了且**确实判红** ⇒ 记 EXPECT_FAIL：不算「台架失败」，
+    #     但汇总行与退出码都要单独体现 —— 否则整批红会被误读成「台架坏了」，
+    #     或者缺陷被悄悄放过（假绿）。
+    #   · 声明了却**判绿** ⇒ 记 FAIL：要么缺陷修好了（该撤标注），
+    #     要么用例被改废了（恒绿）—— 两种都必须报出来，绝不默默放过。
+    local expect_fail_reason=""
+    if [ -s "$SBX_ROOT/cases/$id.expect_fail" ]; then
+        expect_fail_reason=$(head -1 "$SBX_ROOT/cases/$id.expect_fail")
+    fi
     if [ "$nfail" = "0" ]; then
-        RESULT_VERDICTS+=("PASS")
+        if [ -n "$expect_fail_reason" ]; then
+            RESULT_ACTUALS[${#RESULT_ACTUALS[@]}-1]="本条声明为「已知缺陷预期红」但这次**判绿**了 ⇒ 缺陷可能已修好（请撤掉 h_case_expect_fail），或用例被改废了（恒绿）—— 两者都要人工确认"
+            RESULT_VERDICTS+=("FAIL")
+        else
+            RESULT_VERDICTS+=("PASS")
+        fi
+    elif [ -n "$expect_fail_reason" ]; then
+        RESULT_VERDICTS+=("EXPECT_FAIL")
     else
         RESULT_VERDICTS+=("FAIL")
     fi
@@ -774,13 +820,28 @@ main() {
         echo "各轮结果向量: $(printf '%s' "$vectors" | tr '\n' ' ')"
     fi
 
-    local pass=0 fail=0 i
+    local pass=0 fail=0 expectfail=0 i
     for i in "${!RESULT_VERDICTS[@]}"; do
-        if [ "${RESULT_VERDICTS[$i]}" = "PASS" ]; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
+        case "${RESULT_VERDICTS[$i]}" in
+            PASS)        pass=$((pass + 1)) ;;
+            FAIL)        fail=$((fail + 1)) ;;
+            EXPECT_FAIL) expectfail=$((expectfail + 1)) ;;
+            *)           fail=$((fail + 1)) ;;
+        esac
     done
 
     echo
-    echo "汇总: 总计 $((pass + fail)) 条，通过 $pass，失败 $fail"
+    echo "汇总: 总计 $((pass + fail + expectfail)) 条，通过 $pass，失败 $fail，预期红 $expectfail"
+    if [ "$expectfail" -gt 0 ]; then
+        echo "★ 「预期红 $expectfail」= **已知缺陷未修**（用例显式声明 h_case_expect_fail）"
+        echo "  · 不计入「失败」—— 它是产品缺陷在位，不是台架坏了"
+        echo "  · 缺陷修好后该条目会**转绿**，届时必须撤掉 h_case_expect_fail（否则台架会判红提醒）"
+        for i in "${!RESULT_VERDICTS[@]}"; do
+            if [ "${RESULT_VERDICTS[$i]}" = "EXPECT_FAIL" ]; then
+                echo "    · ${RESULT_IDS[$i]}：$(head -1 "$SBX_ROOT/cases/${RESULT_IDS[$i]}.expect_fail" 2>/dev/null)"
+            fi
+        done
+    fi
     echo "多轮一致性（$REPEAT 轮）: $stable"
     echo "★ 冻结点 BASE_SHA : $BASE_SHA"
     echo "★ 台架版本        : $HARNESS_VERSION"
@@ -808,7 +869,18 @@ main() {
         echo "沙箱已清理"
     fi
 
-    [ "$fail" -eq 0 ] || return 1
+    # ── 退出码口径 ─────────────────────────────────────────────
+    #   0 = 全过
+    #   1 = 有真失败（用例失败或台架失败）
+    #   2 = 台架自身或参数错（另外 3=历史对象缺失 / 4=--only 点名未登记）
+    #   5 = **有已知缺陷未修**（预期红在位）—— 与「真失败」分开，
+    #       免得整批红被误读成「台架坏了」，也免得缺陷被悄悄放过。
+    if [ "$fail" -ne 0 ]; then
+        return 1
+    fi
+    if [ "$expectfail" -ne 0 ]; then
+        return 5
+    fi
     return 0
 }
 
