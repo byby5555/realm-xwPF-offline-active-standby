@@ -398,10 +398,21 @@ rm -f /etc/systemd/system/realm.service \
       /etc/systemd/system/xwpf-failover.service \
       /etc/systemd/system/realm-health-check.service \
       /etc/systemd/system/realm-health-check.timer
-rm -rf /etc/realm /etc/xwpf /usr/local/bin/lib /usr/local/bin/cmd
-rm -f /usr/local/bin/realm /usr/local/bin/xwPF.sh /usr/local/bin/xwpf-failover /usr/local/bin/pf
+rm -rf /etc/realm /usr/local/bin/lib /usr/local/bin/cmd
+# ★ 池配置目录：**保留目录**，池文件**改名留档**（不是删掉）——
+#   删了用户没法回查；这与本文「验收口径」第 2、3 条一致，
+#   也与产品实现 lib/ui.sh 清理段的行为一致。
+if [ -d /etc/xwpf ]; then
+  [ -f /etc/xwpf/failover.json ]       && mv -f /etc/xwpf/failover.json       /etc/xwpf/failover.json.disabled
+  [ -f /etc/xwpf/failover-state.json ] && mv -f /etc/xwpf/failover-state.json /etc/xwpf/failover-state.json.disabled
+fi
+rm -f /usr/local/bin/realm /usr/local/bin/xwPF.sh /usr/local/bin/xwpf-failover \
+      /usr/local/bin/.xwpf-failover-version /usr/local/bin/pf
 systemctl daemon-reload
 ```
+
+> ⚠️ 改名留档的 `.disabled` 文件**必须按「验收口径」第 2 条登记进验收清单**（文件名 + 大小 + 时间）。
+> ⚠️ 这一步**不能删 `/etc/xwpf` 目录**：验收口径第 3 条要求目录保留，删目录 = 判红。
 
 ---
 
