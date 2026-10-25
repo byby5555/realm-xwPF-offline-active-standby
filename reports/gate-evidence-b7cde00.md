@@ -92,3 +92,93 @@ Chief 留了三个待拍板项，其中「多值 ⇒ 至少一个命中即绿」
 - ⇒ 建议口径**假红归零、查错条数的能力不降**（3 条真错全留）
 - ⚠️ 口径差异只在一处：把「没抽到声明」也算进「不适用」的分母不同（笔数不同、**结论的 5 笔判红逐笔一致**）
 - 现状提醒：多值分支现在只作用在**冻结点那一笔**的提交信息上 ⇒ 上面 2 笔假红是**假设它当冻结点**时才会红；**当前冻结点不受影响**（抽到 94 == 实际 94 ⇒ 绿）
+
+---
+
+## 七、同步后锚点可达性复核（2026-10-25 11:5x · 小编实测 · **本文件唯一归属**）
+
+> 锚点「可达」是**时变属性** —— 写下的那一刻成立，交付前可能已被 reset 掉。
+> 主仓刚完成一次同步（本地 HEAD 从 `cd6c664` 对齐到远端头 `2854b54`），**同步动作本身会改变可达性**
+> ⇒ 交付前重核一次，把一手结果抄进本文件（本节即那份一手结果）。
+
+## 一、同步动作
+
+| 项 | 值 |
+|---|---|
+| 同步前 | 本地 `cd6c664`（落后 origin 11 笔，领先 2 笔） |
+| 同步后 | 本地 = 远端头 `2854b54` |
+| ahead / behind | **0 / 0** |
+| 工作区 | **干净** |
+| 用的命令 | `reset --mixed` + `checkout origin/... -- <5 文件>` + `checkout HEAD -- .`（**未用 `reset --hard`**） |
+| 备份 | tag `keep/xiaobian-pre-sync-20261025` → `cd6c664`；目录 `%TEMP%\xiaobian-workdir-backup-20261025\` |
+| `stash@{0}` | **未动**（仍在） |
+
+## 二、同步后锚点可达性复核（**一手实测**）
+
+| SHA | 身份 | 可达分支 |
+|---|---|---|
+| `d0b2543` | 合并树（双口径 95/95 绿） | **audit/103-rundown-correction-2、feat/update-center、probe/merge-chief、origin/feat/update-center** |
+| `f01ec4a` | 更正提交（展示端符号） | **audit/103-rundown-correction-2、feat/update-center、probe/merge-chief、origin/feat/update-center** |
+| `c552d8e` | 台架 v2.15.0（退出码 4/5 + 汇总行末列） | **audit/103-rundown-correction-2、feat/chief-n5-v2、feat/update-center、probe/merge-chief、origin/feat/update-center** |
+| `92c6c93` | T40 落地口径 / 94 条台架冻结点 | **audit/103-rundown-correction-2、feat/chief-n5-v2、feat/update-center、probe/merge-chief、origin/feat/update-center** |
+| `b7cde00` | b7cde00 批留证冻结点 | **audit/103-rundown-correction-2、feat/chief-n5-v2、feat/update-center、probe/merge-chief、origin/feat/update-center** |
+| `2385e6b` | 我第 8 笔（门禁留证入库） | **audit/103-rundown-correction-2、feat/update-center、probe/merge-chief、origin/feat/update-center** |
+| `d4f980f` | T40 多值判定修复 | **audit/103-rundown-correction-2、feat/update-center、probe/merge-chief、origin/feat/update-center** |
+| `680339f` | docs 手工兜底修复 | **audit/103-rundown-correction-2、feat/update-center、probe/merge-chief、origin/feat/update-center** |
+
+⇒ **8 个在用的锚点全部可达**（每个都在 `origin/feat/update-center` 上）⇒ 这批结论**现在仍然可引用**。
+
+## 三、三个悬空号（复核后**仍不可引用**）
+
+| SHA | 可达分支 | 结论 |
+|---|---|---|
+| `ddfb492` | （空） | ★ 仍悬空 ⇒ **不得引用**（只会在 reflog 里，随时会被 gc） |
+| `a11d343` | （空） | ★ 仍悬空 ⇒ **不得引用**（只会在 reflog 里，随时会被 gc） |
+| `70c89dd` | （空） | ★ 仍悬空 ⇒ **不得引用**（只会在 reflog 里，随时会被 gc） |
+
+## 四、本地 `keep/*` 备份 tag（可回退性）
+
+```
+keep/history-20261024-2a01a33 -> e04d8a9
+keep/pre-squash-20261024 -> 2bced28
+keep/pre-t54-a359301 -> a359301
+keep/xiaobian-pre-sync-20261025 -> cd6c664
+```
+
+★ `keep/xiaobian-pre-sync-20261025` → `cd6c664` 是**本轮同步前**打的 ⇒ 同步动作**可逆**。
+
+## 五、★ 本轮顺带更正的一句话（影响引用措辞）
+
+我先前说「远端 `lib/ui.sh` **已正确保留** `ui_show_failover_state` ⇒ apply `stash@{0}` = 把功能删回去」——**这句是错的**。
+
+实测：
+
+| 树 | 含 `ui_show_failover_state`？ |
+|---|---|
+| `origin/feat/update-center` | **否** |
+| `d0b2543` | **否** |
+| `b2fb847` | 是 |
+
+⇒ 该函数由 **`2beb7bd`「删除进程级主备池整块（守护进程/建池/列池），保留规则级故障转移与权重主备」** 按项目裁定**移除**；
+stash 的 base `b2fb847` 是**移除之前**的老树 ⇒ stash 里「有」它属正常。
+
+⇒ **「禁 apply `stash@{0}`」结论不变，但理由要换**：
+
+> apply 会把**项目已按裁定删除的功能复活**（守护进程/建池/列池整块 + 该展示函数），且 base 是很老的 `b2fb847` ⇒ 等于**回退一条已完成的裁定**。
+> （**不是**「会删掉远端已保留的功能」—— 那个理由是我编的。）
+
+## 六、复核命令（可复现）
+
+```bash
+git branch -a --contains <SHA> --format="%(refname:short)"   # 引用那一刻必须重核
+git rev-list --left-right --count origin/feat/update-center...HEAD
+git status --porcelain
+git tag --list "keep/*" --format="%(refname:short) -> %(objectname:short)"
+```
+
+---
+
+抄录人：小编（古代编邪猿）· 抄录依据 = 本地实跑，非转述。
+
+
+> ★ 抄录人：小编（古代编邪猿）· 抄录依据 = 本地实跑，非转述。
