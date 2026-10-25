@@ -189,6 +189,23 @@ _cm_claimed_case_count_old_wide() {
     esac
 }
 
+# ★ 多值判定（缺陷修复 2026-10-25 · 大厨代落）：
+#   当提交信息里同时出现**多个**用例总数声明时，只要其中**一个**等于
+#   该冻结点的实际条数 ⇒ 判绿；一个都不命中才判红。
+#   背景：台架提交引用了「注入失败汇总行『总计 1 条』」时，声明里会同时出现
+#   两个数字（1 与真实条数）⇒ 旧逻辑一律判红，但其中一个其实命中 ⇒ 假红。
+#   ★ 命中基准必须是**该冻结点自己的登记条数**（actual_n），不是记忆、不是别的树。
+# 用法：_cm_ambig_hit "<空格分隔的数字列表>" "<actual_n>"
+#       返回命中的那个数字；一个都不命中则返回空串。
+_cm_ambig_hit() {
+    local nums="$1" actual="$2" n hit=""
+    [ -n "$actual" ] || { printf ''; return 0; }
+    for n in $nums; do
+        if [ "$n" = "$actual" ]; then hit="$n"; break; fi
+    done
+    printf '%s' "$hit"
+}
+
 # 该冻结点的实际用例条数（CASES 登记表条目数）
 _cm_frozen_case_count() {
     local sha="$1" raw n
@@ -408,7 +425,15 @@ case_T40_commit_message_contract() {
     elif [ -z "$tip_claimed" ]; then
         h_log "候选最后一笔没有引用「用例总数」→ 本条不适用（引用时必须与 --list 实测条数一致）"
     elif [ "${tip_claimed#AMBIG:}" != "$tip_claimed" ]; then
-        h_fail "候选最后一笔引用了多个不同的用例总数（$tip_claimed）—— 口径不自洽"
+        # ★ 多值：只要**其中一个**命中该冻结点的实际条数 ⇒ 判绿（缺陷修复 2026-10-25）
+        local ambig_hit
+        ambig_hit=$(_cm_ambig_hit "${tip_claimed#AMBIG:}" "$actual_n")
+        if [ -n "$ambig_hit" ]; then
+            h_log "候选最后一笔引用了多个用例总数（$tip_claimed），其中 $ambig_hit == 该冻结点 --list 实际 ${actual_n} 条 ⇒ 命中"
+            h_check_eq "$actual_n" "$ambig_hit" "候选最后一笔引用的多个用例总数中，至少一个 == 该冻结点 --list 的实际条数"
+        else
+            h_fail "候选最后一笔引用了多个不同的用例总数（$tip_claimed），且无一等于该冻结点 --list 实际 ${actual_n} 条 —— 口径不自洽"
+        fi
     else
         h_log "候选最后一笔引用「总计 ${tip_claimed} 条」；该冻结点 --list 实际 ${actual_n} 条"
         h_check_eq "$actual_n" "$tip_claimed" "候选最后一笔引用的用例总数 == 该冻结点 --list 的实际条数"
@@ -418,6 +443,15 @@ case_T40_commit_message_contract() {
     local selfchk selfdiff
     selfchk=$(_cm_claimed_case_count "自测：汇总: 总计 999 条，通过 999，失败 0")
     h_check_eq "999" "$selfchk" "判定器自检：能从提交信息里抽出声明的用例总数"
+
+    # ★ 反例自检（多值判定必须有牙齿，缺陷修复 2026-10-25）：
+    #   ⑩ 多值列表里**有一个命中**实际条数 ⇒ 必须判绿（不得判红）—— 这正是被修掉的那类假红
+    #   ⑪ 多值列表里**无一命中**实际条数 ⇒ 必须判红（不得放过）—— 那是真错，必须留住
+    local sc_ambig_hit sc_ambig_nohit
+    sc_ambig_hit=$(_cm_ambig_hit "1 54" "54")
+    h_check_eq "54" "$sc_ambig_hit" "反例自检⑩：多值列表中有一个命中实际条数 ⇒ 判绿（不得判红）"
+    sc_ambig_nohit=$(_cm_ambig_hit "1 2 3" "54")
+    h_check_eq "" "$sc_ambig_nohit" "反例自检⑪：多值列表中无一命中实际条数 ⇒ 判红（不得放过）"
     if [ -n "$actual_n" ]; then
         selfdiff=$([ "$selfchk" != "$actual_n" ] && echo 1 || echo 0)
         h_check_eq "1" "$selfdiff" "判定器自检：条数不符（999 vs 实际 $actual_n）必须能判红"
