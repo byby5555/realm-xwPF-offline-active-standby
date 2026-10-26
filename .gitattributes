@@ -12,5 +12,11 @@
 *.md text eol=lf
 *.service text eol=lf
 
+# 台架的桩脚本（systemctl / nc / pgrep / jq …）**没有扩展名** ⇒ 上面几条规则管不到它们
+#   ⇒ 只能靠本机 core.autocrlf（本仓库是 true）⇒ 换台机器 checkout 出来就是 CRLF
+#   ⇒ shebang 行变成 "#!/bin/bash\r" ⇒ 桩脚本执行直接失败（bad interpreter）
+#   ⇒ 台架在 Windows 上整批跑不起来。显式钉成 LF。
+tests/shims/* text eol=lf
+
 *.xlsx binary
 *.png binary

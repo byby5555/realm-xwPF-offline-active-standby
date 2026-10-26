@@ -46,6 +46,46 @@ init_rule_field() {
     done
 }
 
+# 列出某条规则的目标端点（host:port 列表，逗号分隔）
+#
+# ★ 为什么必须有这个函数、且只能有一份（真源）：
+#   同一组目标要被**两个地方**枚举：
+#     · 探测端（lib/health.sh 的探测脚本）：把探测结果写进状态文件
+#       （行键 = RULE_ID|host:port）
+#     · 路由端（lib/realm.sh 生成 endpoints）：按状态文件决定谁当主、谁当备
+#   两端口径一旦不一致 ⇒ 状态行里的目标**匹配不上**配置里的目标
+#   ⇒ 主备切换**静默失效**（该切不切，界面也看不出来 —— 没有报错、没有日志）。
+#   ⇒ 口径必须同源：本函数是唯一真源，两边都调它。
+#
+# 口径（两边共用，顺序敏感）：
+#   ① BALANCE_MODE != off 且 TARGET_STATES 非空 → 用 TARGET_STATES
+#      （每项自带 host:port ⇒ 能表达「同 host 不同端口」的备机）
+#   ② 否则 → REMOTE_HOST 的每个地址 × REMOTE_PORT（所有目标共用一个端口）
+#
+# 用法：先 read_rule_file <rule_file>（把规则解析成同名全局变量），再调用本函数。
+rule_target_endpoints() {
+    local out="" _host _hosts
+    local _old_ifs="$IFS"
+
+    if [ "${BALANCE_MODE:-}" != "off" ] && [ -n "${TARGET_STATES:-}" ]; then
+        out="$TARGET_STATES"
+    else
+        IFS=',' read -ra _hosts <<< "${REMOTE_HOST:-}"
+        for _host in "${_hosts[@]}"; do
+            _host="$(echo "$_host" | xargs)"   # 去除空格
+            [ -n "$_host" ] || continue
+            if [ -n "$out" ]; then
+                out="$out,$_host:${REMOTE_PORT:-}"
+            else
+                out="$_host:${REMOTE_PORT:-}"
+            fi
+        done
+    fi
+    IFS="$_old_ifs"
+
+    printf '%s' "$out"
+}
+
 # 通用的服务重启函数
 restart_and_confirm() {
     local operation_name="$1"

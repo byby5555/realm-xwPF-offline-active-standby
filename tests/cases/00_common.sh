@@ -145,12 +145,23 @@ EOF
 
 # 把 xwFailover.sh 和 lib/health.sh 摆到 xwFailover.sh 的加载器会找的位置
 # （xwFailover.sh 依次找 /usr/local/bin/lib/health.sh、/etc/realm/lib/health.sh、$(dirname $0)/lib/health.sh）
+#
+# ★ lib/core.sh 也要一起摆（2026-10-26 补）：
+#   探测脚本的生成物要带走「共用真源」rule_target_endpoints（它住在 lib/core.sh）。
+#   真实安装时 lib/ 是**整目录**装上去的，core.sh 必然在 health.sh 旁边；
+#   沙箱只摆 health.sh ⇒ 生成物缺函数 ⇒ 探测端枚举不到任何目标
+#   ⇒ T06 判红（且是**假红**：产品行为是对的，是沙箱的安装布局不完整）。
+#   ⇒ 这里摆齐，让沙箱布局 = 真实安装布局。
 _prepare_failover_runtime() {
     mkdir -p "$SBX_ROOT/realm/lib" "$SBX_ROOT/usr.local.bin/lib"
     cp "$SBX_RUN/xwFailover.sh" "$SBX_ROOT/realm/xwFailover.sh"
     if [ -f "$SBX_RUN/lib/health.sh" ]; then
         cp "$SBX_RUN/lib/health.sh" "$SBX_ROOT/realm/lib/health.sh"
         cp "$SBX_RUN/lib/health.sh" "$SBX_ROOT/usr.local.bin/lib/health.sh"
+    fi
+    if [ -f "$SBX_RUN/lib/core.sh" ]; then
+        cp "$SBX_RUN/lib/core.sh" "$SBX_ROOT/realm/lib/core.sh"
+        cp "$SBX_RUN/lib/core.sh" "$SBX_ROOT/usr.local.bin/lib/core.sh"
     fi
 }
 
