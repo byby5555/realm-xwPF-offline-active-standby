@@ -85,6 +85,18 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #           (c) 扫描层真违规行在两种 ambient locale 下都必须抓到
 #         · 负向对照 7 必须做在扫描层：正则层是**故意**两种 locale 各跑一遍的，
 #           拿它比判定会判红自己
+# v2.17.0：第 22 轮 —— 老机器主备池守护残留清理的护栏用例（T117/T118）
+#         · 新增 T117/T118（cases/26_legacy_failover_guard_t117.sh）：
+#           守「安装 / 升级路径：守护还在服务就跳过；卸载路径：强制清理」这条契约。
+#           背景：真机 103.42.31.186 的老守护**正在对外服务**（0.0.0.0:18443 /
+#           0.0.0.0:18444 两个公开口）⇒ 无条件清理 = 打黑在用的公开转发口
+#         · T117 七场景：活池跳过（unit / drop-in / 二进制 / 池配置一个都不动，
+#           且不去 stop 守护）/ 无池配置清干净 / 空数组清干净 / env 强制清干净 /
+#           force 参数清干净 / 池目录不删 + 调用点静态契约
+#           （安装路径不带 force、两条卸载路径带 force）
+#         · T118 负向对照：**注入式退化**（判据是本次新引入的 helper，修复前没有
+#           等价形态）—— 判据退化后活池必须从「跳过」变成「清掉」⇒ 证明 T117 的
+#           「跳过」断言确实来自判据，不是恒绿
 # v2.16.0：第 21 轮 —— 迁移端认领「候选门槛 + 身份优先」用例 + ui_read_default 默认值改判语义
 #         · 新增 T115/T116（cases/25_sync_claim_gate_identity_t115.sh）：
 #           覆盖 Chief 裁定的认领第三款：候选规则必须 ROLE=1 + ENABLED=true +
@@ -222,7 +234,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #         · 负向对照：helper 层用注入式退化（helper 是新引入的，修复前没有等价形态，
 #           如实标注）；入口层用**真实修复前实现**（d0366b3 的 lib/）复现忙循环，
 #           断言的是「坏情况确实发生」（124 + 输出膨胀），不是「坏情况没发生」
-HARNESS_VERSION="v2.16.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive + negctl-selfcheck + t45-portable-equiv + t45-win-mv-truth + t32-locale-pin + t53-menu-eof + t32-copy-form-2 + t32-anchor-guard + t32-clause-exempt + t53-helper-count + t53-neg-floor + history-preflight + preflight-empty-guard + preflight-exit-passthrough + t54-ui-eof-closure-invariants + t54-judge-selfcheck + t53-rel-threshold + only-unregistered-exit4 + registry-selfcheck + t40-case-count-contract + probe-budget-10s + install-list-from-product + t63-t67-quality-observation + t68-t76-switch-reliability + t77-t84-weight10-exclusive + t85-t88-n4-probe-regen + run-lock-done-marker + t114-readend-collapse + expect-fail-exit5 + t54-affirm-default-7b + t115-t116-claim-gate-identity)"
+HARNESS_VERSION="v2.17.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive + negctl-selfcheck + t45-portable-equiv + t45-win-mv-truth + t32-locale-pin + t53-menu-eof + t32-copy-form-2 + t32-anchor-guard + t32-clause-exempt + t53-helper-count + t53-neg-floor + history-preflight + preflight-empty-guard + preflight-exit-passthrough + t54-ui-eof-closure-invariants + t54-judge-selfcheck + t53-rel-threshold + only-unregistered-exit4 + registry-selfcheck + t40-case-count-contract + probe-budget-10s + install-list-from-product + t63-t67-quality-observation + t68-t76-switch-reliability + t77-t84-weight10-exclusive + t85-t88-n4-probe-regen + run-lock-done-marker + t114-readend-collapse + expect-fail-exit5 + t54-affirm-default-7b + t115-t116-claim-gate-identity + t117-t118-legacy-failover-guard)"
 
 # shellcheck source=lib/harness.sh
 . "$SCRIPT_DIR/lib/harness.sh"
@@ -451,6 +463,12 @@ CASES=(
     #   （T115~T116 · cases/25_sync_claim_gate_identity_t115.sh）
     "T115:case_T115_sync_claim_identity_priority_and_candidate_gate"
     "T116:case_T116_sync_gate_and_identity_negative_control_old_impl"
+    # 老机器主备池守护残留清理的护栏（第 22 轮 · cases/26_legacy_failover_guard_t117.sh）
+    #   安装 / 升级路径：守护还在服务（池配置存在且含 "listen"）⇒ 跳过清理
+    #   卸载路径（xwPF.sh uninstall + 菜单 8）：强制清理
+    #   崩溃循环残留（没有池配置却在跑）⇒ 照常清干净
+    "T117:case_T117_legacy_failover_guard_serve_vs_residue"
+    "T118:case_T118_legacy_failover_guard_negative_control"
 )
 
 
