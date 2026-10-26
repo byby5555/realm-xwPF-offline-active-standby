@@ -218,6 +218,30 @@ _t54_default_with_nonempty_default() {
       | sort -u
 }
 
+# ── 判定器 7b：带非空默认值的调用点里，**肯定语义**的那几条 ─────────
+#   ★ 钉的是**语义不变式**（Chief 口径），不是「必须不传第三参数」：
+#     调用点「若」传了非空默认值，该默认值必须是「否」语义（空/N/n/no）；
+#     只有**肯定语义**（y/Y/yes/是/true/1/on）才违规 ——
+#     因为 ui_read_default 在 EOF 时**不退出**，而是取默认值并返回 1，
+#     传 "y" 会让 EOF 从「默认否」变成「**自动确认**」= 无人值守时替用户做决定。
+#   ⚠️ 别把它写成「一条非空默认值都不许有」：那是结构断言 ——
+#     将来有人合法传 "" 或 "n" 会被误红（Chief 明确要求钉语义）。
+_t54_default_with_affirmative_default() {
+    local root="$1"
+    {
+        # 第三参数是**加引号**的肯定语义
+        grep -rn --include='*.sh' -E \
+            'ui_read_default[[:space:]]+"[^"]*"[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]+"(y|Y|yes|Yes|YES|YeS|是|true|True|TRUE|1|on|On|ON)"' \
+            "$root" 2>/dev/null
+        # 第三参数是**未加引号**的肯定语义字面量
+        grep -rn --include='*.sh' -E \
+            'ui_read_default[[:space:]]+"[^"]*"[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]+(y|Y|yes|Yes|YES|YeS|是|true|True|TRUE|1|on|On|ON)([[:space:]]|$)' \
+            "$root" 2>/dev/null
+    } | grep -v '/tests/' | grep -v '/reports/' \
+      | grep -vE ':[[:space:]]*#' \
+      | sort -u
+}
+
 # ── 判定器 6：ui_read_default 的实现（单独抽，便于退化）──────────
 _t54_extract_default() {
     awk '
@@ -381,16 +405,33 @@ case_T54_ui_eof_closure_invariants() {
     h_log "退化副本输出: $(printf '%s' "$txt_bad" | tr '\n' ' ' | cut -c1-200)"
     h_check_not_contains "$txt_bad" "VALUE=[T54DEFAULT]" "负向对照 · 兜底去掉后 EOF 不再取默认值（坏情况确实发生）"
 
-    # ── 第五层附：调用点不得传非空默认值（否则 EOF = 自动确认）────────
-    local nonempty_def
+    # ── 第五层附：调用点的默认值**不得是肯定语义**（否则 EOF = 自动确认）────────
+    #   ★ 钉**语义不变式**（Chief 口径）：非空默认值允许存在，但必须是「否」语义
+    #     （空 / N / n / no）；只有 y/Y/yes/是/true/1/on 这类肯定语义才判红。
+    #   （原来的写法是「非空默认值条数必须 = 0」—— 那是**结构断言**，
+    #     将来有人合法传 "" 或 "n" 会被误红 ⇒ 已按语义口径改写。）
+    local affirm_def nonempty_def
+    affirm_def=$(_t54_default_with_affirmative_default "$SBX_SRC")
     nonempty_def=$(_t54_default_with_nonempty_default "$SBX_SRC")
-    h_check_eq "0" "$(_t54_count "$nonempty_def")" "ui_read_default 的调用点传了非空默认值的条数（传了就等于 EOF 自动确认）"
-    if [ -n "$nonempty_def" ]; then
+    h_log "带非空默认值的调用点 = $(_t54_count "$nonempty_def") 条；其中肯定语义 = $(_t54_count "$affirm_def") 条"
+    h_check_eq "0" "$(_t54_count "$affirm_def")" "ui_read_default 的调用点传了**肯定语义**默认值的条数（EOF 时会变成自动确认）"
+    if [ -n "$affirm_def" ]; then
         while IFS= read -r l; do
             [ -z "$l" ] && continue
             h_log "  违规: ${l#$SBX_SRC/}"
-        done <<< "$nonempty_def"
+        done <<< "$affirm_def"
     fi
+
+    # ── 负向对照 7b：往副本里注入一个「肯定语义默认值」的调用点 → 判定器必须抓到 ──
+    #   ★ 没有这条，上面那条断言就是**恒绿**（判定器坏了也照样绿）。
+    local inj_dir="$SBX_ROOT/t54_affirm"
+    rm -rf "$inj_dir" 2>/dev/null
+    mkdir -p "$inj_dir/lib"
+    printf '#!/bin/bash\nui_read_default "确认继续？(y/n): " ans "y"\n' > "$inj_dir/lib/fake_ui.sh"
+    local affirm_bad
+    affirm_bad=$(_t54_default_with_affirmative_default "$inj_dir")
+    h_log "负向对照 7b · 注入肯定语义默认值后判定器抓到: $(printf '%s' "$affirm_bad" | tr '\n' ' ' | cut -c1-160)"
+    h_check_ge 1 "$(_t54_count "$affirm_bad")" "负向对照 7b：注入了 \"y\" 默认值后判定器必须抓到（否则上面那条断言是恒绿）"
 
     # ══ 负向对照 (a) · 真实修复前实现跑同一套判定器 → 必须抓到违规 ══
     h_log "准备修复前实现: $_T54_PRE_FIX_SHA 的产品文件树"
