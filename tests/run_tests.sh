@@ -85,6 +85,19 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #           (c) 扫描层真违规行在两种 ambient locale 下都必须抓到
 #         · 负向对照 7 必须做在扫描层：正则层是**故意**两种 locale 各跑一遍的，
 #           拿它比判定会判红自己
+# v2.16.0：第 21 轮 —— 迁移端认领「候选门槛 + 身份优先」用例 + ui_read_default 默认值改判语义
+#         · 新增 T115/T116（cases/25_sync_claim_gate_identity_t115.sh）：
+#           覆盖 Chief 裁定的认领第三款：候选规则必须 ROLE=1 + ENABLED=true +
+#           FAILOVER_ENABLED=true（没开故障转移的规则不许认领状态行）；
+#           认领顺序 = 先按组合键 (old_rule_id, 目标) 认领，再退到**还没认领过
+#           这个目标**的候选。★T94~T96 测不出这两点：六场景里每条规则都满足
+#           门槛 ⇒ 门槛失效也全绿；场景 6 只数行数不数行归谁 ⇒ 身份优先也测不出
+#         · T116 负向对照用**真实旧实现**（sync-pre = 75379aa：只有 ROLE=1 一道
+#           门槛、无身份优先、无「已认领」判定）⇒ A/B/C/D/F 五场景结论必须相反
+#         · cases/22 **零改动**：只读复用它的 helper（规则夹具自带在 cases/25）
+#         · T54 判定器 7b：ui_read_default 调用点的默认值由「非空即违规」（结构
+#           断言）改成「**肯定语义**才违规」（语义不变式）⇒ 将来合法传 ""/n 不
+#           会误红；并补负向对照 7b（注入 "y" 必须被抓到 ⇒ 断言不是恒绿）
 # v2.15.0：第 19 轮 —— 读端塌缩回归用例（T114）+ 已知缺陷「预期红」标注机制
 #         · 新增 T114（cases/24_readend_collapse_t114.sh）：两条规则共用同一后端
 #           host:port 时，读端必须按 (RULE_ID, 目标) 组合键各读各的 status
@@ -209,7 +222,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #         · 负向对照：helper 层用注入式退化（helper 是新引入的，修复前没有等价形态，
 #           如实标注）；入口层用**真实修复前实现**（d0366b3 的 lib/）复现忙循环，
 #           断言的是「坏情况确实发生」（124 + 输出膨胀），不是「坏情况没发生」
-HARNESS_VERSION="v2.15.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive + negctl-selfcheck + t45-portable-equiv + t45-win-mv-truth + t32-locale-pin + t53-menu-eof + t32-copy-form-2 + t32-anchor-guard + t32-clause-exempt + t53-helper-count + t53-neg-floor + history-preflight + preflight-empty-guard + preflight-exit-passthrough + t54-ui-eof-closure-invariants + t54-judge-selfcheck + t53-rel-threshold + only-unregistered-exit4 + registry-selfcheck + t40-case-count-contract + probe-budget-10s + install-list-from-product + t63-t67-quality-observation + t68-t76-switch-reliability + t77-t84-weight10-exclusive + t85-t88-n4-probe-regen + run-lock-done-marker + t114-readend-collapse + expect-fail-exit5)"
+HARNESS_VERSION="v2.16.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive + negctl-selfcheck + t45-portable-equiv + t45-win-mv-truth + t32-locale-pin + t53-menu-eof + t32-copy-form-2 + t32-anchor-guard + t32-clause-exempt + t53-helper-count + t53-neg-floor + history-preflight + preflight-empty-guard + preflight-exit-passthrough + t54-ui-eof-closure-invariants + t54-judge-selfcheck + t53-rel-threshold + only-unregistered-exit4 + registry-selfcheck + t40-case-count-contract + probe-budget-10s + install-list-from-product + t63-t67-quality-observation + t68-t76-switch-reliability + t77-t84-weight10-exclusive + t85-t88-n4-probe-regen + run-lock-done-marker + t114-readend-collapse + expect-fail-exit5 + t54-affirm-default-7b + t115-t116-claim-gate-identity)"
 
 # shellcheck source=lib/harness.sh
 . "$SCRIPT_DIR/lib/harness.sh"
@@ -431,6 +444,13 @@ CASES=(
     "T95:case_T95_sync_negative_control_old_impl"
     "T96:case_T96_sync_old_vs_current_must_differ"
     "T114:case_T114_readend_collapse_same_target_two_rows"
+    # 迁移端认领：候选门槛 + 身份优先（Chief 裁定第三条）
+    #   ① 先按组合键 old_rule_id+目标地址认领 ② 再退到未认领过的候选
+    #   ③ 候选必须 ROLE=1 + ENABLED=true + FAILOVER_ENABLED=true
+    #   负向对照锚点 sync-pre = 75379aa（老实现：只有 ROLE=1 一道门槛、无身份优先、无已认领判定）
+    #   （T115~T116 · cases/25_sync_claim_gate_identity_t115.sh）
+    "T115:case_T115_sync_claim_identity_priority_and_candidate_gate"
+    "T116:case_T116_sync_gate_and_identity_negative_control_old_impl"
 )
 
 
