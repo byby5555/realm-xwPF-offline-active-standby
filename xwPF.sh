@@ -156,6 +156,14 @@ case "${1:-}" in
             echo -e "  ${_YELLOW}  详细日志：/var/log/xwPF/health-regenerate.log${_NC}"
             exit 1
         fi
+        # 快探测产物（**只观测**：每秒刷新菜单里的时延/丢包显示）
+        #   与判定端是**两条独立的流**：它不写判定端的状态文件、不触发配置重生成
+        #   ⇒ 起不来也不影响切换（这里**不** fail fast，与判定端不同）。
+        if declare -F fast_probe_script_regenerate >/dev/null 2>&1 && fast_probe_script_regenerate; then
+            echo -e "  ${_GREEN}✓${_NC} 已重新生成快探测脚本（只观测，不参与切换）"
+        else
+            echo -e "  ${_YELLOW}提示：${_NC}快探测脚本未生成（只影响菜单里的时延/丢包刷新，不影响主备切换）"
+        fi
         ;;
     uninstall)
         [ "$(id -u)" -ne 0 ] && { echo -e "${_RED}错误: 需要 root 权限${_NC}"; exit 1; }

@@ -176,6 +176,16 @@ FAILOVER_ENABLED="true"
 | `lib/health.sh` | `health_check_script_body` | 生成独立的 `health_check.sh`（探测实现由 `lib/health.sh` 的 `health_emit_function` 原样抽取注入，与真源逐字一致，无需手工同步） |
 | `lib/health.sh` | `start_health_check_service` | 生成 `realm-health-check.service` / `.timer` 并启停 |
 | `lib/health.sh` | `stop_health_check_service` | 停止并清理健康检查服务 |
+| `lib/health.sh` | `fast_probe_script_body` | 生成独立的 `fast_probe.sh`（**只观测**：每秒一轮，只写自己的观测文件，不参与切换） |
+| `lib/health.sh` | `fast_probe_guard_check` | 快探测生成物的**反向护栏**：产物里出现「写状态文件 / 触发配置重生成」的字样 ⇒ 拒绝安装 |
+| `lib/health.sh` | `fast_probe_classify` | 快探测的失败分型（退出码 + stderr 文本 → ok/timeout/refused/unreachable/unknown） |
+| `lib/health.sh` | `start_fast_probe_service` | 生成 `realm-fast-probe.service` / `.timer`（`AccuracySec=1s`，否则 1 秒一轮会被对齐到分钟边界） |
+
+> ⚠️ **快探测（1 秒一轮）不改变切换时机**：
+> 它是**独立的一条流**（独立脚本 + 独立 timer + 独立观测文件），
+> **不写**判定流的状态文件、**不触发**配置重生成 ——
+> 切换仍然只由判定流按规则里的 `HEALTH_CHECK_INTERVAL` / `FAILURE_THRESHOLD` 决定。
+> 详见 [健康检查与故障转移 §3.5](health-check-and-failover.md#35-快探测流只观测每秒一轮的时延与丢包)。
 
 ## 与"剔除模式"（原有）的关键差异
 

@@ -17,6 +17,21 @@ HEALTH_DIR="${HEALTH_DIR:-${CONFIG_DIR}/health}"
 HEALTH_STATUS_FILE="${HEALTH_STATUS_FILE:-${HEALTH_DIR}/health_status.conf}"
 HEALTH_LOCK_FILE="${HEALTH_LOCK_FILE:-/var/lock/realm-health-check.lock}"
 
+# ★ 快探测（**只观测**：每秒一轮，刷新菜单里的时延/丢包显示）
+#
+#   观测文件**独立**：判定流的状态文件就是**切换判据的数据源**，
+#   快探测碰它 = 悄悄改了切换时机（口径：切换仍按负载均衡脚本的默认时间）。
+#   ⇒ 判定流一行不改；快探测是独立脚本 + 独立 timer + 独立观测文件。
+FAST_PROBE_FILE="${FAST_PROBE_FILE:-/var/lib/realm/fast_probe.conf}"
+# 观测节奏（秒）：1 秒一轮
+FAST_PROBE_INTERVAL="${FAST_PROBE_INTERVAL:-1}"
+# 单次探测的超时预算（秒）：**独立**于判定流的 CONNECTION_TIMEOUT
+#   （判定流默认 10 秒 —— 真机实测正常目标握手最慢 2274ms，3 秒预算会误判「不可达」；
+#     快探测要的是「每秒刷新一次显示」，预算太长 ⇒ 一个黑洞目标就能把 1 秒的节奏拖垮）
+FAST_PROBE_TIMEOUT="${FAST_PROBE_TIMEOUT:-2}"
+# 丢包统计窗口（采样数）：1 秒一轮 ⇒ 20 个样本 ≈ 20 秒
+FAST_PROBE_WINDOW="${FAST_PROBE_WINDOW:-20}"
+
 # 本文件自身的路径：生成健康检查脚本时用它抽取函数原文
 REALM_HEALTH_LIB="${REALM_HEALTH_LIB:-${BASH_SOURCE[0]}}"
 
@@ -1119,6 +1134,11 @@ start_health_check_service() {
 [Unit]
 Description=Realm Health Check Service
 After=network.target
+# ★ StartLimitIntervalSec=0：关掉 systemd 的**启动限流**。
+#   默认限流是「10 秒内最多启动 5 次」⇒ 只要探测间隔 ≤ 2 秒就会撞上限流
+#   ⇒ 服务被判 start-limit-hit（每次都报错）⇒ 探测实际频率掉到限流允许的量级。
+#   真机实测（systemd 257）：不加这行，1 秒一轮时 20 秒只跑了 10 次。
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
@@ -1163,6 +1183,14 @@ EOF
         return 1
     fi
 
+    # ★ 快探测（**只观测**：每秒刷新菜单里的时延/丢包显示）
+    #   独立脚本 + 独立 timer + 独立观测文件 ⇒ 不碰判定流的状态文件、不触发配置重生成。
+    #   ★ 起不来**不许**让主备开关回滚：它只是显示增强，
+    #     切换判据在判定流那边，与它无关（口径：切换时机按负载均衡脚本的默认时间）。
+    if ! start_fast_probe_service "${FAST_PROBE_INTERVAL:-1}"; then
+        echo -e "${YELLOW}提示: 快探测（时延/丢包显示）启动失败，主备切换不受影响${NC}" >&2
+    fi
+
     echo -e "${GREEN}✓ 健康检查服务已启动 (检查间隔: ${effective_interval}s)${NC}"
 }
 
@@ -1173,6 +1201,9 @@ stop_health_check_service() {
     systemctl stop realm-health-check.service >/dev/null 2>&1
     systemctl disable realm-health-check.service >/dev/null 2>&1
 
+    # ★ 快探测随判定流一起停（它只是显示增强，判定流没了它就没有观测对象）
+    stop_fast_probe_service >/dev/null 2>&1 || true
+
     # 删除服务文件
     rm -f "/etc/systemd/system/realm-health-check.timer"
     rm -f "/etc/systemd/system/realm-health-check.service"
@@ -1181,4 +1212,532 @@ stop_health_check_service() {
     systemctl daemon-reload
 
     echo -e "${GREEN}✓ 健康检查服务已停止${NC}"
+}
+
+# ══════════════════════════════════════════════════════════════
+# 快探测流（**只观测**：每秒一轮，刷新菜单里的时延/丢包显示）
+# ══════════════════════════════════════════════════════════════
+#
+# ★ 为什么要「两条流」而不是「一条流两个节奏」：
+#   判定流（health_check.sh）写状态文件 —— 那个文件**就是切换判据的数据源**。
+#   只要快探测写它，就等于悄悄改了切换时机（口径：切换仍按负载均衡脚本的默认时间）。
+#   ⇒ 判定流**一行不改**；快探测是**独立脚本 + 独立 timer + 独立观测文件**，
+#     只写观测数据，**绝不**写判定流的状态文件、**绝不**触发配置重生成。
+#
+# ★ 生成物的反向护栏（可测试的硬不变式）：
+#   快探测生成物里一旦出现「写状态文件」或「触发配置重生成」的字样 ⇒ **拒绝安装**。
+#   理由：这两件事一旦发生，快探测就从「只观测」变成「参与切换」，
+#   而「参与切换」是**架构级**的决定（不是改个参数能回退的那种）。
+
+# 快探测的**失败分型**（纯判定：退出码 + stderr 文本 → 结果类型）
+#   用法：fast_probe_classify <退出码> <stderr 文本>
+#   → ok | timeout | refused | unreachable | unknown
+#
+# ★ 这条判定必须**可独立测试**（台架直接喂退出码与文本）：
+#   真机上「连不上」的具体形态由网络栈决定（同一个症状在不同宿主上可能是
+#   RST 拒绝，也可能是 SYN 被丢）⇒ 把断言写成「某宿主必然出现某形态」
+#   就是把断言绑在环境上（必假红）。**分型的规则本身**才是要测的东西。
+fast_probe_classify() {
+    local rc="$1" err="${2:-}"
+
+    if [ "$rc" -eq 0 ]; then
+        printf 'ok\n'
+        return 0
+    fi
+    # 124 = timeout 杀掉了内层进程 ⇒ SYN 被丢弃（黑洞 / 路径丢包）
+    if [ "$rc" -eq 124 ]; then
+        printf 'timeout\n'
+        return 0
+    fi
+    case "$err" in
+        *"No such file or directory"*) printf 'unknown\n'; return 0 ;;   # 本机 bash 不支持 /dev/tcp
+        *"Connection refused"*)        printf 'refused\n'; return 0 ;;
+        *"Connection timed out"*)      printf 'timeout\n'; return 0 ;;
+        *"Network is unreachable"*)    printf 'unreachable\n'; return 0 ;;
+        *"No route to host"*)          printf 'unreachable\n'; return 0 ;;
+        *"Host is unreachable"*)       printf 'unreachable\n'; return 0 ;;
+    esac
+    # 认不出来就标 unknown：**不猜**（猜错 = 把「拒绝」说成「丢包」，比不说更坏）
+    printf 'unknown\n'
+    return 0
+}
+
+# 快探测：一次 TCP 握手探测 + **失败分型**
+#
+# 返回值：0 = 通；1 = 不通
+# 全局 FAST_PROBE_RESULT ∈ ok | timeout | refused | unreachable | unknown
+# 全局 FAST_PROBE_LAT_MS = 本次握手耗时（毫秒；取不到时间戳就留空）
+#
+# ★ 分型靠 `timeout` 的退出码（0 / 124 / 其它）：
+#   124 = 超时 ⇒ SYN 被丢弃（黑洞 / 路径丢包 / 防火墙静默丢包）—— 这才是「丢包」
+#   其它非 0 = 连接被拒（RST）或网络不可达 ⇒ **不是**丢包
+#   ⇒ 不用 nc 分型：nc 两种失败都返回 1（只有 -v 的文本能分，不可靠）
+fast_probe_connect() {
+    local target="$1"
+    local port="$2"
+    local timeout="${3:-2}"
+    local t0="" t1="" rc=0 err=""
+
+    FAST_PROBE_RESULT="unknown"
+    FAST_PROBE_LAT_MS=""
+
+    # 目标/端口的形状先校验：形状不对就**不猜**（标 unknown，交给上层显示「未知」）
+    #   （这里不做校验的话，规则里的畸形值会被拼进内层 bash 命令 ⇒ 命令注入面）
+    #   ★ host 允许 ':' —— IPv6 字面量（::1）也是合法目标；
+    #     允许的字符集里不含引号/美元号/反引号/反斜杠 ⇒ 拼进内层命令是安全的。
+    case "$target" in
+        ''|*[!A-Za-z0-9._:-]*) return 1 ;;
+    esac
+    case "$port" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+
+    t0=$(now_us) || t0=""
+    if command -v timeout >/dev/null 2>&1; then
+        err=$(timeout "$timeout" bash -c "exec 3<>/dev/tcp/${target}/${port}" 2>&1 >/dev/null)
+        rc=$?
+    else
+        err="no-timeout-binary"
+        rc=127
+    fi
+    t1=$(now_us) || t1=""
+
+    if [ -n "$t0" ] && [ -n "$t1" ] && [ "$t1" -ge "$t0" ]; then
+        FAST_PROBE_LAT_MS=$(( (t1 - t0) / 1000 ))
+    fi
+
+    FAST_PROBE_RESULT="$(fast_probe_classify "$rc" "$err")"
+    if [ "$FAST_PROBE_RESULT" = "ok" ]; then
+        return 0
+    fi
+    return 1
+}
+
+# 把一次结果推进滚动窗口（满了丢最旧一次）
+#   用法：fast_probe_seq_push <结果序列> <本次结果字符> <窗口大小>
+#   序列字符：o=通 t=超时(SYN 被丢) r=拒绝 u=不可达 x=未知
+fast_probe_seq_push() {
+    local seq="$1" ch="$2" win="$3"
+    local out="${seq}${ch}"
+    case "$win" in
+        ''|*[!0-9]*) win=20 ;;
+    esac
+    [ "$win" -lt 1 ] && win=1
+    while [ "${#out}" -gt "$win" ]; do
+        out="${out:1}"
+    done
+    printf '%s\n' "$out"
+}
+
+# 把一次**成功**样本的时延推进历史（上限 5，与显示口径的历史长度一致）
+#   用法：fast_probe_hist_push <历史> <本次时延毫秒> <上限>
+fast_probe_hist_push() {
+    local hist="$1" lat="$2" max="$3"
+    case "$lat" in
+        ''|*[!0-9]*) lat=0 ;;
+    esac
+    case "$max" in
+        ''|*[!0-9]*) max=5 ;;
+    esac
+    [ "$max" -lt 1 ] && max=1
+
+    local -a arr=()
+    local out
+    if [ -n "$hist" ]; then
+        out="${hist},${lat}"
+    else
+        out="${lat}"
+    fi
+    local IFS=','
+    read -ra arr <<< "$out"
+    while [ "${#arr[@]}" -gt "$max" ]; do
+        arr=("${arr[@]:1}")
+    done
+    out=$(IFS=','; echo "${arr[*]}")
+    printf '%s\n' "$out"
+}
+
+# 生成快探测脚本（独立可执行，systemd 直接调用）
+#
+# ★ 生成物里**只有**观测逻辑：写自己的观测文件，不碰判定流的状态文件、
+#   不触发配置重生成（这条由 fast_probe_guard_check 反向护栏兜底）。
+fast_probe_script_body() {
+    {
+        cat << 'HEADER_EOF'
+#!/bin/bash
+
+# 快探测脚本（只观测，不参与切换）
+# 本文件由 lib/health.sh 的 fast_probe_script_body 生成，请勿手工修改。
+#
+# 硬红线（不可放宽）：
+#   本脚本只写自己的观测文件。它不写判定流的状态文件，也不触发配置重生成。
+#   切换时机仍由判定流（health_check.sh）按规则里的
+#   HEALTH_CHECK_INTERVAL / FAILURE_THRESHOLD 决定。
+
+FAST_PROBE_FILE="${FAST_PROBE_FILE:-/var/lib/realm/fast_probe.conf}"
+FAST_PROBE_RULES_DIR="${FAST_PROBE_RULES_DIR:-/etc/realm/rules}"
+FAST_PROBE_LOCK_FILE="${FAST_PROBE_LOCK_FILE:-/var/lock/realm-fast-probe.lock}"
+FAST_PROBE_TIMEOUT="${FAST_PROBE_TIMEOUT:-2}"
+FAST_PROBE_WINDOW="${FAST_PROBE_WINDOW:-20}"
+FAST_PROBE_HIST_MAX=5
+
+# 文件锁：上一轮还没跑完就跳过本轮（不排队、不堆积）
+# ★ 锁目录先建：目录不存在时 exec 会失败 ⇒ flock 拿不到 fd ⇒
+#   每轮都被当成「已在运行中」静默跳过（探测变成永不执行，且不报错）。
+mkdir -p "$(dirname "$FAST_PROBE_LOCK_FILE")" 2>/dev/null || true
+exec 200>"$FAST_PROBE_LOCK_FILE"
+if ! flock -n 200; then
+    exit 0
+fi
+HEADER_EOF
+
+        # ↓↓↓ 以下函数从 lib/health.sh（唯一真源）原样抽取，勿手工维护副本 ↓↓↓
+        health_emit_function read_rule_file
+        # 共用真源：目标枚举口径（与判定流、路由端同一份）
+        local _shared_core_lib
+        _shared_core_lib="$(health_shared_core_lib || true)"
+        if [ -n "$_shared_core_lib" ]; then
+            health_emit_function rule_target_endpoints "$_shared_core_lib"
+        else
+            echo "错误: 找不到共用真源 lib/core.sh（rule_target_endpoints 抽取失败）" >&2
+        fi
+        health_emit_function now_us
+        health_emit_function fast_probe_classify
+        health_emit_function fast_probe_connect
+        health_emit_function fast_probe_seq_push
+        health_emit_function fast_probe_hist_push
+        # ↑↑↑ 抽取结束 ↑↑↑
+
+        cat << 'BODY_EOF'
+# 取上一轮的观测行（跨轮继承结果序列与时延历史）
+#   组合键 = (RULE_ID, 目标)：与判定流/质量窗口同口径，
+#   避免同后端被两条规则共用时显示成另一条规则的观测。
+fast_probe_prev_row() {
+    local target="$1" rule_id="$2" line=""
+    [ -f "$FAST_PROBE_FILE" ] || return 1
+    line=$(awk -F'|' -v t="$target" -v r="$rule_id" \
+        '!/^#/ && $1 == t && $2 == r { print; exit }' "$FAST_PROBE_FILE" 2>/dev/null)
+    [ -n "$line" ] || return 1
+    printf '%s\n' "$line"
+}
+
+_rows_new="${FAST_PROBE_FILE}.new.$$"
+: > "$_rows_new"
+
+for _rule_file in "${FAST_PROBE_RULES_DIR}"/rule-*.conf; do
+    [ -f "$_rule_file" ] || continue
+    read_rule_file "$_rule_file" || continue
+    # 探测范围与判定流一致：中转规则 + 已启用 + 已开故障转移
+    [ "$RULE_ROLE" = "1" ] || continue
+    [ "$ENABLED" = "true" ] || continue
+    [ "${FAILOVER_ENABLED:-false}" = "true" ] || continue
+
+    _targets="$(rule_target_endpoints)"
+    IFS=',' read -ra _tlist <<< "$_targets"
+    for _ep in "${_tlist[@]}"; do
+        _ep="${_ep//[[:space:]]/}"
+        [ -n "$_ep" ] || continue
+        _host="${_ep%:*}"
+        _port="${_ep##*:}"
+        if [ -z "$_port" ] || [ "$_port" = "$_ep" ]; then
+            _port="${REMOTE_PORT:-}"
+            _ep="${_host}:${_port}"
+        fi
+
+        _prev=$(fast_probe_prev_row "$_ep" "$RULE_ID")
+        _p_seq=""
+        _p_hist=""
+        if [ -n "$_prev" ]; then
+            _p_seq="$(printf '%s' "$_prev" | cut -d'|' -f6)"
+            _p_hist="$(printf '%s' "$_prev" | cut -d'|' -f7)"
+        fi
+
+        fast_probe_connect "$_host" "$_port" "$FAST_PROBE_TIMEOUT"
+        _res="$FAST_PROBE_RESULT"
+        _lat="$FAST_PROBE_LAT_MS"
+        case "$_res" in
+            ok)          _c='o' ;;
+            timeout)     _c='t' ;;
+            refused)     _c='r' ;;
+            unreachable) _c='u' ;;
+            *)           _c='x' ;;
+        esac
+
+        _seq=$(fast_probe_seq_push "$_p_seq" "$_c" "$FAST_PROBE_WINDOW")
+        if [ "$_c" = "o" ]; then
+            _hist=$(fast_probe_hist_push "$_p_hist" "$_lat" "$FAST_PROBE_HIST_MAX")
+        else
+            _hist="$_p_hist"
+        fi
+
+        echo "${_ep}|${RULE_ID}|${_res}|${_lat}|$(date +%s)|${_seq}|${_hist}" >> "$_rows_new"
+    done
+done
+
+# 原子整份重建：目标消失后它的行自然消失（不留「还在观测」的残留）
+mkdir -p "$(dirname "$FAST_PROBE_FILE")" 2>/dev/null
+{
+    echo "# Realm快探测观测文件（只观测，不参与切换）"
+    echo "# 格式: TARGET|RULE_ID|RESULT|LAT_MS|TS|RESULT_SEQ|LAT_HIST"
+    echo "# RESULT: ok|timeout|refused|unreachable|unknown"
+    echo "# RESULT_SEQ: 最近若干次的结果序列（o=通 t=超时(SYN被丢) r=拒绝 u=不可达 x=未知）"
+    echo "# LAT_HIST: 最近若干次成功样本的握手时延（毫秒，逗号分隔）"
+    cat "$_rows_new" 2>/dev/null
+} > "${FAST_PROBE_FILE}.tmp.$$" 2>/dev/null && mv -f "${FAST_PROBE_FILE}.tmp.$$" "$FAST_PROBE_FILE" 2>/dev/null
+rm -f "$_rows_new" 2>/dev/null
+
+exit 0
+BODY_EOF
+    } | tr -d '\r'
+}
+
+# 快探测生成物的**反向护栏**：只观测，不参与切换
+#
+# 用法：fast_probe_guard_check <脚本路径>
+#   返回 0 = 通过；1 = 违反（并把违反项打印出来）
+#
+# ★ 为什么要有这条护栏：
+#   「快探测只观测、不参与切换」是**架构级**承诺（口径：切换时机按负载均衡脚本的默认时间）。
+#   一旦生成物里出现「写判定流状态文件」或「触发配置重生成」的字样，
+#   它就从「只观测」变成「参与切换」⇒ 必须**拒绝安装**，而不是装上去再说。
+fast_probe_guard_check() {
+    local script="$1"
+    local _bad=""
+
+    if [ ! -f "$script" ]; then
+        echo "生成物不存在"
+        return 1
+    fi
+    grep -qF 'health_status.conf' "$script" && _bad="${_bad} 写判定流的状态文件"
+    grep -qF 'restart-service' "$script" && _bad="${_bad} 触发配置重生成"
+    if [ -n "$_bad" ]; then
+        echo "违反「只观测」红线:${_bad}"
+        return 1
+    fi
+    return 0
+}
+
+# 重新生成快探测脚本（**只生成**，不碰 systemd）
+#
+# ★ 自检 + 反向护栏都在 **mv 之前**：
+#   失败时原来能跑的那份原封不动留在原处（不装残缺版）。
+fast_probe_script_regenerate() {
+    local fast_script="${1:-/etc/realm/health/fast_probe.sh}"
+    local fast_dir tmp_script _missing _guard
+
+    fast_dir=$(dirname "$fast_script")
+    tmp_script="${fast_script}.tmp.$$"
+
+    if ! mkdir -p "$fast_dir"; then
+        echo -e "${RED}✗ 创建快探测脚本目录失败: ${fast_dir}${NC}" >&2
+        return 1
+    fi
+
+    rm -f "$tmp_script"
+    if ! fast_probe_script_body > "$tmp_script" || [ ! -s "$tmp_script" ]; then
+        echo -e "${RED}✗ 生成快探测脚本失败: ${fast_script}${NC}" >&2
+        rm -f "$tmp_script"
+        return 1
+    fi
+
+    # 必要函数自检（在 mv 之前）：缺函数 ⇒ 拒绝安装
+    _missing=""
+    grep -q '^read_rule_file() {' "$tmp_script" || _missing="${_missing} read_rule_file"
+    grep -q '^rule_target_endpoints() {' "$tmp_script" || _missing="${_missing} rule_target_endpoints"
+    grep -q '^fast_probe_classify() {' "$tmp_script" || _missing="${_missing} fast_probe_classify"
+    grep -q '^fast_probe_connect() {' "$tmp_script" || _missing="${_missing} fast_probe_connect"
+    grep -q '快探测观测文件' "$tmp_script" || _missing="${_missing} <脚本尾部>"
+    if [ -n "$_missing" ]; then
+        echo -e "${RED}✗ 生成的快探测脚本缺少函数: ${_missing}${NC}" >&2
+        rm -f "$tmp_script"
+        return 1
+    fi
+
+    # ★ 反向护栏：生成物一旦出现「写状态文件 / 触发配置重生成」的字样 ⇒ 拒绝安装
+    if ! _guard="$(fast_probe_guard_check "$tmp_script" 2>&1)"; then
+        echo -e "${RED}✗ 快探测脚本${_guard}，拒绝安装${NC}" >&2
+        rm -f "$tmp_script"
+        return 1
+    fi
+
+    if ! mv -f "$tmp_script" "$fast_script"; then
+        echo -e "${RED}✗ 写入快探测脚本失败: ${fast_script}${NC}" >&2
+        rm -f "$tmp_script"
+        return 1
+    fi
+    chmod +x "$fast_script" || {
+        echo -e "${RED}✗ 设置可执行权限失败: ${fast_script}${NC}" >&2
+        return 1
+    }
+
+    return 0
+}
+
+start_fast_probe_service() {
+    local fast_script="/etc/realm/health/fast_probe.sh"
+    local fast_timer="/etc/systemd/system/realm-fast-probe.timer"
+    local fast_service="/etc/systemd/system/realm-fast-probe.service"
+    local fast_interval="${1:-${FAST_PROBE_INTERVAL:-1}}"
+
+    if ! fast_probe_script_regenerate "$fast_script"; then
+        return 1
+    fi
+
+    tr -d '\r' > "$fast_service" << EOF
+[Unit]
+Description=Realm Fast Probe Service
+After=network.target
+# ★ StartLimitIntervalSec=0：关掉 systemd 的**启动限流**。
+#   默认限流是「10 秒内最多启动 5 次」⇒ 1 秒一轮的 oneshot 必然撞上限流
+#   ⇒ 服务被判 start-limit-hit（每次都报错）⇒ 探测实际只剩 0.5 次/秒。
+#   真机实测（systemd 257）：不加这行，20 秒只跑了 10 次；加了之后按 1 秒跑。
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=$fast_script
+User=root
+WorkingDirectory=/etc/realm
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=realm-fast-probe
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # ★ 用**日历表达式**定「1 秒一轮」，不用 OnUnitActiveSec：
+    #   真机实测（systemd 257 / Debian 13，各复现两轮）：
+    #     OnUnitActiveSec=1sec + AccuracySec=1s ⇒ 实际间隔 **约 2 秒**（不是 1 秒）
+    #     OnCalendar=*-*-* *:*:0/1 + AccuracySec=1s ⇒ 实际间隔 **约 1.00 秒**
+    #   ⇒ 想要真的 1 秒一轮，只能用日历表达式（秒位重复 0/1 = 每秒）。
+    # ★ AccuracySec=1s：systemd 默认 AccuracySec 是 **1 分钟**，
+    #   定时器会被对齐到分钟边界 ⇒ 不显式压到 1 秒，节奏根本不是 1 秒。
+    tr -d '\r' > "$fast_timer" << EOF
+[Unit]
+Description=Realm Fast Probe Timer
+Requires=realm-fast-probe.service
+
+[Timer]
+OnBootSec=15s
+OnCalendar=*-*-* *:*:0/${fast_interval}
+AccuracySec=1s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+    if ! systemctl daemon-reload; then
+        echo -e "${RED}✗ systemctl daemon-reload 失败${NC}" >&2
+        return 1
+    fi
+    if ! systemctl enable realm-fast-probe.timer; then
+        echo -e "${RED}✗ systemctl enable realm-fast-probe.timer 失败${NC}" >&2
+        return 1
+    fi
+    if ! systemctl start realm-fast-probe.timer; then
+        echo -e "${RED}✗ systemctl start realm-fast-probe.timer 失败${NC}" >&2
+        return 1
+    fi
+
+    echo -e "${GREEN}✓ 快探测服务已启动 (观测间隔: ${fast_interval}s，仅刷新时延/丢包显示)${NC}"
+}
+
+stop_fast_probe_service() {
+    systemctl stop realm-fast-probe.timer >/dev/null 2>&1
+    systemctl disable realm-fast-probe.timer >/dev/null 2>&1
+    systemctl stop realm-fast-probe.service >/dev/null 2>&1
+    systemctl disable realm-fast-probe.service >/dev/null 2>&1
+
+    rm -f "/etc/systemd/system/realm-fast-probe.timer"
+    rm -f "/etc/systemd/system/realm-fast-probe.service"
+    rm -f "/etc/realm/health/fast_probe.sh"
+
+    systemctl daemon-reload >/dev/null 2>&1
+    return 0
+}
+
+# 读快探测观测（**只读**，不改任何状态）
+#   用法：fast_probe_stats <目标> [规则ID]
+#   → "RESULT|LAT_MS|TS|TIMEOUTS|TOTAL|LAT_HIST"（读不到 → 空串）
+#   组合键 = (RULE_ID, 目标)：认不出归属规则时退化为「只按目标找一行」。
+fast_probe_stats() {
+    local target="$1" rule_id="${2:-}"
+    local line=""
+
+    [ -f "$FAST_PROBE_FILE" ] || return 1
+
+    if [ -n "$rule_id" ]; then
+        line=$(awk -F'|' -v t="$target" -v r="$rule_id" \
+            '!/^#/ && $1 == t && $2 == r { print; exit }' "$FAST_PROBE_FILE" 2>/dev/null)
+    fi
+    if [ -z "$line" ]; then
+        line=$(awk -F'|' -v t="$target" \
+            '!/^#/ && $1 == t { print; exit }' "$FAST_PROBE_FILE" 2>/dev/null)
+    fi
+    [ -n "$line" ] || return 1
+
+    local _f1 _f2 _f3 _f4 _f5 _f6 _f7
+    IFS='|' read -r _f1 _f2 _f3 _f4 _f5 _f6 _f7 <<< "$line"
+
+    # 结果序列 → 超时次数（SYN 被丢 = 丢包）/ 采样总数
+    local _seq="${_f6:-}" _to=0 _total=0 _ch _i=0 _n=${#_f6}
+    _total=$_n
+    while [ "$_i" -lt "$_n" ]; do
+        _ch="${_seq:$_i:1}"
+        [ "$_ch" = "t" ] && _to=$((_to + 1))
+        _i=$((_i + 1))
+    done
+
+    printf '%s|%s|%s|%s|%s|%s\n' "${_f3:-}" "${_f4:-}" "${_f5:-}" "$_to" "$_total" "${_f7:-}"
+}
+
+# 快探测的**丢包**展示串（只读）
+#   用法：fast_probe_loss_display <目标> [规则ID]
+#   → "[丢包: 5% (1/20)]"（没有观测数据 → 空串）
+#   ★ 丢包口径 = **SYN 被丢弃**（超时）的采样占比；
+#     「连接被拒」是目标主动拒绝，不算丢包（那类失败看 [探测: 拒绝]）。
+#   ★ **丢包为 0 时不显示**：每个目标都挂一行「丢包: 0% (0/20)」只是噪音；
+#     有丢包才值得占一行（没有观测数据同样不显示）。
+fast_probe_loss_display() {
+    local target="$1" rule_id="${2:-}"
+    local stats _result _lat _ts _to _total _hist
+
+    stats="$(fast_probe_stats "$target" "$rule_id")" || return 0
+    [ -n "$stats" ] || return 0
+    IFS='|' read -r _result _lat _ts _to _total _hist <<< "$stats"
+
+    case "${_total:-0}" in
+        ''|*[!0-9]*) return 0 ;;
+    esac
+    [ "$_total" -gt 0 ] || return 0
+    case "${_to:-0}" in
+        ''|*[!0-9]*) _to=0 ;;
+    esac
+    [ "$_to" -gt 0 ] || return 0
+
+    local rate=$(( _to * 100 / _total ))
+    printf '[丢包: %s%% (%s/%s)]\n' "$rate" "$_to" "$_total"
+}
+
+# 快探测的**失败分型**展示串（只读）
+#   用法：fast_probe_result_display <目标> [规则ID]
+#   → "[探测: 超时]" / "[探测: 拒绝]" / "[探测: 不可达]" / "[探测: 未知]"
+#     （通了或没有观测数据 → 空串）
+fast_probe_result_display() {
+    local target="$1" rule_id="${2:-}"
+    local stats _result
+
+    stats="$(fast_probe_stats "$target" "$rule_id")" || return 0
+    [ -n "$stats" ] || return 0
+    _result="${stats%%|*}"
+
+    case "$_result" in
+        timeout)     printf '[探测: 超时]\n' ;;
+        refused)     printf '[探测: 拒绝]\n' ;;
+        unreachable) printf '[探测: 不可达]\n' ;;
+        unknown)     printf '[探测: 未知]\n' ;;
+        *)           ;;   # ok → 不显示
+    esac
 }
