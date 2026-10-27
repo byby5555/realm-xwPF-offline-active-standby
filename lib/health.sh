@@ -209,13 +209,20 @@ check_connectivity() {
 #   ★ NOW_US_FORCE_FALLBACK=1：强制走 date 分支。
 #     台架要能在 bash 5 的机器上**覆盖**回退分支 ——
 #     否则回退分支永远没被测过（bash 4 的机器上它才是主路径 ⇒ 盲区）。
+# ★ 顺带设一个全局出口 NOW_US_VALUE（微秒）：
+#   调用方若用 `t=$(now_us)` 取值，**每次调用都要 fork 一个子 shell**
+#   ——在「每秒一轮、每轮十几个目标」的快探测里，这属于纯浪费。
+#   ⇒ 热路径改成 `now_us; t="$NOW_US_VALUE"`（零 fork），
+#     需要捕获输出的老调用方（`$(now_us)`）**行为不变**。
 now_us() {
+    NOW_US_VALUE=""
     if [ "${NOW_US_FORCE_FALLBACK:-0}" != "1" ] && [ -n "${EPOCHREALTIME:-}" ]; then
         local t="${EPOCHREALTIME}"
         t="${t/[.,]/}"
         case "$t" in
             ''|*[!0-9]*) return 1 ;;
         esac
+        NOW_US_VALUE="$t"
         echo "$t"
         return 0
     fi
@@ -227,7 +234,8 @@ now_us() {
         *[!0-9]*) return 1 ;;
     esac
     # 纳秒 → 微秒（÷1000）：换算在**本函数**里做，调用方只拿微秒
-    echo $(( t / 1000 ))
+    NOW_US_VALUE=$(( t / 1000 ))
+    echo "$NOW_US_VALUE"
     return 0
 }
 
@@ -1237,25 +1245,33 @@ stop_health_check_service() {
 #   真机上「连不上」的具体形态由网络栈决定（同一个症状在不同宿主上可能是
 #   RST 拒绝，也可能是 SYN 被丢）⇒ 把断言写成「某宿主必然出现某形态」
 #   就是把断言绑在环境上（必假红）。**分型的规则本身**才是要测的东西。
+# ★ 顺带设全局出口 FAST_PROBE_CLASS（ok|timeout|refused|unreachable|unknown）：
+#   分类规则要跑在**每秒一轮**的快探测里 ⇒ `$(fast_probe_classify ...)`
+#   每目标一次命令替换 = 每目标一次 fork。
+#   ⇒ 热路径改成 `fast_probe_classify ... >/dev/null` + 读全局（零 fork），
+#     需要捕获输出的调用方（台架 T125 直接调它）**行为不变**。
 fast_probe_classify() {
     local rc="$1" err="${2:-}"
 
+    FAST_PROBE_CLASS="unknown"
     if [ "$rc" -eq 0 ]; then
+        FAST_PROBE_CLASS="ok"
         printf 'ok\n'
         return 0
     fi
     # 124 = timeout 杀掉了内层进程 ⇒ SYN 被丢弃（黑洞 / 路径丢包）
     if [ "$rc" -eq 124 ]; then
+        FAST_PROBE_CLASS="timeout"
         printf 'timeout\n'
         return 0
     fi
     case "$err" in
-        *"No such file or directory"*) printf 'unknown\n'; return 0 ;;   # 本机 bash 不支持 /dev/tcp
-        *"Connection refused"*)        printf 'refused\n'; return 0 ;;
-        *"Connection timed out"*)      printf 'timeout\n'; return 0 ;;
-        *"Network is unreachable"*)    printf 'unreachable\n'; return 0 ;;
-        *"No route to host"*)          printf 'unreachable\n'; return 0 ;;
-        *"Host is unreachable"*)       printf 'unreachable\n'; return 0 ;;
+        *"No such file or directory"*) FAST_PROBE_CLASS="unknown"; printf 'unknown\n'; return 0 ;;   # 本机 bash 不支持 /dev/tcp
+        *"Connection refused"*)        FAST_PROBE_CLASS="refused"; printf 'refused\n'; return 0 ;;
+        *"Connection timed out"*)      FAST_PROBE_CLASS="timeout"; printf 'timeout\n'; return 0 ;;
+        *"Network is unreachable"*)    FAST_PROBE_CLASS="unreachable"; printf 'unreachable\n'; return 0 ;;
+        *"No route to host"*)          FAST_PROBE_CLASS="unreachable"; printf 'unreachable\n'; return 0 ;;
+        *"Host is unreachable"*)       FAST_PROBE_CLASS="unreachable"; printf 'unreachable\n'; return 0 ;;
     esac
     # 认不出来就标 unknown：**不猜**（猜错 = 把「拒绝」说成「丢包」，比不说更坏）
     printf 'unknown\n'
@@ -1276,7 +1292,7 @@ fast_probe_connect() {
     local target="$1"
     local port="$2"
     local timeout="${3:-2}"
-    local t0="" t1="" rc=0 err=""
+    local t0="" t1="" rc=0 err="" _err_file=""
 
     FAST_PROBE_RESULT="unknown"
     FAST_PROBE_LAT_MS=""
@@ -1292,21 +1308,35 @@ fast_probe_connect() {
         ''|*[!0-9]*) return 1 ;;
     esac
 
-    t0=$(now_us) || t0=""
+    # ★ 热路径零 fork：时间戳走 now_us 的全局出口（`$(now_us)` 每目标要两次 fork）
+    #   （stdout 必须丢掉：now_us 会 echo，微秒戳泄到 journal 里就是每秒刷屏）
+    now_us >/dev/null || true
+    t0="$NOW_US_VALUE"
     if command -v timeout >/dev/null 2>&1; then
-        err=$(timeout "$timeout" bash -c "exec 3<>/dev/tcp/${target}/${port}" 2>&1 >/dev/null)
+        # stderr 落临时文件再读回：`err=$(...)` 的命令替换本身要 fork 一个子 shell
+        #   （每目标一次 ⇒ 每轮十几次）⇒ 改用 bash 的 `$(<file)`（**不 fork** 的读法）。
+        #   临时文件每目标复用同一路径（每次 2> 都会截断），轮末由调用方清一次。
+        _err_file="${FAST_PROBE_ERR_FILE:-${TMPDIR:-/tmp}/realm-fp-err.$$}"
+        timeout "$timeout" bash -c "exec 3<>/dev/tcp/${target}/${port}" 2>"$_err_file" >/dev/null
         rc=$?
+        err=""
+        if [ -s "$_err_file" ]; then
+            err="$(<"$_err_file")"
+        fi
     else
         err="no-timeout-binary"
         rc=127
     fi
-    t1=$(now_us) || t1=""
+    now_us >/dev/null || true
+    t1="$NOW_US_VALUE"
 
     if [ -n "$t0" ] && [ -n "$t1" ] && [ "$t1" -ge "$t0" ]; then
         FAST_PROBE_LAT_MS=$(( (t1 - t0) / 1000 ))
     fi
 
-    FAST_PROBE_RESULT="$(fast_probe_classify "$rc" "$err")"
+    # 分型走全局出口（命令替换版每目标一次 fork）
+    fast_probe_classify "$rc" "$err" >/dev/null
+    FAST_PROBE_RESULT="$FAST_PROBE_CLASS"
     if [ "$FAST_PROBE_RESULT" = "ok" ]; then
         return 0
     fi
@@ -1316,6 +1346,7 @@ fast_probe_connect() {
 # 把一次结果推进滚动窗口（满了丢最旧一次）
 #   用法：fast_probe_seq_push <结果序列> <本次结果字符> <窗口大小>
 #   序列字符：o=通 t=超时(SYN 被丢) r=拒绝 u=不可达 x=未知
+# ★ 全局出口 FAST_PROBE_SEQ：热路径可 `fast_probe_seq_push ... >/dev/null` 后读全局（零 fork）
 fast_probe_seq_push() {
     local seq="$1" ch="$2" win="$3"
     local out="${seq}${ch}"
@@ -1326,11 +1357,13 @@ fast_probe_seq_push() {
     while [ "${#out}" -gt "$win" ]; do
         out="${out:1}"
     done
+    FAST_PROBE_SEQ="$out"
     printf '%s\n' "$out"
 }
 
 # 把一次**成功**样本的时延推进历史（上限 5，与显示口径的历史长度一致）
 #   用法：fast_probe_hist_push <历史> <本次时延毫秒> <上限>
+# ★ 全局出口 FAST_PROBE_HIST：热路径可 `fast_probe_hist_push ... >/dev/null` 后读全局（零 fork）
 fast_probe_hist_push() {
     local hist="$1" lat="$2" max="$3"
     case "$lat" in
@@ -1354,6 +1387,7 @@ fast_probe_hist_push() {
         arr=("${arr[@]:1}")
     done
     out=$(IFS=','; echo "${arr[*]}")
+    FAST_PROBE_HIST="$out"
     printf '%s\n' "$out"
 }
 
@@ -1381,10 +1415,17 @@ FAST_PROBE_TIMEOUT="${FAST_PROBE_TIMEOUT:-2}"
 FAST_PROBE_WINDOW="${FAST_PROBE_WINDOW:-20}"
 FAST_PROBE_HIST_MAX=5
 
+# 锁目录（纯 bash 取父目录，不 fork dirname）
+FAST_PROBE_LOCK_DIR="${FAST_PROBE_LOCK_FILE%/*}"
+[ "$FAST_PROBE_LOCK_DIR" = "$FAST_PROBE_LOCK_FILE" ] && FAST_PROBE_LOCK_DIR="."
+# 探测错误文本的临时文件（每轮复用同一路径，轮末清一次）
+FAST_PROBE_ERR_FILE="${FAST_PROBE_ERR_FILE:-${FAST_PROBE_LOCK_DIR}/fast_probe.err}"
+
 # 文件锁：上一轮还没跑完就跳过本轮（不排队、不堆积）
 # ★ 锁目录先建：目录不存在时 exec 会失败 ⇒ flock 拿不到 fd ⇒
 #   每轮都被当成「已在运行中」静默跳过（探测变成永不执行，且不报错）。
-mkdir -p "$(dirname "$FAST_PROBE_LOCK_FILE")" 2>/dev/null || true
+#   （目录已存在时跳过 mkdir ⇒ 每轮少一次 fork）
+[ -d "$FAST_PROBE_LOCK_DIR" ] || mkdir -p "$FAST_PROBE_LOCK_DIR" 2>/dev/null || true
 exec 200>"$FAST_PROBE_LOCK_FILE"
 if ! flock -n 200; then
     exit 0
@@ -1412,17 +1453,44 @@ HEADER_EOF
 # 取上一轮的观测行（跨轮继承结果序列与时延历史）
 #   组合键 = (RULE_ID, 目标)：与判定流/质量窗口同口径，
 #   避免同后端被两条规则共用时显示成另一条规则的观测。
+#
+# ★ 用 bash 读循环而不是 awk：
+#   这段在「每秒一轮」的热路径上，awk 每目标一次 fork；
+#   bash 读循环零 fork。语义与原来那条 awk 一致
+#   （取第一条 (target, rule_id) 匹配的非注释行）。
 fast_probe_prev_row() {
-    local target="$1" rule_id="$2" line=""
+    local target="$1" rule_id="$2" line="" _f1="" _f2="" _rest=""
     [ -f "$FAST_PROBE_FILE" ] || return 1
-    line=$(awk -F'|' -v t="$target" -v r="$rule_id" \
-        '!/^#/ && $1 == t && $2 == r { print; exit }' "$FAST_PROBE_FILE" 2>/dev/null)
+    while IFS='|' read -r _f1 _f2 _rest || [ -n "${_f1:-}" ]; do   # xwpf:noninteractive-io（输入来自快探测观测文件）
+        [ -n "$_f1" ] || continue
+        case "$_f1" in '#'*) continue ;; esac
+        if [ "$_f1" = "$target" ] && [ "$_f2" = "$rule_id" ]; then
+            line="${_f1}|${_f2}|${_rest}"
+            break
+        fi
+    done < "$FAST_PROBE_FILE"
     [ -n "$line" ] || return 1
     printf '%s\n' "$line"
 }
 
+# 本轮观测文件的新副本：表头**直接写进这个文件**（原来是用 cat 拼的 ⇒ 一次 fork）
 _rows_new="${FAST_PROBE_FILE}.new.$$"
-: > "$_rows_new"
+{
+    echo "# Realm快探测观测文件（只观测，不参与切换）"
+    echo "# 格式: TARGET|RULE_ID|RESULT|LAT_MS|TS|RESULT_SEQ|LAT_HIST"
+    echo "# RESULT: ok|timeout|refused|unreachable|unknown"
+    echo "# RESULT_SEQ: 最近若干次的结果序列（o=通 t=超时(SYN被丢) r=拒绝 u=不可达 x=未知）"
+    echo "# LAT_HIST: 最近若干次成功样本的握手时延（毫秒，逗号分隔）"
+} > "$_rows_new"
+
+# 本轮时间戳：整轮共用一个（原来每目标一次 date ⇒ 每目标一次 fork）
+#   printf -v 是 bash 内建（≥4.2），不 fork；老 bash 回落到 date。
+_now_ts=""
+if [ -n "${BASH_VERSINFO:-}" ] && [ "${BASH_VERSINFO[0]}" -ge 4 ] \
+   && [ "${BASH_VERSINFO[1]}" -ge 2 ]; then
+    printf -v _now_ts '%(%s)T' -1
+fi
+[ -n "$_now_ts" ] || _now_ts=$(date +%s)
 
 for _rule_file in "${FAST_PROBE_RULES_DIR}"/rule-*.conf; do
     [ -f "$_rule_file" ] || continue
@@ -1447,10 +1515,20 @@ for _rule_file in "${FAST_PROBE_RULES_DIR}"/rule-*.conf; do
         _prev=$(fast_probe_prev_row "$_ep" "$RULE_ID")
         _p_seq=""
         _p_hist=""
-        if [ -n "$_prev" ]; then
-            _p_seq="$(printf '%s' "$_prev" | cut -d'|' -f6)"
-            _p_hist="$(printf '%s' "$_prev" | cut -d'|' -f7)"
-        fi
+        case "$_prev" in
+            # 至少 6 个分隔符 = 7 段（TARGET|RULE_ID|RESULT|LAT_MS|TS|SEQ|HIST）
+            *\|*\|*\|*\|*\|*\|*)
+                # 纯 bash 取第 6/7 段（原来用两次 cut ⇒ 每目标两次 fork）
+                _rest="$_prev"
+                _i=0
+                while [ "$_i" -lt 5 ]; do
+                    _rest="${_rest#*|}"
+                    _i=$((_i + 1))
+                done
+                _p_seq="${_rest%%|*}"
+                _p_hist="${_rest#*|}"
+                ;;
+        esac
 
         fast_probe_connect "$_host" "$_port" "$FAST_PROBE_TIMEOUT"
         _res="$FAST_PROBE_RESULT"
@@ -1463,28 +1541,28 @@ for _rule_file in "${FAST_PROBE_RULES_DIR}"/rule-*.conf; do
             *)           _c='x' ;;
         esac
 
-        _seq=$(fast_probe_seq_push "$_p_seq" "$_c" "$FAST_PROBE_WINDOW")
+        fast_probe_seq_push "$_p_seq" "$_c" "$FAST_PROBE_WINDOW" >/dev/null
+        _seq="$FAST_PROBE_SEQ"
         if [ "$_c" = "o" ]; then
-            _hist=$(fast_probe_hist_push "$_p_hist" "$_lat" "$FAST_PROBE_HIST_MAX")
+            fast_probe_hist_push "$_p_hist" "$_lat" "$FAST_PROBE_HIST_MAX" >/dev/null
+            _hist="$FAST_PROBE_HIST"
         else
             _hist="$_p_hist"
         fi
 
-        echo "${_ep}|${RULE_ID}|${_res}|${_lat}|$(date +%s)|${_seq}|${_hist}" >> "$_rows_new"
+        echo "${_ep}|${RULE_ID}|${_res}|${_lat}|${_now_ts}|${_seq}|${_hist}" >> "$_rows_new"
     done
 done
 
 # 原子整份重建：目标消失后它的行自然消失（不留「还在观测」的残留）
-mkdir -p "$(dirname "$FAST_PROBE_FILE")" 2>/dev/null
-{
-    echo "# Realm快探测观测文件（只观测，不参与切换）"
-    echo "# 格式: TARGET|RULE_ID|RESULT|LAT_MS|TS|RESULT_SEQ|LAT_HIST"
-    echo "# RESULT: ok|timeout|refused|unreachable|unknown"
-    echo "# RESULT_SEQ: 最近若干次的结果序列（o=通 t=超时(SYN被丢) r=拒绝 u=不可达 x=未知）"
-    echo "# LAT_HIST: 最近若干次成功样本的握手时延（毫秒，逗号分隔）"
-    cat "$_rows_new" 2>/dev/null
-} > "${FAST_PROBE_FILE}.tmp.$$" 2>/dev/null && mv -f "${FAST_PROBE_FILE}.tmp.$$" "$FAST_PROBE_FILE" 2>/dev/null
-rm -f "$_rows_new" 2>/dev/null
+#   （表头已在 _rows_new 里 ⇒ 这里直接改名，不再用 cat 拼）
+_out_dir="${FAST_PROBE_FILE%/*}"
+[ "$_out_dir" = "$FAST_PROBE_FILE" ] && _out_dir="."
+[ -d "$_out_dir" ] || mkdir -p "$_out_dir" 2>/dev/null
+mv -f "$_rows_new" "$FAST_PROBE_FILE" 2>/dev/null
+
+# 轮末清一次探测错误临时文件（每目标复用同一路径 ⇒ 整个轮次只 rm 一次）
+rm -f "$FAST_PROBE_ERR_FILE" 2>/dev/null
 
 exit 0
 BODY_EOF
@@ -1578,6 +1656,13 @@ start_fast_probe_service() {
     local fast_timer="/etc/systemd/system/realm-fast-probe.timer"
     local fast_service="/etc/systemd/system/realm-fast-probe.service"
     local fast_interval="${1:-${FAST_PROBE_INTERVAL:-1}}"
+
+    # 间隔必须是正整数：它会进日历表达式（秒位重复 0/N）
+    #   ⇒ 非法值会让 systemd **解析 unit 失败**（定时器直接起不来，且不报错在明面上）。
+    case "$fast_interval" in
+        ''|*[!0-9]*) fast_interval=1 ;;
+    esac
+    [ "$fast_interval" -lt 1 ] && fast_interval=1
 
     if ! fast_probe_script_regenerate "$fast_script"; then
         return 1

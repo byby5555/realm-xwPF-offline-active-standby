@@ -70,14 +70,38 @@ case_T110_now_us_unit_consistent() {
     # ── 负向对照：注入式退化（把纳秒→微秒的换算去掉）────────────
     #    同一套断言在缺陷版上必须判红 ⇒ 证明上面几条不是恒真。
     local lib_bad="$SBX_ROOT/lib_health_nowus_ns.sh"
-    sed 's|echo \$(( t / 1000 ))|echo "$t"|' "$SBX_RUN/lib/health.sh" > "$lib_bad" 2>/dev/null
+    # ★ 退化针对**换算表达式本身**，不针对某一行文本：
+    #   产品改一次实现（换算挪到别处、写法微调、局部变量改名）时，
+    #   按文本匹配的 sed 会**静默失配** ⇒ 退化没生效 ⇒ 负向对照失效、
+    #   腿 A/B 变成**恒真断言**（这类假绿最难发现：断言还在，判别力没了）。
+    #   这里把「除以 1000 的那处换算」替换成原值 ⇒ 缺陷版直接输出纳秒。
+    #   （只认 `$(( 变量 / 1000 ))` 这一种形态 ⇒ 不会被 `(t1 - t0) / 1000` 误伤）
+    #   ★ 替换结果必须带 `$`（`$\1` 而不是 `\1`）：
+    #     bash 里 `VAR=t` 赋的是**字面量 "t"**，不是变量 t 的值
+    #     ⇒ 少了这个 `$`，缺陷版会输出 "t"（1 位）而不是纳秒（19 位），
+    #       负向对照照样「跑了」，但断的不是同一条腿 ⇒ 判别力是假的。
+    sed -E 's|\$\(\( *([A-Za-z_][A-Za-z0-9_]*) */ *1000 *\)\)|$\1|g' "$SBX_RUN/lib/health.sh" > "$lib_bad" 2>/dev/null
     h_check_file "$lib_bad" "缺陷版 lib/health.sh（去掉了纳秒→微秒的换算）"
-    # ★ `grep -c` 在「0 处匹配」时会**打印 0 并以退出码 1 结束** ⇒ 这里只能 `|| true`，
+
+    # ── 退化生效自检（**形态无关**：只看语义，不看具体写法）──────
+    #   `grep -c` 在「0 处匹配」时会**打印 0 并以退出码 1 结束** ⇒ 这里只能 `|| true`，
     #   写成 `|| echo 0` 会多打一个 0（断言拿到 "0\n0"）。
-    h_check_eq "0" "$(grep -c 't / 1000' "$lib_bad" 2>/dev/null || true)" \
+    local conv_re='\$\(\( *[A-Za-z_][A-Za-z0-9_]* */ *1000 *\)\)'
+    local n_conv
+    n_conv=$(grep -cE "$conv_re" "$SBX_RUN/lib/health.sh" 2>/dev/null || true)
+    n_conv=${n_conv:-0}
+    h_check_ge 1 "$n_conv" "退化生效自检 · 原版里确实存在「纳秒→微秒」的换算（退化目标存在）"
+
+    local n_conv_bad
+    n_conv_bad=$(grep -cE "$conv_re" "$lib_bad" 2>/dev/null || true)
+    n_conv_bad=${n_conv_bad:-0}
+    h_check_eq "0" "$n_conv_bad" \
         "退化生效自检：缺陷版里已没有纳秒→微秒的换算（没生效 ⇒ 负向对照失效、腿 A/B 恒真）"
-    h_check_file_has "$lib_bad" 'echo "$t"' \
-        "退化生效自检：缺陷版确实把换算去掉了（否则负向对照没生效）"
+
+    # 兜底：缺陷版必须**确实与原版不同**（sed 一个字没改也要抓到）
+    local n_diff=0
+    cmp -s "$SBX_RUN/lib/health.sh" "$lib_bad" 2>/dev/null || n_diff=1
+    h_check_eq "1" "$n_diff" "退化生效自检 · 缺陷版确实与原版不同（退化真的动过手）"
 
     local out_bad bd bm
     out_bad=$(_run_in_sandbox '

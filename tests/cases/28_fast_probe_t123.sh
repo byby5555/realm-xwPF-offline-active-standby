@@ -209,23 +209,78 @@ STUB
     _t28_generate "$fp"
     h_check_file "$fp" "生成的快探测脚本"
 
+    # stdout/stderr 分开落盘（stdout 必须为空 ⇒ 见下面的不变量断言）
+    local out1="$SBX_ROOT/t124_fp1.stdout"
+    local out2="$SBX_ROOT/t124_fp2.stdout"
+    rm -f "$out1" "$out2"
+
     PF_STUB_LOG="$pflog" PATH="$stubdir:$PATH" \
     FAST_PROBE_FILE="$obs" \
     FAST_PROBE_RULES_DIR="$rules" \
     FAST_PROBE_LOCK_FILE="$SBX_ROOT/var.lock/realm-fast-probe.lock" \
     FAST_PROBE_TIMEOUT=2 FAST_PROBE_WINDOW=20 \
-        bash "$fp" >/dev/null 2>&1
+        bash "$fp" >"$out1" 2>/dev/null
     local rc1=$?
     PF_STUB_LOG="$pflog" PATH="$stubdir:$PATH" \
     FAST_PROBE_FILE="$obs" \
     FAST_PROBE_RULES_DIR="$rules" \
     FAST_PROBE_LOCK_FILE="$SBX_ROOT/var.lock/realm-fast-probe.lock" \
     FAST_PROBE_TIMEOUT=2 FAST_PROBE_WINDOW=20 \
-        bash "$fp" >/dev/null 2>&1
+        bash "$fp" >"$out2" 2>/dev/null
     local rc2=$?
 
     h_check_rc 0 "$rc1" "快探测第 1 轮退出码 0"
     h_check_rc 0 "$rc2" "快探测第 2 轮退出码 0"
+
+    # ── 关键不变量：快探测脚本的 stdout 必须为空 ──
+    #   ★ 为什么钉这条：快探测由 systemd timer **每秒**拉一次，stdout 直接进 journal。
+    #     任何一行正常输出 = 每秒一行日志（一天八万六千行）⇒ journal 被打爆、
+    #     磁盘被吃满，而且现场根本看不出来（journal 里全是数字）。
+    #     ★ 这是真踩过的坑：把时间戳函数的 stdout 漏出去，每秒泄一行微秒戳。
+    local n_out=0
+    [ -f "$out1" ] && n_out=$(grep -c . "$out1" 2>/dev/null)
+    n_out=${n_out:-0}
+    h_log "第 1 轮 stdout 行数: $n_out"
+    [ -f "$out1" ] && head -3 "$out1" | sed 's/^/    /'
+    h_check_eq "0" "$n_out" "快探测脚本的 stdout 必须为空（每秒一行就是 journal 刷屏）"
+
+    local n_out2=0
+    [ -f "$out2" ] && n_out2=$(grep -c . "$out2" 2>/dev/null)
+    n_out2=${n_out2:-0}
+    h_check_eq "0" "$n_out2" "快探测第 2 轮的 stdout 同样必须为空"
+
+    # ── 负向对照：把「时间戳取值的 stdout 重定向」去掉 → 上面那条断言必须抓到 ──
+    #   注入式退化（不是历史旧实现）：这正是减 fork 改造时踩到的那个真 bug 的原样复现。
+    #   ★ 必须先自检「破坏手法生效」（退化副本与原文件确实不同），
+    #     否则代码写法一变、sed 匹配不到 ⇒ 负向对照静默失效 ⇒ 断言变成恒绿。
+    #   ★ 负向对照必须用**独立的观测文件**：快探测每轮都会原子重写观测文件，
+    #     负向对照那一轮若共用主观测文件，就会把后面「两轮累积」断言依赖的
+    #     观测冲成第三轮 ⇒ 观察对象被对照本身污染 ⇒ 断言假红。
+    local badfp="$SBX_ROOT/t124_fp_noisy.sh"
+    local badout="$SBX_ROOT/t124_fp_noisy.stdout"
+    local badobs="$SBX_ROOT/var.lib.realm/t124_noisy.conf"
+    rm -f "$badfp" "$badout" "$badobs"
+    sed 's|now_us >/dev/null|now_us|g' "$fp" > "$badfp"
+    local n_diff=0
+    if ! diff -q "$fp" "$badfp" >/dev/null 2>&1; then n_diff=1; fi
+    h_check_eq "1" "$n_diff" "负向对照自检 · 退化副本确实去掉了 stdout 重定向（破坏手法生效）"
+
+    PF_STUB_LOG="$pflog" PATH="$stubdir:$PATH" \
+    FAST_PROBE_FILE="$badobs" \
+    FAST_PROBE_RULES_DIR="$rules" \
+    FAST_PROBE_LOCK_FILE="$SBX_ROOT/var.lock/realm-fast-probe.lock" \
+    FAST_PROBE_TIMEOUT=2 FAST_PROBE_WINDOW=20 \
+        bash "$badfp" >"$badout" 2>/dev/null
+    local n_bad=0
+    [ -f "$badout" ] && n_bad=$(grep -c . "$badout" 2>/dev/null)
+    n_bad=${n_bad:-0}
+    h_log "退化副本 stdout 行数: $n_bad"
+    h_check_ge 1 "$n_bad" "负向对照 · 去掉 stdout 重定向后必须被 stdout 断言抓到（否则上面那条断言是恒绿）"
+
+    # ★ 对照跑完之后：主观测文件必须**原封不动**（观测对象没被对照污染）
+    local n_rows_b
+    n_rows_b=$(grep -c '^127\.0\.0\.1:' "$obs" 2>/dev/null); n_rows_b=${n_rows_b:-0}
+    h_check_eq "2" "$n_rows_b" "负向对照跑完后主观测文件没被污染（仍两行、仍是两轮的序列）"
 
     [ -n "$LISTENER_PID" ] && kill "$LISTENER_PID" 2>/dev/null
 
@@ -286,7 +341,7 @@ STUB
     h_log "pf 桩被调用次数: $n_pf"
     h_check_eq "0" "$n_pf" "快探测一次都没调用 pf（没有触发配置重生成）"
 
-    rm -f "$rules"/rule-*.conf "$obs" "$judge" "$fp"
+    rm -f "$rules"/rule-*.conf "$obs" "$judge" "$fp" "$badobs" "$badfp" "$badout" "$out1" "$out2"
     rm -rf "$stubdir"
 }
 
