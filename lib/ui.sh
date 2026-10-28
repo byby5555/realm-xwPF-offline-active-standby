@@ -292,7 +292,34 @@ rules_management_menu() {
 #   每一步都容错：不存在就跳过；清理失败也不让卸载失败（只提示）。
 #   用户的池配置（/etc/xwpf/*.json）**不删** —— 那是用户自己的东西，
 #   删了没法回查 → 改名成 .disabled 留档。
+# 判断老机器上的那个守护**是否还在实际服务**
+#
+# ★ 为什么必须有这个判据（真机 103.42.31.186 实测）：
+#   进程级主备池虽然已下线，但**老机器上它可能正在对外服务** ——
+#   实测那台机器的老守护监听 0.0.0.0:18443 / 0.0.0.0:18444（**公开口**），
+#   两个池（poolA / poolDirect）都在转发，realm 侧 10443/10444 端点配套。
+#   安装/升级路径若无条件清理 ⇒ **下一次 pf install 就把正在用的公开转发口
+#   打黑**，而且没有任何提示 —— 这比留着老代码更危险。
+#
+# 判据：**池配置文件存在且里面还有活池**（含 "listen" 字段）= 还在服务。
+#   · 没有配置却在跑 = 崩溃循环残留（守护读不到配置就 exit 1、systemd 反复拉起）
+#     → 那种**正是要清的**（原始诉求：别让它每 2 秒重启一次）。
+#   · 配置是空数组 [] = 守护会自己退出（"config must be a non-empty list"）
+#     → 同样算不在用，照常清理。
+_legacy_failover_daemon_in_use() {
+    local conf="${XWPF_LEGACY_POOL_CONF:-/etc/xwpf/failover.json}"
+    [ -f "$conf" ] || return 1
+    grep -q '"listen"' "$conf" 2>/dev/null || return 1
+    return 0
+}
+
+# 清理老机器上的主备池守护残留
+#
+# 用法：_cleanup_legacy_failover_daemon [force]
+#   不带 force（安装/升级路径）：**守护还在服务就跳过**，只提示，不动它
+#   带 force（卸载路径 / XWPF_FORCE_LEGACY_FAILOVER_CLEAN=1）：照常清干净
 _cleanup_legacy_failover_daemon() {
+    local force="${1:-}"
     local unit="/etc/systemd/system/xwpf-failover.service"
     local unit_alt="/lib/systemd/system/xwpf-failover.service"
     local dropin_dir="/etc/systemd/system/xwpf-failover.service.d"
@@ -301,6 +328,21 @@ _cleanup_legacy_failover_daemon() {
     local pool_conf="/etc/xwpf/failover.json"
     local pool_state="/etc/xwpf/failover-state.json"
     local cleaned=0
+
+    # 强制清理开关（环境变量）：用户明确要拆干净时用
+    if [ "${XWPF_FORCE_LEGACY_FAILOVER_CLEAN:-0}" = "1" ]; then
+        force="force"
+    fi
+
+    # ★ 还在服务 → 跳过，不许无声干掉正在用的公开转发口
+    if [ "$force" != "force" ] && _legacy_failover_daemon_in_use; then
+        echo -e "  ${YELLOW}!${NC} 老机器上的 xwpf-failover 守护**仍在服务**（${pool_conf} 里还有活池）→ 已跳过清理"
+        echo -e "    ${BLUE}· 它的公开监听口不动，流量不受影响${NC}"
+        echo -e "    ${BLUE}· 想下线：先把池迁到规则级权重主备${NC}"
+        echo -e "    ${BLUE}  （pf → 负载均衡管理 → 权重配置管理，权重填 10,0 = 主备），${NC}"
+        echo -e "    ${BLUE}  再执行：XWPF_FORCE_LEGACY_FAILOVER_CLEAN=1 pf install${NC}"
+        return 0
+    fi
 
     # 1) 停掉老守护服务（先 stop 再 disable：停了就不会再被拉起来）
     systemctl stop xwpf-failover >/dev/null 2>&1 || true
@@ -372,7 +414,10 @@ uninstall_realm() {
     echo ""
     # 第 0 步：清理老机器上的主备池守护残留（这个功能已经下线，残留必须收拾干净，
     #   否则会留下一个没人管、但还占着端口的僵尸守护）
-    _cleanup_legacy_failover_daemon
+    #   ★ 卸载路径传 force：用户明确要拆全部 ⇒ 不管它是否还在服务。
+    #     （安装/升级路径才需要「还在服务就跳过」的保护 —— 见 lib/ui.sh 的
+    #      _legacy_failover_daemon_in_use）
+    _cleanup_legacy_failover_daemon force
     echo ""
 
     # 第一阶段：Realm 服务和配置

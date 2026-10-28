@@ -161,7 +161,10 @@ case "${1:-}" in
         [ "$(id -u)" -ne 0 ] && { echo -e "${_RED}错误: 需要 root 权限${_NC}"; exit 1; }
         _load_libs || exit 1
         # 老机器上的主备池守护残留：先收拾干净，再卸脚本
-        _cleanup_legacy_failover_daemon
+        #   ★ 卸载路径传 force：用户明确要拆全部 ⇒ 不受「还在服务就跳过」的保护。
+        #     （只有 install / 升级路径才需要那个保护 —— 见 lib/ui.sh 的
+        #      _legacy_failover_daemon_in_use）
+        _cleanup_legacy_failover_daemon force
         # 完整卸载（分阶段，需要交互确认）由 lib/ui.sh 的 uninstall_realm 负责
         if declare -F uninstall_realm >/dev/null 2>&1; then
             uninstall_realm

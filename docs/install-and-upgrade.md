@@ -361,9 +361,27 @@ service 可能还在跑（占着监听端口），unit / drop-in / 二进制也�
 升级（`install`）与卸载（菜单 `8. 卸载服务`）两条路径都会自动清理下列残留
 （清理逻辑在 `lib/ui.sh` 里的老机器残留清理段，`xwPF.sh` 的安装 / 升级路径也调它）：
 
+> 🚨 **安装 / 升级路径：守护还在服务就跳过清理**（`lib/ui.sh` 的 `_legacy_failover_daemon_in_use`）
+>
+> 「已下线」不等于「老机器上一定没在用」。实测有一台机器的老守护**正在对外服务** ——
+> 监听 `0.0.0.0:18443` / `0.0.0.0:18444` 两个**公开口**，两个池都在转发，
+> realm 侧的 `10443` / `10444` 端点配套。无条件清理 ⇒ **下一次 `pf install`
+> 就把这台机器正在用的公开转发口打黑，且没有任何提示**。
+>
+> 判据：**池配置文件存在且里面还有活池**（含 `"listen"` 字段）= 还在服务 → 跳过并提示。
+> 没有配置却在跑 = 崩溃循环残留（守护读不到配置就 `exit 1`、systemd 反复拉起）→ 那种**正是要清的**。
+>
+> 想强制拆干净（确认公开口可以下线时）：
+>
+> ```bash
+> XWPF_FORCE_LEGACY_FAILOVER_CLEAN=1 pf install
+> ```
+>
+> **卸载路径不受此保护**（菜单 `8. 卸载服务` 内部传 `force`）—— 用户明确要拆全部。
+
 | 残留对象 | 路径 | 处理 |
 |----------|------|------|
-| 守护 unit | `/etc/systemd/system/xwpf-failover.service`、`/lib/systemd/system/xwpf-failover.service` | 删除 |
+| 守护 unit | `/etc/systemd/system/xwpf-failover.service`、`/lib/systemd/system/xwpf-failover.service` | 删除（守护还在服务时**跳过**） |
 | 守护 drop-in 目录 | `/etc/systemd/system/xwpf-failover.service.d/` | **整目录删除**（含历史人工文件） |
 | 守护二进制 | `/usr/local/bin/xwpf-failover` | 删除 |
 | 守护源文件副本 | `/usr/local/bin/cmd/` | 删除 |
