@@ -9,6 +9,7 @@ bash tests/test_active_standby.sh   # 主备自动启用 + 优先级选主 + 故
 bash tests/test_connectivity.sh     # TCP 探测（含无 netcat 时的 /dev/tcp 回退）
 bash tests/test_e2e.sh              # 主备 / 剔除两种故障转移模式的 11 个端到端场景
 bash tests/test_set_u.sh            # set -u 下的健壮性（关联数组未定义键）
+bash tests/test_latency.sh          # 时延测量 + 负载均衡菜单渲染
 bash tests/run_tests.sh             # 离线台架（22 条用例，沙箱 + 外部依赖打桩）
 ```
 
@@ -70,6 +71,23 @@ bash tests/run_tests.sh             # 离线台架（22 条用例，沙箱 + 外
 | 生成不中断 | `set -u` 下 `generate_endpoints_from_rules` 退出 0，且无 `unbound variable` |
 | 输出一致 | `set -u` 下生成的配置与普通模式逐字节相同，仍产出 `balance` 与全部目标 |
 | 其他函数 | `read_rule_file` / `reorder_rule_ids` 在 `set -u` 下成功 |
+
+## `tests/test_latency.sh`
+
+时延（延迟）测量与负载均衡菜单渲染。
+
+| 覆盖点 | 断言 |
+|--------|------|
+| 时间打点 | `now_us` 返回纯数字微秒、单调递增、量级合理；`EPOCHREALTIME` 与 `date +%s%N` 两条路都可用 |
+| 带耗时的探测 | `probe_with_latency` 返回码语义不变；可达端口拿到毫秒数；关闭端口返回非 0 |
+| 辅助函数 | `latency_avg_ms` 求平均、`format_latency_display` 格式化、`get_health_status_record` 读记录 |
+| 状态文件 | 生成的 `health_check.sh` **真跑一轮**：状态记录 9 个字段、第 8 个是时延、第 9 个是历史 |
+| 历史累积 | 跑 3 轮累积 3 个样本，跑满后**最多保留 5 个** |
+| 菜单渲染 | 真跑一次负载均衡菜单，输出里必须出现 `[时延: 12ms (均 12ms)]` 与 `[健康]` |
+
+> 菜单渲染这条曾经抓到一个真 bug：状态记录 9 个字段，却按 10 个变量去读，
+> 结果把「时延历史」当成了「最近时延」，页面显示成 `[时延: 10,12,14ms]`。
+> 静态检查发现不了，只有真跑一遍菜单才暴露。
 
 ## `tests/run_tests.sh` —— 离线台架
 

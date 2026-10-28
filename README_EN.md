@@ -470,6 +470,7 @@ Full documentation lives in [`docs/`](docs/):
 | [Health Check & Failover](docs/health-check-and-failover.md) | Health-check parameters, systemd unit, status file, switch and fail-back logic |
 | [Troubleshooting](docs/troubleshooting.md) | Realm won't start, rule changes don't apply, no `nc` → everything judged down, download 404, where the logs are |
 | [Active-Standby State Transitions](docs/active-standby-logic.md) | Understanding how weights flip at each step |
+| [Test Harness Index](docs/README.md#测试台架索引) | Running the regression suite, seeing what the tests cover |
 | [Active/Passive Failover Daemon](cmd/README-failover.md) | Process-level primary/standby hot switching |
 
 ## 🤝 Support

@@ -453,6 +453,7 @@ MPTCP（开启 MPTCP 后创建）
 | [健康检查与故障转移](docs/health-check-and-failover.md) | 健康检查参数、systemd unit、状态文件、切换与回切 |
 | [故障排查手册](docs/troubleshooting.md) | realm 起不来、规则不生效、无 `nc` 全判失败、下载 404、日志位置 |
 | [主备模式状态转换推演](docs/active-standby-logic.md) | 理解主备每一步怎么翻权重 |
+| [测试台架索引](docs/README.md#测试台架索引) | 想跑回归、看有哪些测试覆盖了什么 |
 | [主备 active/passive 守护进程](cmd/README-failover.md) | 进程级主备热切换 |
 
 ## 🤝 支持
