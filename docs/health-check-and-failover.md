@@ -23,6 +23,11 @@
 > 从 `lib/health.sh` 里**原样抽取** `check_connectivity` 拼进去，
 > 所以两边不可能漂移，改探测实现不需要在别处手工同步。
 > 台架用例 T28 盯这一条（源实现与生成物里的探测实现必须一致）。
+>
+> 快探测脚本（`/etc/realm/health/fast_probe.sh`）**同样**只有这一份来源：
+> 由 `lib/health.sh` 的 `fast_probe_script_body` 生成，
+> 函数实现也由 `lib/health.sh` 的 `health_emit_function` 原样抽取注入。
+> 它与判定端是**两条独立的流**（见 §3.5）——只观测，不参与切换。
 
 ---
 
@@ -267,17 +272,143 @@ TARGET|RULE_ID|SAMPLE_SEQ|LAT_SEQ|WINDOW|FAIL_LAT_SEQ
 2. 203.0.113.11:8080 [权重: 0]  (0.0%)   [健康] [时延: 88ms (均 85ms)]
 ```
 
-- 数据来自**后台健康检查**写进状态文件的结果，所以会随 timer 持续刷新
-  （间隔见 §2.1，默认 4 秒）
+- **时延来源有两级**：优先取**快探测**（§3.5，每秒一轮）；没有快探测数据时
+  回落到**判定流**写进状态文件的那份。两者都是 **TCP 握手耗时**，同一个口径 ——
+  不会混成两个数字。
 - `均` 是最近 5 次样本的平均值（见 §3.3）
 - 目标还没被探测过时显示 `-`
 - 故障目标显示时延没有意义，直接看 `[故障]` 标记
+- 额外两段（都来自快探测，**只观测**）：
+  - `[丢包: 5% (1/20)]` —— 窗口内 **SYN 被丢弃**（超时）的采样占比；
+    丢包为 0 时**不显示**（不占菜单一行）。「连接被拒」是目标主动拒绝，
+    **不算丢包**（那类失败看 `[探测: 拒绝]`）。
+  - `[探测: 超时]` / `[探测: 拒绝]` / `[探测: 不可达]` —— 最新一次快探测的失败分型；
+    探测成功时不显示。
+
+> ⚠️ `[健康]` / `[故障]` **只取判定流**（状态文件）—— 那是切换判据的数据源。
+> 快探测**不参与**判定：它每秒刷新的是「显示」，不是「该不该切」。
 
 菜单里还有一个 **`4. 立即测试所有目标时延`**：现场把所有端口组的目标探一轮，
 逐行打印可达性与耗时。这是一次**现场探测**，只显示结果、**不写状态文件**
 （避免和后台健康检查抢写同一个文件），页面上的时延仍以后台为准。
 
 实现：`lib/rules.sh` 的 `load_balance_management_menu` 与 `probe_all_targets_latency`。
+
+---
+
+## 3.5 快探测流（**只观测**：每秒一轮的时延与丢包）
+
+### 3.5.1 为什么要两条流
+
+判定流（§3.1~§3.3）按规则里的 `HEALTH_CHECK_INTERVAL` 刷新（默认 4 秒），
+而且**它的节奏与切换判据绑在一起**：状态文件既是「显示时延」的来源，
+也是「该不该切」的依据。所以**不能**为了刷新显示去改它的节奏 ——
+那等于改了切换时机。
+
+⇒ 结论：**两条流，各干各的**。
+
+| | 判定流（health_check.sh） | 快探测流（fast_probe.sh） |
+|---|---|---|
+| 节奏 | 规则里的 `HEALTH_CHECK_INTERVAL`（默认 4 秒） | **固定 1 秒** |
+| 写什么 | 判定流的状态文件 | **自己的**观测文件 |
+| 参与切换 | **是**（这就是切换判据） | **否** |
+| 触发配置重生成 | 会（状态变化时） | **不会** |
+| 用途 | 判定目标健康与否 → 翻转权重 | 刷新菜单里的时延 / 丢包显示 |
+
+### 3.5.2 硬红线：快探测**不参与切换**
+
+- 它**不写**判定流的状态文件；
+- 它**不触发**配置重生成；
+- 这两条由**反向护栏**兜底：`lib/health.sh` 的 `fast_probe_guard_check` 扫描生成物，
+  一旦出现「写状态文件」或「触发配置重生成」的字样 ⇒ **拒绝安装**
+  （失败时原来能跑的那份原封不动留着）。
+- 切换时机仍然只看规则里的 `HEALTH_CHECK_INTERVAL` / `FAILURE_THRESHOLD`
+  ——**1 秒探测只用于检测和显示**。
+
+### 3.5.3 生成物与观测文件
+
+- 生成物：`/etc/realm/health/fast_probe.sh`
+  （由 `lib/health.sh` 的 `fast_probe_script_body` 生成；
+  函数实现仍由 `lib/health.sh` 的 `health_emit_function` 从真源**机械抽取**注入，
+  不存在手工维护的第二份）
+- 落盘与自检：`lib/health.sh` 的 `fast_probe_script_regenerate`
+  （自检 + 反向护栏都在覆盖旧文件**之前** ⇒ 失败时保留原来能跑的那份）
+- 观测文件：`/var/lib/realm/fast_probe.conf`（**独立文件**，不碰判定流的状态文件）
+
+格式（每行一条记录）：
+
+```
+TARGET|RULE_ID|RESULT|LAT_MS|TS|RESULT_SEQ|LAT_HIST
+```
+
+| 列 | 含义 |
+|----|------|
+| `TARGET` | 目标地址（host:port，与判定流同口径） |
+| `RULE_ID` | 归属规则（组合键的一部分，避免同后端被两条规则共用时串数据） |
+| `RESULT` | 最新一次的结果：`ok` / `timeout` / `refused` / `unreachable` / `unknown` |
+| `LAT_MS` | 最新一次握手耗时（毫秒） |
+| `TS` | 最新一次的时间戳（epoch 秒） |
+| `RESULT_SEQ` | 最近 N 次的结果序列（`o`=通 `t`=超时 `r`=拒绝 `u`=不可达 `x`=未知），N = 窗口（默认 20，约 20 秒） |
+| `LAT_HIST` | 最近 5 次**成功**样本的握手时延（毫秒，逗号分隔） |
+
+### 3.5.4 失败分型（超时 vs 拒绝）
+
+端口层能分出的失败只有两种，**含义完全不同**：
+
+| 形态 | 判定依据 | 含义 | 算丢包吗 |
+|------|----------|------|----------|
+| `timeout` | `timeout` 杀掉了内层进程（退出码 **124**） | **SYN 被丢弃** —— 黑洞 / 路径丢包 / 防火墙静默丢包 | **算** |
+| `refused` | stderr 里的 `Connection refused` | 目标主动回 RST（服务没起） | 不算 |
+| `unreachable` | `Network is unreachable` / `No route to host` | 路由不通 | 不算 |
+| `unknown` | 认不出来（含本机 bash 不支持 `/dev/tcp`） | **不猜** | 不算 |
+
+分型规则抽成**纯函数** `lib/health.sh` 的 `fast_probe_classify`（退出码 + stderr 文本 → 类型），
+探测本体是 `lib/health.sh` 的 `fast_probe_connect`。
+⇒ 台架直接喂退出码与文本测**规则本身**（真机上同一个症状在不同宿主上形态不同，
+把断言绑在宿主上必然假红）。
+
+### 3.5.5 单次探测预算
+
+快探测的单次预算是 **2 秒**，**独立**于判定流的 `CONNECTION_TIMEOUT`（默认 10 秒）：
+
+- 判定流要的是「判得准」：真机实测正常目标握手最慢 2274ms ⇒ 预算必须给足；
+- 快探测要的是「每秒刷新一次」：预算太长 ⇒ 一个黑洞目标就能把 1 秒的节奏拖成
+  `1/预算秒`。
+
+### 3.5.6 资源开销（实测）
+
+单条主备链路（2 个目标）、2 核 / 957MB 的机器上实测：
+
+| 项 | 判定流（4 秒一轮 × 2 目标） | 快探测（1 秒一轮 × 2 目标） |
+|----|---------------------------|---------------------------|
+| 单次探测耗时 | 2.75ms（`/dev/tcp`） | 2.75ms |
+| CPU（占单核） | ≈0.135% | **≈3.25%**（实测 120 轮：单轮子进程 CPU 32.5ms） |
+| 网络 | 约 1.25 pps | 约 10 pps |
+| 后端新建连接 | 每 4 秒 2 条 | 每秒 2 条 |
+| 落盘 | 状态文件 1 份 + 质量窗口 1 份 | 观测文件 1 份（原子重写） |
+
+> **快探测的 CPU 大头是 fork，不是网络。**
+> 每轮每个目标原本要 fork 十几次（取段、切字段、找上一轮观测行、
+> 命令替换取时间戳/分型/结果序列/时延历史、每目标一次 `date`……）
+> ⇒ 优化前实测 **单轮 61ms / 占单核 6.1%**。
+> 现在的做法是把热路径上**大部分的 fork 换成 bash 内建**：
+> 取段用参数展开；找上一轮观测行用 bash 读循环；时间戳走 `now_us` 的全局出口；
+> 分型、结果序列、时延历史各自走全局出口；错误文本用 bash 的 `$(<file)` 读回
+> （不 fork 的读法）；`mkdir` 只在目录不存在时才执行；`date` 每轮只取一次。
+> 优化后实测 **单轮 32.5ms / 占单核 3.25%**（降约 47%）。
+>
+> ★ 这些优化**只作用在观测流自己身上**：探测目标、探测频率、失败分型口径、
+>   显示口径、切换时机全都**没变**。快探测依旧只观测、不参与切换。
+>
+> 关键实现位置（供改代码时对照）：
+> - `lib/health.sh` 的 `now_us` —— 除打印外另设全局出口 `NOW_US_VALUE`
+>   （热路径用它替代 `$(now_us)`，省掉命令替换的 fork）
+> - `lib/health.sh` 的 `fast_probe_connect` —— 探测本体（打点、错误文本、分型）
+> - `lib/health.sh` 的 `fast_probe_classify` / `fast_probe_seq_push` /
+>   `fast_probe_hist_push` —— 纯函数，除打印外各设一个全局出口
+> - `lib/health.sh` 的 `fast_probe_script_body` —— 生成物里那段 bash 读循环
+>   （取上一轮观测行，替代 `awk`）
+
 
 ---
 
@@ -291,6 +422,7 @@ TARGET|RULE_ID|SAMPLE_SEQ|LAT_SEQ|WINDOW|FAIL_LAT_SEQ
 [Unit]
 Description=Realm Health Check Service
 After=network.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
@@ -304,6 +436,11 @@ SyslogIdentifier=realm-health
 [Install]
 WantedBy=multi-user.target
 ```
+
+> `StartLimitIntervalSec=0` 是**关掉 systemd 的启动限流**（默认「10 秒内最多启动 5 次」）。
+> 默认间隔 4 秒时用不到它，但把 `HEALTH_CHECK_INTERVAL` 配到 ≤ 2 秒就会撞上限流
+> ⇒ 探测被判 `start-limit-hit`（每次都报错）⇒ 实际探测频率掉到限流允许的量级。
+> 真机实测（systemd 257）：1 秒一轮时，不加这行 20 秒只跑 10 次。
 
 ### 4.2 `realm-health-check.timer`
 
@@ -368,6 +505,71 @@ if ! flock -n 200; then
     exit 0
 fi
 ```
+
+### 4.6 `realm-fast-probe.service` / `.timer`（快探测，只观测）
+
+由 `lib/health.sh` 的 `start_fast_probe_service` 生成（与判定端的 unit **完全独立**）：
+
+```ini
+# /etc/systemd/system/realm-fast-probe.service
+[Unit]
+Description=Realm Fast Probe Service
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/etc/realm/health/fast_probe.sh
+User=root
+WorkingDirectory=/etc/realm
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=realm-fast-probe
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```ini
+# /etc/systemd/system/realm-fast-probe.timer
+[Unit]
+Description=Realm Fast Probe Timer
+Requires=realm-fast-probe.service
+
+[Timer]
+OnBootSec=15s
+OnCalendar=*-*-* *:*:0/1
+AccuracySec=1s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+> ⚠️ **两个坑（都是真机实测踩出来的，不是照抄文档）**：
+>
+> ① **`StartLimitIntervalSec=0` 必须加**：systemd 默认的**启动限流**是
+> 「10 秒内最多启动 5 次」。1 秒一轮的 oneshot 必然撞上限流 ⇒ 服务被判
+> `start-limit-hit`（每次都报错）⇒ 探测实际只剩 **0.5 次/秒**。
+> 真机实测（systemd 257）：不加这行，20 秒只跑了 10 次。
+>
+> ② **「1 秒一轮」只能用日历表达式**（`OnCalendar=*-*-* *:*:0/1`），
+> **不能**用 `OnUnitActiveSec=1sec`：
+> 真机实测（systemd 257 / Debian 13，各复现两轮）——
+> `OnUnitActiveSec=1sec + AccuracySec=1s` 的实际间隔是 **约 2 秒**（还有一轮直接 0 次），
+> 而 `OnCalendar=*-*-* *:*:0/1 + AccuracySec=1s` 是 **约 1.00 秒**（三轮都稳）。
+> 秒位重复 `0/1` 的语义 = 该值及其所有倍数（0,1,2…59）⇒ 每秒。
+>
+> 另外 **`AccuracySec=1s` 也是必须的**：systemd 默认 `AccuracySec` 是 **1 分钟**，
+> 定时器会被对齐到分钟边界 ⇒ 不显式压到 1 秒，节奏根本不是 1 秒。
+
+> 并发保护同判定流：脚本自己 `flock -n`（`/var/lock/realm-fast-probe.lock`），
+> 上一轮没跑完就跳过本轮（不排队、不堆积）；systemd 的 `Type=oneshot` 也不会并发拉起。
+
+启停：`lib/health.sh` 的 `start_fast_probe_service` / `stop_fast_probe_service`。
+判定端启停时会一并带上快探测（`lib/health.sh` 的 `start_health_check_service` /
+`stop_health_check_service`）；**快探测起不来不会让主备开关回滚** ——
+它只是显示增强，切换判据在判定流那边。
 
 ---
 
@@ -683,4 +885,8 @@ bash /etc/realm/xwFailover.sh status
 | 探测对象不可自定义 | 探测目标固定为规则里的目标集（`TARGET_STATES`，或 `REMOTE_HOST × REMOTE_PORT`），不支持换成**独立的**健康端口（探测端口 = 业务端口） |
 | 探测端与路由端口径必须同源 | 目标枚举口径只有一份真源（`lib/core.sh` 的 `rule_target_endpoints`），探测端与路由端都调它。老版本两边各写一份，探测只认 `REMOTE_HOST × REMOTE_PORT` 而路由端认 `TARGET_STATES` ⇒ 目标集对不上 ⇒ **主备切换静默失效**（不报错、不出日志） |
 | `realm-health-check.service` 是否需要 `After=network-online.target` | 当前只写了 `After=network.target`。开机后立刻探测可能在网络就绪前失败（表现为开机瞬间误判故障）。是否调整待确认 |
+| 快探测是**独立的一条流** | 每秒一轮，**只观测**：写自己的观测文件（`/var/lib/realm/fast_probe.conf`），不写判定流的状态文件、不触发配置重生成（由 `lib/health.sh` 的 `fast_probe_guard_check` 反向护栏兜底）。**切换时机不变**，仍按规则里的 `HEALTH_CHECK_INTERVAL` / `FAILURE_THRESHOLD` |
+| 端口层的「丢包」只有一种 | TCP 探测只能看到「SYN 被丢弃」（超时）。ICMP 丢包属路径层，`TcpRetransSegs` 是系统累计值、不能按目标拆 ⇒ 菜单里的丢包口径 = **超时采样占比**；目标主动 RST 拒绝（`[探测: 拒绝]`）**不算**丢包 |
+| 快探测的节奏由 systemd 决定 | 实测（systemd 257 / Debian 13）：`OnCalendar=*-*-* *:*:0/1` + `AccuracySec=1s` ⇒ 间隔约 1.00 秒；写成 `OnUnitActiveSec=1sec` ⇒ 实际约 2 秒（还有一轮直接不触发）。**并且**必须写 `StartLimitIntervalSec=0`，否则被 systemd 的启动限流（10 秒 5 次）掐成 0.5 次/秒 |
+| 快探测的 IPv6 支持 | 目标地址允许 IPv6 字面量（`::1`），但探测走 `bash /dev/tcp` ⇒ 取决于 bash 编译时是否支持；不支持时结果标 `unknown`（**不猜**），判定流不受影响 |
 | `journalctl --vacuum-time=7d` 的影响范围 | 该命令清理的是**全系统** journal（不限本服务），在有其它业务日志的机器上影响面较大。是否收窄待确认 |

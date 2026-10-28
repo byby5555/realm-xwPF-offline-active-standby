@@ -1968,13 +1968,18 @@ load_balance_management_menu() {
                         percentage="100.0"
                     fi
 
-                    # 构建故障转移状态信息（健康状态 + 时延）
+                    # 构建故障转移状态信息（健康状态 + 时延 + 丢包）
                     local failover_info=""
                     local latency_info=""
+                    local loss_info=""
                     if [ "$balance_mode" != "off" ] && [ "${port_failover_status[$port_key]:-}" = "true" ]; then
                         local health_status_file="${HEALTH_STATUS_FILE}"
                         local node_status="healthy"
+                        local lat_ms="" lat_hist=""
 
+                        # ① 判定值（[健康]/[故障]）**只取判定流**（状态文件）
+                        #   —— 切换判据就在那儿，快探测**不参与**
+                        #   （口径：1 秒探测只用于检测和显示，切换仍按默认时间）。
                         if [ -f "$health_status_file" ]; then
                             # ★ 按 host:port 取记录：同 host 不同端口各自独立；
                             #   旧格式（TARGET 只有 host）的老行查不到就当无记录 ——
@@ -1986,9 +1991,30 @@ load_balance_management_menu() {
                                 if [ "$found_status" = "failed" ]; then
                                     node_status="failed"
                                 fi
-                                latency_info=" ${BLUE}[时延: $(format_latency_display "$lat_ms" "$lat_hist")]${NC}"
                             fi
                         fi
+
+                        # ② 时延：**快探测优先**（1 秒刷新），没有快探测数据时回落状态文件
+                        #   两处都是 TCP 握手耗时，同一个口径 —— 不混成两个数字。
+                        local _own_rule="${port_target_owner[${port_key}|${target}]:-}"
+                        if declare -F fast_probe_stats >/dev/null 2>&1; then
+                            local _fp_raw _fp_result _fp_lat _fp_ts _fp_to _fp_total _fp_hist
+                            _fp_raw="$(fast_probe_stats "$target" "$_own_rule")"
+                            if [ -n "$_fp_raw" ]; then
+                                IFS='|' read -r _fp_result _fp_lat _fp_ts _fp_to _fp_total _fp_hist <<< "$_fp_raw"
+                                if [ -n "$_fp_lat" ] || [ -n "$_fp_hist" ]; then
+                                    lat_ms="$_fp_lat"
+                                    lat_hist="$_fp_hist"
+                                fi
+                                # 丢包（SYN 被丢的采样占比）与失败分型（**只观测**，不影响 [健康]/[故障]）
+                                local _fp_loss _fp_kind
+                                _fp_loss="$(fast_probe_loss_display "$target" "$_own_rule")"
+                                [ -n "$_fp_loss" ] && loss_info=" ${BLUE}${_fp_loss}${NC}"
+                                _fp_kind="$(fast_probe_result_display "$target" "$_own_rule")"
+                                [ -n "$_fp_kind" ] && loss_info="${loss_info} ${BLUE}${_fp_kind}${NC}"
+                            fi
+                        fi
+                        latency_info=" ${BLUE}[时延: $(format_latency_display "$lat_ms" "$lat_hist")]${NC}"
 
                         # ── N5 阶段 1 · 质量观测指标（**只显示，不做任何自动切换**）────
                         #   ★ 独立文件（quality_metrics.conf），不碰 health_status.conf。
@@ -1996,7 +2022,6 @@ load_balance_management_menu() {
                         #     这里不再自己拼字符串 ⇒ 两处不会漂。
                         #   ★ 老机器没这个文件 / 窗口还没采样 ⇒ 显示 "-"（向后兼容，缺字段不报错）。
                         local quality_info=""
-                        local _own_rule="${port_target_owner[${port_key}|${target}]:-}"
                         if [ -n "$_own_rule" ] && declare -F quality_window_display >/dev/null 2>&1; then
                             quality_info=" ${BLUE}$(quality_window_display "$target" "$_own_rule")${NC}"
                         fi
@@ -2010,9 +2035,9 @@ load_balance_management_menu() {
 
                     # 显示服务器信息（只在负载均衡模式下显示权重）
                     if [ "$balance_mode" != "off" ]; then
-                        echo -e "    ${BLUE}$((i+1)).${NC} $target ${GREEN}[权重: $current_weight]${NC} ${BLUE}($percentage%)${NC}$failover_info$latency_info$quality_info"
+                        echo -e "    ${BLUE}$((i+1)).${NC} $target ${GREEN}[权重: $current_weight]${NC} ${BLUE}($percentage%)${NC}$failover_info$latency_info$quality_info$loss_info"
                     else
-                        echo -e "    ${BLUE}$((i+1)).${NC} $target$failover_info$latency_info$quality_info"
+                        echo -e "    ${BLUE}$((i+1)).${NC} $target$failover_info$latency_info$quality_info$loss_info"
                     fi
                 done
                 echo ""
@@ -2032,7 +2057,7 @@ load_balance_management_menu() {
         fi
 
         echo ""
-        echo -e "${BLUE}提示: [时延] 由后台健康检查持续更新（TCP 握手耗时，每 $(get_effective_health_check_interval)s 一轮）${NC}"
+        echo -e "${BLUE}提示: [时延] 由后台健康检查持续更新（TCP 握手耗时，判定轮次每 $(get_effective_health_check_interval)s 一轮；快探测每 ${FAST_PROBE_INTERVAL:-1}s 一轮，只刷新显示，不参与切换）${NC}"
         echo ""
         echo "请选择操作:"
         echo -e "${GREEN}1.${NC} 切换负载均衡模式"
