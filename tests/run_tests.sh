@@ -97,6 +97,30 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #         · T118 负向对照：**注入式退化**（判据是本次新引入的 helper，修复前没有
 #           等价形态）—— 判据退化后活池必须从「跳过」变成「清掉」⇒ 证明 T117 的
 #           「跳过」断言确实来自判据，不是恒绿
+# v2.18.0：第 23 轮 —— 主备目标枚举口径统一（探测端 ↔ 路由端）#         · 新增 T119~T121（cases/27_standby_target_parity_t119.sh）：
+#           守「同一组目标，探测端与路由端必须枚举出**同一份**」这条不变式。
+#           两端口径不一致 ⇒ 状态行匹配不上配置里的目标 ⇒ 主备切换**静默失效**
+#           （不报错、不出日志、界面也看不出来）
+#         · 真实触发场景：老的「进程级主备池」支持「同 host 不同端口」的备机
+#           （primary :28081 / backup :28082），规则级主备只能靠 TARGET_STATES 表达；
+#           而修复前路由端认 TARGET_STATES、探测端只认 REMOTE_HOST × REMOTE_PORT
+#           ⇒ 这类备机**永远切不过去**
+#         · T120 负向对照：注入式退化（把共用真源换成旧口径）⇒ 状态文件里那个备机
+#           确实消失 ⇒ 证明 T119 的断言来自口径、不是恒绿
+#         · T121：进主备时不得抹掉显式写的「每目标自带端口」备机；
+#           剔除模式残留（条目数比完整目标数少）仍然清空（M2 旧行为保留）
+#         · T122：共用真源（core.sh）不可用时，探测端生成物必须报错 + 拒绝安装，
+#           且不许把原来能跑的那份覆盖掉（自检挪到 mv 之前）
+# v2.19.0：第 24 轮 —— 探测端生成物的「共用真源」护栏
+#         · 产品侧：health.sh 新增 health_shared_core_lib（core.sh 定位：同级目录 → LIB_DIR
+#           → 标准安装路径）；抽取不到时报错，**不装**残缺的探测端
+#         · health_check_script_regenerate：自检挪到 mv 之前（失败时保留原来能跑的那份），
+#           自检清单加上 rule_target_endpoints（缺它 ⇒ 探测端枚举不到目标 ⇒ 主备静默不切）
+#         · lib/realm.sh：单独 source 时自动带上同级 core.sh（照 lib/rules.sh 的既有做法）
+#         · 台架：_prepare_failover_runtime 补齐 lib/core.sh（沙箱安装布局 = 真实安装布局）
+#         · 台架安全：新增 tests/shims/pgrep 桩 —— 产品的残留清理段会
+#           「pgrep 找进程 → kill」，不打桩时**真机上正在跑的同名守护会被杀掉**
+#           （实测：生产 VPS 跑批时老守护被杀，systemd 拉回，NRestarts 0→1）
 # v2.16.0：第 21 轮 —— 迁移端认领「候选门槛 + 身份优先」用例 + ui_read_default 默认值改判语义
 #         · 新增 T115/T116（cases/25_sync_claim_gate_identity_t115.sh）：
 #           覆盖 Chief 裁定的认领第三款：候选规则必须 ROLE=1 + ENABLED=true +
@@ -234,7 +258,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #         · 负向对照：helper 层用注入式退化（helper 是新引入的，修复前没有等价形态，
 #           如实标注）；入口层用**真实修复前实现**（d0366b3 的 lib/）复现忙循环，
 #           断言的是「坏情况确实发生」（124 + 输出膨胀），不是「坏情况没发生」
-HARNESS_VERSION="v2.17.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive + negctl-selfcheck + t45-portable-equiv + t45-win-mv-truth + t32-locale-pin + t53-menu-eof + t32-copy-form-2 + t32-anchor-guard + t32-clause-exempt + t53-helper-count + t53-neg-floor + history-preflight + preflight-empty-guard + preflight-exit-passthrough + t54-ui-eof-closure-invariants + t54-judge-selfcheck + t53-rel-threshold + only-unregistered-exit4 + registry-selfcheck + t40-case-count-contract + probe-budget-10s + install-list-from-product + t63-t67-quality-observation + t68-t76-switch-reliability + t77-t84-weight10-exclusive + t85-t88-n4-probe-regen + run-lock-done-marker + t114-readend-collapse + expect-fail-exit5 + t54-affirm-default-7b + t115-t116-claim-gate-identity + t117-t118-legacy-failover-guard)"
+HARNESS_VERSION="v2.19.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive + negctl-selfcheck + t45-portable-equiv + t45-win-mv-truth + t32-locale-pin + t53-menu-eof + t32-copy-form-2 + t32-anchor-guard + t32-clause-exempt + t53-helper-count + t53-neg-floor + history-preflight + preflight-empty-guard + preflight-exit-passthrough + t54-ui-eof-closure-invariants + t54-judge-selfcheck + t53-rel-threshold + only-unregistered-exit4 + registry-selfcheck + t40-case-count-contract + probe-budget-10s + install-list-from-product + t63-t67-quality-observation + t68-t76-switch-reliability + t77-t84-weight10-exclusive + t85-t88-n4-probe-regen + run-lock-done-marker + t114-readend-collapse + expect-fail-exit5 + t54-affirm-default-7b + t115-t116-claim-gate-identity + t117-t118-legacy-failover-guard + t119-t121-standby-target-parity + t122-shared-core-guard + pgrep-shim)"
 
 # shellcheck source=lib/harness.sh
 . "$SCRIPT_DIR/lib/harness.sh"
@@ -469,6 +493,14 @@ CASES=(
     #   崩溃循环残留（没有池配置却在跑）⇒ 照常清干净
     "T117:case_T117_legacy_failover_guard_serve_vs_residue"
     "T118:case_T118_legacy_failover_guard_negative_control"
+    # 主备目标枚举口径：探测端与路由端必须同一份（T119~T121 · cases/27_standby_target_parity_t119.sh）
+    #   两端口径不一致 ⇒ 状态行匹配不上配置里的目标 ⇒ 主备切换**静默失效**
+    "T119:case_T119_standby_probe_route_target_parity"
+    "T120:case_T120_standby_probe_route_parity_negative_control"
+    "T121:case_T121_standby_auto_enable_keeps_explicit_target_states"
+    # 共用真源不可用时，探测端生成物不许被换成残缺版（T122 · cases/27_standby_target_parity_t119.sh）
+    #   探测脚本缺 rule_target_endpoints ⇒ 探测端枚举不到任何目标 ⇒ 主备永远不切（静默失效）
+    "T122:case_T122_shared_core_missing_must_not_install_broken_probe"
 )
 
 

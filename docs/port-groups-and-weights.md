@@ -40,6 +40,10 @@ REMOTE_PORT="8080"
 > ⚠️ **同一端口不允许混角色。** `lib/realm.sh` 的 `generate_endpoints_from_rules`：同一 `LISTEN_PORT` 上出现不同
 > `RULE_ROLE` 的规则时，后来的规则会被**跳过**并打印警告。中转与服务端必须用不同的监听端口。
 
+> 💡 **每个目标端口可以不一样。** 上面两种方式都让所有目标共用 `REMOTE_PORT`。
+> 若备机是「同 host 不同端口」（如主 `127.0.0.1:28081` / 备 `127.0.0.1:28082`），
+> 要用 `TARGET_STATES` 表达 —— 见 [5.4 目标形态](#54-目标形态每个目标可以自带端口)。
+
 ---
 
 ## 2. 负载均衡模式（`BALANCE_MODE`）
@@ -264,6 +268,34 @@ pf
 
 对 `1,0,0` 这种标准写法，权重排序与原始顺序一致，行为不受影响。
 
+### 5.4 目标形态：每个目标可以自带端口
+
+端口组的「目标」最终是一串 `host:port`，有两种来源：
+
+| 来源 | 形态 | 例子 |
+|------|------|------|
+| `REMOTE_HOST` × `REMOTE_PORT` | 多个 host **共用一个端口** | `REMOTE_HOST=10.0.0.1,10.0.0.2` + `REMOTE_PORT=8080` |
+| `TARGET_STATES` | 每个目标**自带端口** | `TARGET_STATES=10.0.0.1:28081,10.0.0.1:28082` |
+
+`TARGET_STATES` 是**「同 host 不同端口」的备机唯一的表达方式** —— 比如主备跑在同一台机器的
+`28081`（主）和 `28082`（备）两个端口上：
+
+```
+TARGET_STATES="127.0.0.1:28081,127.0.0.1:28082"
+WEIGHTS="10,0"
+```
+
+判定口径只有一份（`lib/core.sh` 的 `rule_target_endpoints`）：
+
+```
+① BALANCE_MODE != off 且 TARGET_STATES 非空  →  用 TARGET_STATES
+② 否则                                        →  REMOTE_HOST 的每个地址 × REMOTE_PORT
+```
+
+探测端（`lib/health.sh`）和路由端（`lib/realm.sh`）都调它 —— 两端口径不一致会导致
+状态文件里的目标行匹配不上 realm 配置里的目标，**主备切换静默失效**（不报错、不出日志）。
+逐态推演与更多例子见 [active-standby-logic.md](active-standby-logic.md#目标形态每个目标可以自带端口)。
+
 ---
 
 ## 6. 排查清单
@@ -273,6 +305,7 @@ pf
 | 权重保存后不生效 | 是否重启了 realm？`pf --restart-service` |
 | 权重填了报错「数量不匹配」 | 权重个数必须等于端口组展开后的目标数 |
 | 权重主备没切换 | 健康检查服务是否在跑：`systemctl status realm-health-check.timer`；探测日志 `journalctl -u realm-health-check.service -n 50` |
+| 权重主备没切换，且**完全没有报错** | 探测端与路由端枚举的目标集可能对不上（老版本缺陷：探测只认 `REMOTE_HOST × REMOTE_PORT`，路由端却按 `TARGET_STATES`）。核对：日志里探测的 `host:port` 与 realm 配置里的 `extra_remotes` 是否一一对应 |
 | 权重主备没切换（IP 明明通） | 探测的是 **TCP 端口**不是 ping；IP 通不代表端口通，也不代表业务正常 |
 | 所有目标都被判故障 | 探测日志里看报错；`nc` 与 `timeout` 至少要有一个（见[排查手册](troubleshooting.md)） |
 | 菜单里看不到端口组 | 该端口目标数必须 > 1，且必须是中转规则（`RULE_ROLE=1`） |
@@ -286,6 +319,6 @@ pf
 | 项 | 说明 |
 |----|------|
 | 主备优先级 | 已实现：按权重降序选主（同权重保持原始顺序）。权重个数与目标数不一致时退化为原始顺序 |
-| `TARGET_STATES` 字段用途 | 该字段在规则白名单里（`lib/health.sh` 的 `read_rule_file` 里的 `_allowed` 白名单），当前 `active-standby` 分支实际不依赖它，只影响「用户手动摘除目标」的旧逻辑 |
+| `TARGET_STATES` 字段用途 | 该字段在规则白名单里（`lib/health.sh` 的 `read_rule_file` 里的 `_allowed` 白名单）。**主备模式下它是有用的**：它是「每个目标自带端口」（同 host 不同端口）的唯一表达方式，探测端与路由端都优先用它枚举目标（口径 = `lib/core.sh` 的 `rule_target_endpoints`）。进主备时只在它是「剔除模式残留」（条目数少于完整目标数）时清空 |
 | 全挂兜底 | 所有目标都故障时强制把优先级最高的目标置 1，保证不断流；该目标实际也是不通的，需人工介入 |
 | 探测深度 | 只探 TCP 握手。端口通但业务已死、或故障在「客户端 → 中转机」这一段，探测都发现不了 |

@@ -3040,12 +3040,26 @@ auto_enable_active_standby() {
                     echo "BALANCE_MODE=\"active-standby\"" >> "$rule_file"
                 fi
 
-                # 清空 TARGET_STATES（M2）：
-                # 主备模式下 lib/realm.sh 用 TARGET_STATES 覆盖 REMOTE_HOST，
-                # 留着剔除模式留下的陈旧结果会让备机静默丢掉流量。
-                if grep -q "^TARGET_STATES=" "$rule_file"; then
-                    sed -i "s|^TARGET_STATES=.*|TARGET_STATES=\"\"|" "$rule_file"
-                else
+                # TARGET_STATES（M2 + 每目标端口）：
+                #   主备模式下路由端用 TARGET_STATES 覆盖 REMOTE_HOST，
+                #   留着剔除模式留下的陈旧结果会让备机静默丢掉流量。
+                #   ★ 但 TARGET_STATES 也是「每个目标自带端口」的备机
+                #     （同 host 不同端口）**唯一**的表达方式 ——
+                #     一律清空就把用户的意图抹掉了（而且抹完探测端与路由端口径也对不上）。
+                #   ⇒ 只在它**明显是剔除模式的残留**时清空：条目数比完整目标数少
+                #     （被剔掉的目标没补回来）。条目数相同或更多 ⇒ 用户显式写的目标列表 ⇒ 保留。
+                local _ts_count _full_count
+                _ts_count=$(printf '%s' "${TARGET_STATES:-}" | awk -F',' '{if ($0=="") print 0; else print NF}')
+                _full_count=$(printf '%s' "${REMOTE_HOST:-}" | awk -F',' '{if ($0=="") print 0; else print NF}')
+                if [ "$_ts_count" -lt "$_full_count" ]; then
+                    # 剔除模式残留 ⇒ 清空，让主备回到完整目标集
+                    if grep -q "^TARGET_STATES=" "$rule_file"; then
+                        sed -i "s|^TARGET_STATES=.*|TARGET_STATES=\"\"|" "$rule_file"
+                    else
+                        echo "TARGET_STATES=\"\"" >> "$rule_file"
+                    fi
+                elif ! grep -q "^TARGET_STATES=" "$rule_file"; then
+                    # 键都没有 ⇒ 补上（值为空 ⇒ 走 REMOTE_HOST × REMOTE_PORT 的常规口径）
                     echo "TARGET_STATES=\"\"" >> "$rule_file"
                 fi
 

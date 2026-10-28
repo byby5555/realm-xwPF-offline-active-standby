@@ -100,7 +100,7 @@ bash /etc/realm/xwFailover.sh config
 
 ### 3.1 TCP 端口探测，不是 ping
 
-健康检查探测的是**目标的 TCP 端口**（`REMOTE_HOST:REMOTE_PORT`），**不是 ping**。
+健康检查探测的是**目标的 TCP 端口**（`host:port`），**不是 ping**。
 探测函数（`lib/health.sh` 的 `check_connectivity`）有两条路：
 
 ```bash
@@ -137,8 +137,19 @@ fi
 - `ENABLED = true`
 - `FAILOVER_ENABLED = true`
 
-每条规则的 `REMOTE_HOST` 按逗号展开成多个目标，每个目标用该规则的 `REMOTE_PORT`
-（`lib/health.sh` 的 `health_check_script_body`）。
+每条规则的目标集按**共用口径**枚举（`lib/core.sh` 的 `rule_target_endpoints`，唯一真源）：
+
+```
+① BALANCE_MODE != off 且 TARGET_STATES 非空  →  用 TARGET_STATES（每项自带 host:port）
+② 否则                                        →  REMOTE_HOST 的每个地址 × REMOTE_PORT
+```
+
+每个目标按**它自己的端口**探测（`lib/health.sh` 的 `health_check_script_body`）。
+
+> ★ **为什么口径必须与路由端同源**：路由端（`lib/realm.sh` 的 `generate_endpoints_from_rules`）
+> 生成 realm 配置时用的是同一份 `rule_target_endpoints`。两边枚举出的目标集若不一致，
+> 状态文件里的目标行就**匹配不上**配置里的目标 ⇒ **主备切换静默失效**
+> （不报错、不出日志，界面也看不出来）。
 
 ### 3.3 时延测量（毫秒）
 
@@ -669,6 +680,7 @@ bash /etc/realm/xwFailover.sh status
 | `lib/health.sh` 已落盘 | 健康检查脚本由 `lib/health.sh` 的 `health_check_script_body` 生成，`xwFailover.sh` 与 `pf` 共用同一份实现。生成的 `health_check.sh` 是独立可执行脚本，其探测逻辑由 `lib/health.sh` 的 `health_emit_function` 原样抽取注入，与真源逐字一致，无需手工同步 |
 | 主备优先级按权重排序 | 已实现：主目标 = 权重最大的健康目标（同权重保持原始顺序）。详见 [端口组与权重 §5.3](port-groups-and-weights.md#53-主备优先级与权重的关系) |
 | 探测只到 TCP 握手 | 端口通但业务已死、或故障发生在「客户端 → 中转机」这一段，探测都发现不了 → 排查见 [故障排查 §6.7](troubleshooting.md#67-ip-还通但链路不通为什么没切) |
-| 探测对象不可自定义 | 探测目标固定为规则里的 `REMOTE_HOST:REMOTE_PORT`，不支持换成独立的健康端口 |
+| 探测对象不可自定义 | 探测目标固定为规则里的目标集（`TARGET_STATES`，或 `REMOTE_HOST × REMOTE_PORT`），不支持换成**独立的**健康端口（探测端口 = 业务端口） |
+| 探测端与路由端口径必须同源 | 目标枚举口径只有一份真源（`lib/core.sh` 的 `rule_target_endpoints`），探测端与路由端都调它。老版本两边各写一份，探测只认 `REMOTE_HOST × REMOTE_PORT` 而路由端认 `TARGET_STATES` ⇒ 目标集对不上 ⇒ **主备切换静默失效**（不报错、不出日志） |
 | `realm-health-check.service` 是否需要 `After=network-online.target` | 当前只写了 `After=network.target`。开机后立刻探测可能在网络就绪前失败（表现为开机瞬间误判故障）。是否调整待确认 |
 | `journalctl --vacuum-time=7d` 的影响范围 | 该命令清理的是**全系统** journal（不限本服务），在有其它业务日志的机器上影响面较大。是否收窄待确认 |

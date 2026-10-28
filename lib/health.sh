@@ -91,7 +91,10 @@ read_rule_file() {
 # 因此仓库里只需要一份源码，不存在「副本与正本手工同步」的问题。
 health_emit_function() {
     local fn_name="$1"
-    local lib_file="${REALM_HEALTH_LIB:-${BASH_SOURCE[0]}}"
+    # 第 2 个参数 = 源文件（默认本文件）。
+    #   有些函数是**共用真源**，住在别的 lib 里（如 rule_target_endpoints 在 lib/core.sh）
+    #   —— 生成物必须把它一起带走，否则探测脚本会缺函数（探测直接不跑）。
+    local lib_file="${2:-${REALM_HEALTH_LIB:-${BASH_SOURCE[0]}}}"
 
     if [ ! -f "$lib_file" ]; then
         echo "错误: 无法定位 lib/health.sh（抽取 ${fn_name} 失败）" >&2
@@ -103,6 +106,28 @@ health_emit_function() {
         started { print }
         started && /^\}/ { exit }
     ' "$lib_file"
+}
+
+# 定位「共用真源」文件（lib/core.sh）
+#
+# ★ 为什么不能只认「health.sh 的同级目录」：
+#   rule_target_endpoints（目标枚举口径）住在 lib/core.sh，探测脚本必须把它一起带走。
+#   而 lib/ 的**安装布局**不止一处（/usr/local/bin/lib、/etc/realm/lib、脚本同目录），
+#   有些场景只保证 health.sh 在位（例：独立安装单元 xwFailover.sh 只加载 lib/health.sh）。
+#   ⇒ 定位顺序：① health.sh 同级目录 ② LIB_DIR ③ 两个标准安装路径。
+#   全都找不到 ⇒ 返回 1。调用方**必须报错并拒绝装上残缺的探测端** ——
+#   缺这个函数的探测端一个目标都枚举不到 ⇒ 主备切换静默失效（不报错、不出日志）。
+health_shared_core_lib() {
+    local cand
+    for cand in \
+        "$(dirname "${BASH_SOURCE[0]}")/core.sh" \
+        "${LIB_DIR:+$LIB_DIR/core.sh}" \
+        "/usr/local/bin/lib/core.sh" \
+        "/etc/realm/lib/core.sh"
+    do
+        [ -n "$cand" ] && [ -f "$cand" ] && { printf '%s' "$cand"; return 0; }
+    done
+    return 1
 }
 
 # 校验正整数，非法时回退默认值（不报错）
@@ -721,6 +746,17 @@ HEADER_EOF
 
         # ↓↓↓ 以下函数从 lib/health.sh（唯一真源）原样抽取，勿手工维护副本 ↓↓↓
         health_emit_function read_rule_file
+        # ★ 共用真源：目标枚举口径（探测端与路由端必须同一份，否则切换静默失效）
+        #   它住在 lib/core.sh（core.sh 是所有 lib 里最先加载的那个）⇒ 从那儿抽。
+        #   找不到时**必须报错**：装一个缺函数的探测端 = 探测端枚举不到任何目标
+        #   = 主备切换静默失效（不报错、不出日志，界面也看不出来）。
+        local _shared_core_lib
+        _shared_core_lib="$(health_shared_core_lib || true)"
+        if [ -n "$_shared_core_lib" ]; then
+            health_emit_function rule_target_endpoints "$_shared_core_lib"
+        else
+            echo "错误: 找不到共用真源 lib/core.sh（rule_target_endpoints 抽取失败）" >&2
+        fi
         health_emit_function check_connectivity
         health_emit_function now_us
         health_emit_function probe_with_latency
@@ -771,16 +807,31 @@ for rule_file in "${RULES_DIR}"/rule-*.conf; do
         continue
     fi
 
-    # 处理REMOTE_HOST中的多个地址
-    IFS=',' read -ra targets <<< "$REMOTE_HOST"
-    for target in "${targets[@]}"; do
-        target=$(echo "$target" | xargs)  # 去除空格
+    # 目标枚举：**与路由端同一份口径**（rule_target_endpoints，住在 lib/core.sh）
+    #   探测的目标集必须 == 配置里的目标集：
+    #   不一致 ⇒ 状态行匹配不上配置里的目标 ⇒ 主备切换**静默失效**
+    #   （不报错、不出日志，界面也看不出来）。
+    #   ★ 口径含「每目标自带端口」（TARGET_STATES）⇒ 同 host 不同端口的备机
+    #     也能被探测到（否则它只会被路由端看见、探测端看不见 ⇒ 又是一处对不上）。
+    _rule_targets="$(rule_target_endpoints)"
+    IFS=',' read -ra targets <<< "$_rule_targets"
+    for target_endpoint in "${targets[@]}"; do
+        target_endpoint=$(echo "$target_endpoint" | xargs)  # 去除空格
+        [ -n "$target_endpoint" ] || continue
+
+        # 拆出 host / port：端口按**这个目标自己的**端口走（不再统一用 REMOTE_PORT）
+        target="${target_endpoint%:*}"
+        target_port="${target_endpoint##*:}"
+        # 目标里没带端口（口径 ② 之外的脏数据）⇒ 回落规则里的 REMOTE_PORT
+        if [ -z "$target_port" ] || [ "$target_port" = "$target_endpoint" ]; then
+            target_port="${REMOTE_PORT:-}"
+            target_endpoint="${target}:${target_port}"
+        fi
 
         # ★ TARGET 字段 = host:port（与 docs/health-check-and-failover.md 的口径一致）：
         #   同一个 host 上的不同端口是**不同目标**，状态互不覆盖。
         # ★ 行键 = RULE_ID + 目标地址（组合键）：状态归属到「哪条规则的哪个目标」，
         #   跨轮继承按同一个组合键回读（见 health_status_find_row）。
-        target_endpoint="${target}:${REMOTE_PORT}"
         target_key="${RULE_ID}|${target_endpoint}"
 
         # 取上一轮的状态（跨轮继承）：按 **(RULE_ID, 目标地址) 组合键**匹配，
@@ -816,7 +867,7 @@ for rule_file in "${RULES_DIR}"/rule-*.conf; do
         #     重复探测 = 真机探测次数翻倍（负载翻倍），
         #     且采样口径可能与本轮 status 判定来自不同的探测结果（两者不一致）。
         _q_probe_fail=0
-        if probe_with_latency "$target" "$REMOTE_PORT" "${CONNECTION_TIMEOUT:-10}"; then
+        if probe_with_latency "$target" "$target_port" "${CONNECTION_TIMEOUT:-10}"; then
             # 检查成功
             success_count=$((success_count + 1))
             fail_count=0
@@ -829,7 +880,7 @@ for rule_file in "${RULES_DIR}"/rule-*.conf; do
                     status="healthy"
                     config_changed=true
                     failure_start_time=0  # 重置故障开始时间
-                    echo "$(date '+%Y-%m-%d %H:%M:%S') [RECOVERY] 目标 $target:$REMOTE_PORT 已恢复健康"
+                    echo "$(date '+%Y-%m-%d %H:%M:%S') [RECOVERY] 目标 $target_endpoint 已恢复健康"
                 fi
             fi
         else
@@ -843,7 +894,7 @@ for rule_file in "${RULES_DIR}"/rule-*.conf; do
                 status="failed"
                 config_changed=true
                 failure_start_time="$current_time"  # 记录故障开始时间
-                echo "$(date '+%Y-%m-%d %H:%M:%S') [FAILURE] 目标 $target:$REMOTE_PORT 检测失败，标记为故障"
+                echo "$(date '+%Y-%m-%d %H:%M:%S') [FAILURE] 目标 $target_endpoint 检测失败，标记为故障"
             fi
         fi
 
@@ -1007,6 +1058,25 @@ health_check_script_regenerate() {
         rm -f "$tmp_script"
         return 1
     fi
+
+    # ★ 必要函数自检（**在 mv 之前**）：抽取失败时不要装一个跑不起来的探测端，
+    #   也不要**把原来能跑的那份覆盖掉** ——
+    #   残缺的探测端 = 枚举不到任何目标 = 主备切换静默失效（不报错、不出日志）。
+    #   自检放在 mv 之前 ⇒ 失败时旧脚本原封不动留在原处。
+    _missing=""
+    grep -q '^read_rule_file() {' "$tmp_script" || _missing="read_rule_file"
+    grep -q '^check_connectivity() {' "$tmp_script" || _missing="${_missing} check_connectivity"
+    # ★ 共用真源（目标枚举口径）：探测端靠它枚举目标。
+    #   缺了它 ⇒ 探测端一个目标都枚举不到 ⇒ 主备切换静默失效。
+    grep -q '^rule_target_endpoints() {' "$tmp_script" || _missing="${_missing} rule_target_endpoints"
+    # 尾部标记：生成物被截断时（抽取中途失败）这里能抓到
+    grep -q '健康检查完成' "$tmp_script" || _missing="${_missing} <脚本尾部>"
+    if [ -n "$_missing" ]; then
+        echo -e "${RED}✗ 生成的健康检查脚本缺少函数: ${_missing}${NC}" >&2
+        rm -f "$tmp_script"
+        return 1
+    fi
+
     if ! mv -f "$tmp_script" "$health_script"; then
         echo -e "${RED}✗ 写入健康检查脚本失败: ${health_script}${NC}" >&2
         rm -f "$tmp_script"
@@ -1016,18 +1086,6 @@ health_check_script_regenerate() {
         echo -e "${RED}✗ 设置可执行权限失败: ${health_script}${NC}" >&2
         return 1
     }
-
-    # 必要函数自检：抽取失败时不要装一个跑不起来的探测端
-    _missing=""
-    grep -q '^read_rule_file() {' "$health_script" || _missing="read_rule_file"
-    grep -q '^check_connectivity() {' "$health_script" || _missing="${_missing} check_connectivity"
-    # 尾部标记：生成物被截断时（抽取中途失败）这里能抓到
-    grep -q '健康检查完成' "$health_script" || _missing="${_missing} <脚本尾部>"
-    if [ -n "$_missing" ]; then
-        echo -e "${RED}✗ 生成的健康检查脚本缺少函数: ${_missing}${NC}" >&2
-        rm -f "$health_script"
-        return 1
-    fi
 
     return 0
 }

@@ -1,4 +1,20 @@
 
+# rule_target_endpoints（目标枚举口径）的唯一实现位于 lib/core.sh。
+# 本文件被单独 source 时（只加载 realm.sh 的脚本 / 测试），把唯一实现所在文件一并加载，
+# 免得出现「找不到 rule_target_endpoints」这种含糊报错 ——
+# 那会让路由端枚举不出目标 ⇒ 主备切换静默失效（不报错、不出日志）。
+if ! declare -F rule_target_endpoints >/dev/null 2>&1; then
+    _REALM_REALM_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+    if [ -f "${_REALM_REALM_LIB_DIR}/core.sh" ]; then
+        # shellcheck disable=SC1091
+        . "${_REALM_REALM_LIB_DIR}/core.sh"
+    fi
+    unset _REALM_REALM_LIB_DIR
+fi
+if ! declare -F rule_target_endpoints >/dev/null 2>&1; then
+    echo "错误: 缺少 lib/core.sh，或其版本过旧（没有 rule_target_endpoints），请先执行 pf install 更新脚本" >&2
+fi
+
 # ---- 服务管理抽象层 ----
 svc_start()        { if [ "$INIT_SYSTEM" = "openrc" ]; then rc-service realm start;   else systemctl start realm;   fi; }
 svc_stop()         { if [ "$INIT_SYSTEM" = "openrc" ]; then rc-service realm stop;    else systemctl stop realm;    fi; }
@@ -437,31 +453,13 @@ generate_endpoints_from_rules() {
                     # 服务端服务器使用FORWARD_TARGET
                     targets_to_add="$FORWARD_TARGET"
                 else
-                    # 中转服务器：优先使用TARGET_STATES，否则使用REMOTE_HOST
-                    # 双保险：read_rule_file 已保证这两个键有值（缺失回落空串），
-                    # 这里再给默认值 —— 免得解析器将来被改坏时，
-                    # 「走 TARGET_STATES 还是 REMOTE_HOST」这个判定点在 set -u 下致命中断。
-                    if [ "${BALANCE_MODE:-}" != "off" ] && [ -n "${TARGET_STATES:-}" ]; then
-                        # 负载均衡模式且有TARGET_STATES，使用TARGET_STATES
-                        targets_to_add="$TARGET_STATES"
-                    else
-                        # 非负载均衡模式或无TARGET_STATES，使用REMOTE_HOST:REMOTE_PORT
-                        if [[ "$REMOTE_HOST" == *","* ]]; then
-                            # REMOTE_HOST包含多个地址
-                            IFS=',' read -ra host_list <<< "$REMOTE_HOST"
-                            for host in "${host_list[@]}"; do
-                                host=$(echo "$host" | xargs)  # 去除空格
-                                if [ -n "$targets_to_add" ]; then
-                                    targets_to_add="$targets_to_add,$host:$REMOTE_PORT"
-                                else
-                                    targets_to_add="$host:$REMOTE_PORT"
-                                fi
-                            done
-                        else
-                            # REMOTE_HOST是单个地址
-                            targets_to_add="$REMOTE_HOST:$REMOTE_PORT"
-                        fi
-                    fi
+                    # 中转服务器：**与探测端同一份口径**（rule_target_endpoints，住在 lib/core.sh）
+                    #   · BALANCE_MODE != off 且 TARGET_STATES 非空 → 用 TARGET_STATES
+                    #     （每项自带 host:port ⇒ 能表达「同 host 不同端口」的备机）
+                    #   · 否则 → REMOTE_HOST 的每个地址 × REMOTE_PORT
+                    #   ★ 口径必须与探测端同源：两边枚举出的目标集不一样
+                    #     ⇒ 状态行匹配不上配置里的目标 ⇒ 主备切换静默失效。
+                    targets_to_add="$(rule_target_endpoints)"
                 fi
 
                 # 将目标添加到端口组（避免重复）
