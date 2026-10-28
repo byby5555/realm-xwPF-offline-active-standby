@@ -1,0 +1,56 @@
+#!/bin/bash
+# curl 替身：离线下载桩。
+# 按 URL 里的 /main/ 或 /raw/ 取仓库相对路径，到 $SBX_MIRROR 本地镜像取文件；取不到就返回 HTTP 404。
+# 每次调用都记录 URL，便于断言「下载地址是否指向本 fork」。
+
+LOG="${SBX_LOG_DIR:-/tmp}/curl.log"
+
+url=""
+out=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o)
+            out="${2:-}"
+            shift 2
+            ;;
+        -o*)
+            out="${1#-o}"
+            shift
+            ;;
+        -*)
+            shift
+            ;;
+        *)
+            case "$1" in
+                http://*|https://*) url="$1" ;;
+            esac
+            shift
+            ;;
+    esac
+done
+
+[ -n "$LOG" ] && echo "curl resolved_url=$url out=$out" >> "$LOG"
+
+# 加速源包装：https://v6.gh-proxy.org/<真实URL>
+case "$url" in
+    *gh-proxy.org/*) url="${url#*gh-proxy.org/}" ;;
+esac
+
+rel=""
+case "$url" in
+    *"/main/"*) rel="${url#*/main/}" ;;
+    *"/raw/"*) rel="${url#*/raw/}" ;;
+esac
+
+mirror="${SBX_MIRROR:-}"
+if [ -z "$rel" ] || [ -z "$mirror" ] || [ ! -f "${mirror}/${rel}" ]; then
+    echo "curl-shim: 404 (rel=${rel:-none})" >&2
+    exit 22
+fi
+
+if [ -n "$out" ]; then
+    cp "${mirror}/${rel}" "$out"
+else
+    cat "${mirror}/${rel}"
+fi
+exit 0

@@ -1,0 +1,5 @@
+#!/bin/bash
+# apt-get 替身：只记录 detect_system 的识别结果，不真的装包
+LOG="${SBX_LOG_DIR:-/tmp}/apt-get.log"
+[ -n "$LOG" ] && echo "apt-get $*" >> "$LOG"
+exit 0

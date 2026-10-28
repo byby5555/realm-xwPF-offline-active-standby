@@ -1,0 +1,26 @@
+#!/bin/bash
+# nc 替身：模拟 TCP 探测结果。
+# 约定：$SBX_NC_DOWN 文件里每行一个 "host:port"，命中即判连接失败（exit 1）。
+
+LOG="${SBX_LOG_DIR:-/tmp}/nc.log"
+[ -n "$LOG" ] && echo "nc $*" >> "$LOG"
+
+host=""
+port=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -z) shift ;;
+        -w) port="${2:-}"; shift 2 ;;
+        -*) shift ;;
+        *)
+            if [ -z "$host" ]; then host="$1"; else port="$1"; fi
+            shift
+            ;;
+    esac
+done
+
+DOWN="${SBX_NC_DOWN:-}"
+if [ -n "$DOWN" ] && [ -f "$DOWN" ] && grep -qx "${host}:${port}" "$DOWN"; then
+    exit 1
+fi
+exit 0

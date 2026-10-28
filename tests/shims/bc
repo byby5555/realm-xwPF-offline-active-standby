@@ -1,0 +1,24 @@
+#!/bin/bash
+# bc 替身：只支持脚本里实际用到的那一种表达式 "scale=N; a * b / c"。
+# 不支持的表达式直接报错，让调用方的 `|| echo "0.0"` 兜底生效。
+
+input=$(cat)
+scale=1
+expr="$input"
+
+if [[ "$input" =~ scale=([0-9]+) ]]; then
+    scale="${BASH_REMATCH[1]}"
+    expr="${input#*;}"
+fi
+expr="${expr//[[:space:]]/}"
+
+if [[ "$expr" =~ ^([0-9]+(\.[0-9]+)?)\*([0-9]+(\.[0-9]+)?)/([0-9]+(\.[0-9]+)?)$ ]]; then
+    a="${BASH_REMATCH[1]}"
+    b="${BASH_REMATCH[3]}"
+    c="${BASH_REMATCH[5]}"
+    awk -v s="$scale" -v a="$a" -v b="$b" -v c="$c" 'BEGIN{ printf "%.*f\n", s, (a*b)/c }'
+    exit 0
+fi
+
+echo "bc-shim: unsupported expression: $input" >&2
+exit 1

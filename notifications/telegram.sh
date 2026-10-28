@@ -108,6 +108,7 @@ telegram_test() {
 
 telegram_configure() {
     while true; do
+        sleep 0.2
         local status_notifications_enabled=$(jq -r '.notifications.telegram.status_notifications.enabled // false' "$CONFIG_FILE")
         local bot_token=$(jq -r '.notifications.telegram.bot_token // ""' "$CONFIG_FILE")
 
@@ -138,7 +139,7 @@ telegram_configure() {
         echo "4. 查看通知日志"
         echo "0. 返回上级菜单"
         echo
-        read -p "请选择操作 [0-4]: " choice
+        ui_read_into "请选择操作 [0-4]: " choice
 
         case $choice in
             1) telegram_configure_bot ;;
@@ -178,7 +179,7 @@ telegram_configure_bot() {
     fi
     echo
 
-    read -p "请输入Bot Token: " bot_token
+    ui_read_into "请输入Bot Token: " bot_token
     if [ -z "$bot_token" ]; then
         echo -e "${RED}Token不能为空${NC}"
         sleep 2
@@ -193,7 +194,7 @@ telegram_configure_bot() {
         return
     fi
 
-    read -p "请输入Chat ID: " chat_id
+    ui_read_into "请输入Chat ID: " chat_id
     if [ -z "$chat_id" ]; then
         echo -e "${RED}Chat ID不能为空${NC}"
         sleep 2
@@ -209,7 +210,7 @@ telegram_configure_bot() {
     fi
 
     local default_server_name=$(hostname)
-    read -p "请输入服务器名称 (回车默认: $default_server_name): " server_name
+    ui_read_into "请输入服务器名称 (回车默认: $default_server_name): " server_name
     if [ -z "$server_name" ]; then
         server_name="$default_server_name"
     fi
@@ -248,12 +249,13 @@ telegram_configure_bot() {
 
 telegram_manage_settings() {
     while true; do
+        sleep 0.2
         echo -e "${BLUE}=== 通知设置管理 ===${NC}"
         echo "1. 状态通知间隔"
         echo "2. 开启/关闭切换"
         echo "0. 返回上级菜单"
         echo
-        read -p "请选择操作 [0-2]: " choice
+        ui_read_into "请选择操作 [0-2]: " choice
 
         case $choice in
             1) telegram_configure_interval ;;
@@ -315,5 +317,5 @@ telegram_view_logs() {
     tail -n 20 "$log_file"
     echo "────────────────────────────────────────────────────────"
     echo
-    read -p "按回车键返回..."
+    ui_pause "按回车键返回..."
 }

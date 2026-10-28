@@ -117,6 +117,73 @@ check_root() {
     fi
 }
 
+# === 交互菜单读入：stdin EOF 安全（无人值守场合的硬要求）===
+# ★ 交互菜单若直接用 `read`，在 stdin 是 EOF 时（管道 / 后台 / cron / systemd /
+#   无人值守执行 / 终端关闭）`read` 会立刻返回非 0 → 变量为空 → case 不匹配 →
+#   回到 while 顶部 → 无限重绘 + 忙循环 + 无界输出。
+#   实机后果：/tmp 是 tmpfs，无界输出灌满它 → 内存+swap 耗尽 → sshd 握不上手。
+#   修法：菜单读入统一走下面几个 helper，读到 EOF 绝不回到菜单循环顶部。
+#
+# ★ 三种读入语义（按「EOF 之后该做什么」区分，别混用）：
+#   ui_read_into    —— 菜单读入。EOF → 立刻干净退出（退出码 0）。
+#   ui_pause        —— 「按回车键继续」类。EOF → 立刻干净退出（退出码 0）。
+#   ui_read_default —— 一次性询问。EOF → **不退出**，取默认值并返回 1
+#                      （给安装流程等可能被无人值守触发的路径用：那里 EOF 是常态，
+#                        当成错误把流程打断会变成「静默空跑」）。
+#
+# ★ 本块在 lib/core.sh 与 3 个独立脚本（xwFailover.sh / port-traffic-dog.sh /
+#   speedtest.sh）里各有一份。独立脚本是**独立安装单元**、拿不到 lib/，
+#   所以「一份实现」只能是「四份逐字一致的拷贝」——
+#   台架把「份数 == 4 且四份逐字一致」钉成不变式，任何漂移都判红。
+#
+# 用法：ui_read_into "提示语" 变量名   —— 把读到的内容放进指定变量
+ui_read_into() {
+    local __prompt="$1" __name="$2" __val
+    if ! read -r -p "$__prompt" __val; then
+        # EOF / 读失败：干净退出，不回菜单循环
+        exit 0
+    fi
+    printf -v "$__name" '%s' "$__val"
+}
+
+# 用法：ui_pause "提示语"   —— 「按回车键继续 / 返回」类读入
+ui_pause() {
+    read -p "$1" || exit 0
+}
+
+# 用法：ui_read_default "提示语" 变量名 [默认值]
+#   读到 EOF 时把变量置成默认值（缺省空串）并返回 1，由调用方决定分支。
+ui_read_default() {
+    local __prompt="$1" __name="$2" __default="${3:-}" __val=""
+    if ! read -r -p "$__prompt" __val; then
+        printf -v "$__name" '%s' "$__default"
+        return 1
+    fi
+    printf -v "$__name" '%s' "$__val"
+    return 0
+}
+
+# 用法：ui_require_tty   —— 菜单入口护栏：stdin 不是终端就不进菜单
+ui_require_tty() {
+    if [ ! -t 0 ]; then
+        echo -e "${YELLOW}检测到标准输入不是终端（管道 / 后台 / 无人值守执行），已退出交互菜单。${NC}"
+        echo "Interactive menu requires a terminal on stdin; exiting."
+        exit 0
+    fi
+}
+
+# 用法：ui_clear   —— 清屏。TERM 没设时 `clear` 会往 stderr 吐
+#   "TERM environment variable not set." 并返回非 0（无人值守时输出更难看），
+#   所以自己兜底：TERM 正常用 clear，缺失或 dumb 用 ANSI 序列。
+ui_clear() {
+    if [ -n "${TERM:-}" ] && [ "${TERM}" != "dumb" ]; then
+        clear 2>/dev/null || printf '\033[H\033[2J'
+    else
+        printf '\033[H\033[2J'
+    fi
+}
+
+
 # 工具配置数组 - 定义所有需要的工具
 declare -A REQUIRED_TOOLS=(
     ["iperf3"]="apt:iperf3"
@@ -349,7 +416,7 @@ stop_port_process() {
     echo -e "${BLUE}占用进程: PID=$pid, 命令=$cmd${NC}"
     echo ""
 
-    read -p "是否临时停止该进程以进行测试？测试完成后会自动恢复 (y/N): " confirm
+    ui_read_into "是否临时停止该进程以进行测试？测试完成后会自动恢复 (y/N): " confirm
     if [[ $confirm =~ ^[Yy]$ ]]; then
         # 获取完整的进程命令行用于恢复
         local full_cmd=$(ps -p "$pid" -o args= 2>/dev/null | head -1)
@@ -429,13 +496,14 @@ test_connectivity() {
 
 # 服务端模式 - 启动服务端
 landing_server_mode() {
-    clear
+    ui_clear
     echo -e "${GREEN}=== 服务端 (开放测试) ===${NC}"
     echo ""
 
     # 输入监听端口
     while true; do
-        read -p "监听测试端口 [默认5201]: " input_port
+        sleep 0.2
+        ui_read_into "监听测试端口 [默认5201]: " input_port
         if [ -z "$input_port" ]; then
             TARGET_PORT="5201"
         elif validate_port "$input_port"; then
@@ -1322,20 +1390,21 @@ generate_final_report() {
     echo ""
     echo -e "─────────────────────────────────────────────────────────────────"
 
-    echo -e "测试完成时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S') | 脚本开源地址：https://github.com/zywe03/realm-xwPF"
+    echo -e "测试完成时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S') | 脚本开源地址：https://github.com/byby5555/realm-xwPF-offline-active-standby"
     echo -e "${WHITE}按任意键返回主菜单...${NC}"
     read -n 1 -s
 }
 
 # 客户端模式 - 发起测试
 relay_server_mode() {
-    clear
+    ui_clear
     echo -e "${GREEN}=== 客户端 (本机发起测试) ===${NC}"
     echo ""
 
     # 输入服务端IP (目标服务器)
     while true; do
-        read -p "服务端IP (目标服务器) [默认127.0.0.1]: " TARGET_IP
+        sleep 0.2
+        ui_read_into "服务端IP (目标服务器) [默认127.0.0.1]: " TARGET_IP
 
         if [ -z "$TARGET_IP" ]; then
             TARGET_IP="127.0.0.1"
@@ -1349,7 +1418,8 @@ relay_server_mode() {
 
     # 输入测试端口
     while true; do
-        read -p "测试端口 [默认5201]: " input_port
+        sleep 0.2
+        ui_read_into "测试端口 [默认5201]: " input_port
         if [ -z "$input_port" ]; then
             TARGET_PORT="5201"
             break
@@ -1363,7 +1433,8 @@ relay_server_mode() {
 
     # 输入测试时长
     while true; do
-        read -p "测试时长(秒) [默认30]: " input_duration
+        sleep 0.2
+        ui_read_into "测试时长(秒) [默认30]: " input_duration
         if [ -z "$input_duration" ]; then
             TEST_DURATION="30"
             break
@@ -1411,7 +1482,7 @@ get_script_paths() {
 
 # 卸载脚本
 uninstall_speedtest() {
-    clear
+    ui_clear
     echo -e "${RED}=== 卸载测速测试工具 ===${NC}"
     echo ""
 
@@ -1422,7 +1493,7 @@ uninstall_speedtest() {
     echo -e "${BLUE}• 清理临时文件${NC}"
     echo ""
 
-    read -p "确认卸载？(y/N): " confirm
+    ui_read_into "确认卸载？(y/N): " confirm
     if [[ $confirm =~ ^[Yy]$ ]]; then
         # 停止可能运行的iperf3服务
         echo -e "${YELLOW}停止测试服务...${NC}"
@@ -1465,7 +1536,8 @@ uninstall_speedtest() {
 
 # 主菜单
 show_main_menu() {
-    clear
+    ui_require_tty
+    ui_clear
     echo -e "${GREEN}=== 网络链路测试(先开放,再发起) ===${NC}"
     echo ""
     echo "请选择操作:"
@@ -1477,7 +1549,8 @@ show_main_menu() {
     echo ""
 
     while true; do
-        read -p "请输入选择 [0-4]: " choice
+        sleep 0.2
+        ui_read_into "请输入选择 [0-4]: " choice
         case $choice in
             1)
                 ROLE="relay"
@@ -1524,7 +1597,7 @@ manual_update_script() {
         echo -e "${RED}✗ 更新失败${NC}"
     fi
 
-    read -p "按回车键返回..."
+    ui_pause "按回车键返回..."
 }
 
 # 主函数

@@ -149,6 +149,73 @@ check_root() {
     fi
 }
 
+# === 交互菜单读入：stdin EOF 安全（无人值守场合的硬要求）===
+# ★ 交互菜单若直接用 `read`，在 stdin 是 EOF 时（管道 / 后台 / cron / systemd /
+#   无人值守执行 / 终端关闭）`read` 会立刻返回非 0 → 变量为空 → case 不匹配 →
+#   回到 while 顶部 → 无限重绘 + 忙循环 + 无界输出。
+#   实机后果：/tmp 是 tmpfs，无界输出灌满它 → 内存+swap 耗尽 → sshd 握不上手。
+#   修法：菜单读入统一走下面几个 helper，读到 EOF 绝不回到菜单循环顶部。
+#
+# ★ 三种读入语义（按「EOF 之后该做什么」区分，别混用）：
+#   ui_read_into    —— 菜单读入。EOF → 立刻干净退出（退出码 0）。
+#   ui_pause        —— 「按回车键继续」类。EOF → 立刻干净退出（退出码 0）。
+#   ui_read_default —— 一次性询问。EOF → **不退出**，取默认值并返回 1
+#                      （给安装流程等可能被无人值守触发的路径用：那里 EOF 是常态，
+#                        当成错误把流程打断会变成「静默空跑」）。
+#
+# ★ 本块在 lib/core.sh 与 3 个独立脚本（xwFailover.sh / port-traffic-dog.sh /
+#   speedtest.sh）里各有一份。独立脚本是**独立安装单元**、拿不到 lib/，
+#   所以「一份实现」只能是「四份逐字一致的拷贝」——
+#   台架把「份数 == 4 且四份逐字一致」钉成不变式，任何漂移都判红。
+#
+# 用法：ui_read_into "提示语" 变量名   —— 把读到的内容放进指定变量
+ui_read_into() {
+    local __prompt="$1" __name="$2" __val
+    if ! read -r -p "$__prompt" __val; then
+        # EOF / 读失败：干净退出，不回菜单循环
+        exit 0
+    fi
+    printf -v "$__name" '%s' "$__val"
+}
+
+# 用法：ui_pause "提示语"   —— 「按回车键继续 / 返回」类读入
+ui_pause() {
+    read -p "$1" || exit 0
+}
+
+# 用法：ui_read_default "提示语" 变量名 [默认值]
+#   读到 EOF 时把变量置成默认值（缺省空串）并返回 1，由调用方决定分支。
+ui_read_default() {
+    local __prompt="$1" __name="$2" __default="${3:-}" __val=""
+    if ! read -r -p "$__prompt" __val; then
+        printf -v "$__name" '%s' "$__default"
+        return 1
+    fi
+    printf -v "$__name" '%s' "$__val"
+    return 0
+}
+
+# 用法：ui_require_tty   —— 菜单入口护栏：stdin 不是终端就不进菜单
+ui_require_tty() {
+    if [ ! -t 0 ]; then
+        echo -e "${YELLOW}检测到标准输入不是终端（管道 / 后台 / 无人值守执行），已退出交互菜单。${NC}"
+        echo "Interactive menu requires a terminal on stdin; exiting."
+        exit 0
+    fi
+}
+
+# 用法：ui_clear   —— 清屏。TERM 没设时 `clear` 会往 stderr 吐
+#   "TERM environment variable not set." 并返回非 0（无人值守时输出更难看），
+#   所以自己兜底：TERM 正常用 clear，缺失或 dumb 用 ANSI 序列。
+ui_clear() {
+    if [ -n "${TERM:-}" ] && [ "${TERM}" != "dumb" ]; then
+        clear 2>/dev/null || printf '\033[H\033[2J'
+    else
+        printf '\033[H\033[2J'
+    fi
+}
+
+
 init_config() {
     mkdir -p "$CONFIG_DIR" "$(dirname "$LOG_FILE")"
 
@@ -156,7 +223,7 @@ init_config() {
     download_notification_modules >/dev/null 2>&1 || true
 
     if [ ! -f "$CONFIG_FILE" ]; then
-        cat > "$CONFIG_FILE" << 'EOF'
+        tr -d '\r' > "$CONFIG_FILE" << 'EOF'
 {
   "global": {
     "billing_mode": "double"
@@ -213,7 +280,7 @@ init_nftables() {
 get_network_interfaces() {
     local interfaces=()
 
-    while IFS= read -r interface; do
+    while IFS= read -r interface; do   # xwpf:noninteractive-io（输入来自网卡列表）
         if [[ "$interface" != "lo" ]] && [[ "$interface" != "" ]]; then
             interfaces+=("$interface")
         fi
@@ -829,14 +896,15 @@ format_port_list() {
 
 # 显示主界面
 show_main_menu() {
-    clear
+    ui_require_tty
+    ui_clear
 
     local active_ports=($(get_active_ports))
     local port_count=${#active_ports[@]}
     local daily_total=$(get_daily_total_traffic)
 
     echo -e "${BLUE}=== 端口流量狗 v$SCRIPT_VERSION ===${NC}"
-    echo -e "${GREEN}介绍主页:${NC}https://zywe.de | ${GREEN}项目开源:${NC}https://github.com/zywe03/realm-xwPF"
+    echo -e "${GREEN}介绍主页:${NC}https://zywe.de | ${GREEN}项目开源:${NC}https://github.com/byby5555/realm-xwPF-offline-active-standby"
     echo -e "${GREEN}一只轻巧的‘守护犬’，时刻守护你的端口流量 | 快捷命令: dog${NC}"
     echo
 
@@ -857,7 +925,7 @@ show_main_menu() {
     echo -e "${BLUE}7.${NC} 通知管理"
     echo -e "${BLUE}0.${NC} 退出"
     echo
-    read -p "请选择操作 [0-7]: " choice
+    ui_read_into "请选择操作 [0-7]: " choice
 
     case $choice in
         1) manage_port_monitoring ;;
@@ -878,7 +946,7 @@ manage_port_monitoring() {
     echo "2. 删除端口监控"
     echo "0. 返回主菜单"
     echo
-    read -p "请选择操作 [0-2]: " choice
+    ui_read_into "请选择操作 [0-2]: " choice
 
     case $choice in
         1) add_port_monitoring ;;
@@ -898,7 +966,7 @@ add_port_monitoring() {
 
     # 解析ss输出，聚合同程序的端口
     declare -A program_ports
-    while read line; do
+    while read line; do   # xwpf:noninteractive-io（输入来自监听端口列表）
         if [[ "$line" =~ LISTEN|UNCONN ]]; then
             local_addr=$(echo "$line" | awk '{print $5}')
             port=$(echo "$local_addr" | grep -o ':[0-9]*$' | cut -d':' -f2)
@@ -929,7 +997,7 @@ add_port_monitoring() {
     echo "────────────────────────────────────────────────────────"
     echo
 
-    read -p "请输入要监控的端口号（多端口使用逗号,分隔,端口段使用-分隔）: " port_input
+    ui_read_into "请输入要监控的端口号（多端口使用逗号,分隔,端口段使用-分隔）: " port_input
 
     local PORTS=()
     parse_port_range_input "$port_input" PORTS
@@ -962,7 +1030,7 @@ add_port_monitoring() {
     echo "请选择统计模式:"
     echo "1. 双向流量统计"
     echo "2. 单向流量统计"
-    read -p "请选择(回车默认1) [1-2]: " billing_choice
+    ui_read_into "请选择(回车默认1) [1-2]: " billing_choice
 
     local billing_mode="double"
     case $billing_choice in
@@ -974,10 +1042,11 @@ add_port_monitoring() {
     echo
     local port_list=$(IFS=','; echo "${valid_ports[*]}")
     while true; do
+        sleep 0.2
         echo "为端口 $port_list 设置流量配额（总量控制）:"
         echo "请输入配额值（0为无限制）（要带单位MB/GB/T）:"
         echo "(多端口分别配额使用逗号,分隔)(只输入一个值，应用到所有端口):"
-        read -p "流量配额(回车默认0): " quota_input
+        ui_read_into "流量配额(回车默认0): " quota_input
 
         if [ -z "$quota_input" ]; then
             quota_input="0"
@@ -1013,7 +1082,7 @@ add_port_monitoring() {
     echo -e "${BLUE}=== 规则备注配置 ===${NC}"
     echo "请输入当前规则备注(可选，直接回车跳过):"
     echo "(多端口排序分别备注使用逗号,分隔)(只输入一个值，应用到所有端口):"
-    read -p "备注: " remark_input
+    ui_read_into "备注: " remark_input
 
     local REMARKS=()
     if [ -n "$remark_input" ]; then
@@ -1104,7 +1173,7 @@ remove_port_monitoring() {
     fi
     echo
 
-    read -p "请选择要删除的端口（多端口使用逗号,分隔）: " choice_input
+    ui_read_into "请选择要删除的端口（多端口使用逗号,分隔）: " choice_input
 
     local valid_choices=()
     local ports_to_delete=()
@@ -1129,7 +1198,7 @@ remove_port_monitoring() {
     done
     echo
 
-    read -p "确认删除这些端口的监控? [y/N]: " confirm
+    ui_read_into "确认删除这些端口的监控? [y/N]: " confirm
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
         local deleted_count=0
         for port in "${ports_to_delete[@]}"; do
@@ -1339,7 +1408,7 @@ set_port_bandwidth_limit() {
     fi
     echo
 
-    read -p "请选择要限制的端口（多端口使用逗号,分隔） [1-${#active_ports[@]}]: " choice_input
+    ui_read_into "请选择要限制的端口（多端口使用逗号,分隔） [1-${#active_ports[@]}]: " choice_input
 
     local valid_choices=()
     local ports_to_limit=()
@@ -1362,7 +1431,7 @@ set_port_bandwidth_limit() {
     echo "为端口 $port_list 设置带宽限制（速率控制）:"
     echo "请输入限制值（0为无限制）（要带单位Kbps/Mbps/Gbps）:"
     echo "(多端口排序分别限制使用逗号,分隔)(只输入一个值，应用到所有端口):"
-    read -p "带宽限制: " limit_input
+    ui_read_into "带宽限制: " limit_input
 
     local LIMITS=()
     parse_comma_separated_input "$limit_input" LIMITS
@@ -1426,7 +1495,7 @@ set_port_quota_limit() {
     fi
     echo
 
-    read -p "请选择要设置配额的端口（多端口使用逗号,分隔） [1-${#active_ports[@]}]: " choice_input
+    ui_read_into "请选择要设置配额的端口（多端口使用逗号,分隔） [1-${#active_ports[@]}]: " choice_input
 
     local valid_choices=()
     local ports_to_quota=()
@@ -1447,10 +1516,11 @@ set_port_quota_limit() {
     echo
     local port_list=$(IFS=','; echo "${ports_to_quota[*]}")
     while true; do
+        sleep 0.2
         echo "为端口 $port_list 设置流量配额（总量控制）:"
         echo "请输入配额值（0为无限制）（要带单位MB/GB/T）:"
         echo "(多端口分别配额使用逗号,分隔)(只输入一个值，应用到所有端口):"
-        read -p "流量配额(回车默认0): " quota_input
+        ui_read_into "流量配额(回车默认0): " quota_input
 
         if [ -z "$quota_input" ]; then
             quota_input="0"
@@ -1535,7 +1605,7 @@ manage_traffic_limits() {
     echo "3. 修改端口统计方式（双向/单向）"
     echo "0. 返回主菜单"
     echo
-    read -p "请选择操作 [0-3]: " choice
+    ui_read_into "请选择操作 [0-3]: " choice
 
     case $choice in
         1) set_port_bandwidth_limit ;;
@@ -1571,7 +1641,7 @@ change_port_billing_mode() {
     echo "  0. 返回上级菜单"
     echo
     
-    read -p "请选择要修改的端口 [0-$((idx-1))]: " port_choice
+    ui_read_into "请选择要修改的端口 [0-$((idx-1))]: " port_choice
     
     if [ "$port_choice" = "0" ]; then
         manage_traffic_limits
@@ -1596,7 +1666,7 @@ change_port_billing_mode() {
     echo "2. 单向流量统计"
     echo "0. 取消"
     echo
-    read -p "请选择统计模式 [0-2]: " mode_choice
+    ui_read_into "请选择统计模式 [0-2]: " mode_choice
     
     local new_mode=""
     case $mode_choice in
@@ -1854,7 +1924,7 @@ manage_traffic_reset() {
     echo "2. 立即重置"
     echo "0. 返回主菜单"
     echo
-    read -p "请选择操作 [0-2]: " choice
+    ui_read_into "请选择操作 [0-2]: " choice
 
     case $choice in
         1) set_reset_day ;;
@@ -1877,7 +1947,7 @@ set_reset_day() {
     fi
     echo
 
-    read -p "请选择要设置重置日期的端口（多端口使用逗号,分隔） [1-${#active_ports[@]}]: " choice_input
+    ui_read_into "请选择要设置重置日期的端口（多端口使用逗号,分隔） [1-${#active_ports[@]}]: " choice_input
 
     local valid_choices=()
     local ports_to_set=()
@@ -1900,7 +1970,7 @@ set_reset_day() {
     echo "为端口 $port_list 设置月重置日期:"
     echo "请输入月重置日（多端口使用逗号,分隔）(0代表不重置):"
     echo "(只输入一个值，应用到所有端口):"
-    read -p "月重置日 [0-31]: " reset_day_input
+    ui_read_into "月重置日 [0-31]: " reset_day_input
 
     local RESET_DAYS=()
     parse_comma_separated_input "$reset_day_input" RESET_DAYS
@@ -1963,7 +2033,7 @@ immediate_reset() {
     fi
     echo
 
-    read -p "请选择要立即重置的端口（多端口使用逗号,分隔） [1-${#active_ports[@]}]: " choice_input
+    ui_read_into "请选择要立即重置的端口（多端口使用逗号,分隔） [1-${#active_ports[@]}]: " choice_input
 
     # 处理多选择输入
     local valid_choices=()
@@ -2001,7 +2071,7 @@ immediate_reset() {
     echo
     echo "总计流量: $(format_bytes $total_all_traffic)"
     echo -e "${YELLOW}警告：重置后流量统计将清零，此操作不可撤销！${NC}"
-    read -p "确认重置选定端口的流量统计? [y/N]: " confirm
+    ui_read_into "确认重置选定端口的流量统计? [y/N]: " confirm
 
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
         local reset_count=0
@@ -2092,7 +2162,7 @@ manage_configuration() {
     echo "2. 导入配置包"
     echo "0. 返回上级菜单"
     echo
-    read -p "请输入选择 [0-2]: " choice
+    ui_read_into "请输入选择 [0-2]: " choice
 
     case $choice in
         1) export_config ;;
@@ -2135,7 +2205,7 @@ export_config() {
     cp -r "$CONFIG_DIR" "$package_dir"
 
     # 生成端口流量狗配置包信息文件
-    cat > "$package_dir/package_info.txt" << EOF
+    tr -d '\r' > "$package_dir/package_info.txt" << EOF
 ===================
 导出时间: $(get_beijing_time '+%Y-%m-%d %H:%M:%S')
 脚本版本: $SCRIPT_VERSION
@@ -2164,7 +2234,7 @@ EOF
     fi
 
     echo
-    read -p "按回车键返回..."
+    ui_pause "按回车键返回..."
     manage_configuration
 }
 
@@ -2176,7 +2246,7 @@ import_config() {
     echo "请输入配置包路径 (支持绝对路径或相对路径):"
     echo "例如: /root/port-traffic-dog-config-20241227-143022.tar.gz"
     echo
-    read -p "配置包路径: " package_path
+    ui_read_into "配置包路径: " package_path
 
     # 检查输入是否为空
     if [ -z "$package_path" ]; then
@@ -2264,7 +2334,7 @@ import_config() {
     echo "  2. 替换为新的配置"
     echo "  3. 重新应用监控规则"
     echo
-    read -p "确认导入配置包? [y/N]: " confirm
+    ui_read_into "确认导入配置包? [y/N]: " confirm
 
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
         echo "取消导入"
@@ -2341,7 +2411,7 @@ import_config() {
     echo "  - 历史数据已恢复"
 
     echo
-    read -p "按回车键返回..."
+    ui_pause "按回车键返回..."
     manage_configuration
 }
 
@@ -2442,13 +2512,13 @@ install_update_script() {
     fi
 
     echo "────────────────────────────────────────────────────────"
-    read -p "按回车键返回..."
+    ui_pause "按回车键返回..."
     show_main_menu
 }
 
 create_shortcut_command() {
     if [ ! -f "/usr/local/bin/$SHORTCUT_COMMAND" ]; then
-        cat > "/usr/local/bin/$SHORTCUT_COMMAND" << EOF
+        tr -d '\r' > "/usr/local/bin/$SHORTCUT_COMMAND" << EOF
 #!/bin/bash
 exec bash "$SCRIPT_PATH" "\$@"
 EOF
@@ -2471,7 +2541,7 @@ uninstall_script() {
     echo "  - 通知定时任务"
     echo
     echo -e "${RED}警告：此操作将完全删除端口流量狗及其所有数据！${NC}"
-    read -p "确认卸载? [y/N]: " confirm
+    ui_read_into "确认卸载? [y/N]: " confirm
 
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
         echo -e "${YELLOW}正在卸载...${NC}"
@@ -2510,7 +2580,7 @@ manage_notifications() {
     echo "3. 企业wx 机器人通知"
     echo "0. 返回主菜单"
     echo
-    read -p "请选择操作 [0-3]: " choice
+    ui_read_into "请选择操作 [0-3]: " choice
 
     case $choice in
         1) manage_telegram_notifications ;;
@@ -2616,7 +2686,7 @@ select_notification_interval() {
     echo "请选择状态通知发送间隔:" >&2
     echo "1. 1分钟   2. 15分钟  3. 30分钟  4. 1小时" >&2
     echo "5. 2小时   6. 6小时   7. 12小时  8. 24小时" >&2
-    read -p "请选择(回车默认1小时) [1-8]: " interval_choice >&2
+    ui_read_into "请选择(回车默认1小时) [1-8]: " interval_choice >&2
 
     # 默认1小时
     local interval="1h"
@@ -2697,7 +2767,7 @@ format_status_message() {
     local daily_total=$(get_daily_total_traffic)
 
     local message="<b>${notification_icon} 端口流量狗 v${SCRIPT_VERSION}</b> | ⏰ ${timestamp}
-介绍主页:<code>https://zywe.de</code> | 项目开源:<code>https://github.com/zywe03/realm-xwPF</code>
+介绍主页:<code>https://zywe.de</code> | 项目开源:<code>https://github.com/byby5555/realm-xwPF-offline-active-standby</code>
 一只轻巧的'守护犬'，时刻守护你的端口流量 | 快捷命令: dog
 ---
 状态: 监控中 | 守护端口: ${port_count}个 | 端口总流量: ${daily_total}
@@ -2719,7 +2789,7 @@ format_text_status_message() {
     local daily_total=$(get_daily_total_traffic)
 
     local message="${notification_icon} 端口流量狗 v${SCRIPT_VERSION} | ⏰ ${timestamp}
-介绍主页: https://zywe.de | 项目开源: https://github.com/zywe03/realm-xwPF
+介绍主页: https://zywe.de | 项目开源: https://github.com/byby5555/realm-xwPF-offline-active-standby
 一只轻巧的'守护犬'，时刻守护你的端口流量 | 快捷命令: dog
 ---
 状态: 监控中 | 守护端口: ${port_count}个 | 端口总流量: ${daily_total}
@@ -2741,7 +2811,7 @@ format_markdown_status_message() {
     local daily_total=$(get_daily_total_traffic)
 
     local message="**${notification_icon} 端口流量狗 v${SCRIPT_VERSION}** | ⏰ ${timestamp}
-介绍主页: \`https://zywe.de\` | 项目开源: \`https://github.com/zywe03/realm-xwPF\`
+介绍主页: \`https://zywe.de\` | 项目开源: \`https://github.com/byby5555/realm-xwPF-offline-active-standby\`
 一只轻巧的'守护犬'，时刻守护你的端口流量 | 快捷命令: dog
 ---
 **状态**: 监控中 | **守护端口**: ${port_count}个 | **端口总流量**: ${daily_total}
@@ -2859,7 +2929,7 @@ main() {
             --version)
                 echo -e "${BLUE}$SCRIPT_NAME v$SCRIPT_VERSION${NC}"
                 echo -e "${GREEN}介绍主页:${NC} https://zywe.de"
-                echo -e "${GREEN}项目开源:${NC} https://github.com/zywe03/realm-xwPF"
+                echo -e "${GREEN}项目开源:${NC} https://github.com/byby5555/realm-xwPF-offline-active-standby"
                 exit 0
                 ;;
             --install)
