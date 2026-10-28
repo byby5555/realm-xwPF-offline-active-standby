@@ -1,0 +1,22 @@
+# 行尾统一：仓库内文本文件一律以 LF 存储与签出。
+#
+# 本文件之前不存在，行尾靠本地 core.autocrlf=true 转换
+# （索引 LF / 工作区 CRLF）。显式声明后，不再依赖每个开发机的 git 配置，
+# 也不会因为某台机器 autocrlf 设成 false 就把 CRLF 提交进索引。
+#
+# ★ 变更行尾是大动作：请单独排一轮执行 `git add --renormalize .`，
+#   不要和功能改动混在同一次提交里（会产生大面积 diff，且容易和别人的并行改动打架）。
+
+*.sh text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.service text eol=lf
+
+# 台架的桩脚本（systemctl / nc / pgrep / jq …）**没有扩展名** ⇒ 上面几条规则管不到它们
+#   ⇒ 只能靠本机 core.autocrlf（本仓库是 true）⇒ 换台机器 checkout 出来就是 CRLF
+#   ⇒ shebang 行变成 "#!/bin/bash\r" ⇒ 桩脚本执行直接失败（bad interpreter）
+#   ⇒ 台架在 Windows 上整批跑不起来。显式钉成 LF。
+tests/shims/* text eol=lf
+
+*.xlsx binary
+*.png binary

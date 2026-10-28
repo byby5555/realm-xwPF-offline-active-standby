@@ -1,0 +1,19 @@
+#!/bin/sh
+# jq 桩（mini-jq）—— 仓库里的 jq 调用全部走这里
+#
+# 本机没有 jq，而仓库里有 119 处 jq 调用。装一个真 jq 不现实（不能改环境），
+# 所以这里放一个**只支持仓库实际用到的过滤语法**的最小实现。
+#
+# ★ 桩的纪律：能力不够必须**显式说出来**，不许假装测过。
+#   不支持的过滤器 → stderr 打印 `jq-stub: 桩能力不足：<表达式>`，退出码 3
+#   （调用方的兜底分支会真的走到，而不是悄悄拿到空值）
+#
+# 实现见同目录的 jq_impl.py。
+DIR=$(dirname "$0")
+for py in python3 python; do
+    if command -v "$py" >/dev/null 2>&1 && "$py" --version >/dev/null 2>&1; then
+        exec "$py" "$DIR/jq_impl.py" "$@"
+    fi
+done
+echo "jq-stub: 桩能力不足（本机既没有 python3 也没有 python，无法实现 jq）" >&2
+exit 3

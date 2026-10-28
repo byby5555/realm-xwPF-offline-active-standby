@@ -12,8 +12,11 @@ SHORTCUT_PATH="/usr/local/bin/pf"
 REPO_RAW_URL="https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-active-standby/main"
 
 # 模块列表（加载顺序）
-# failover.sh 必须在 ui.sh 之前 (ui.sh 调用 failover_proxy_menu)
-LIB_FILES=("core.sh" "rules.sh" "server.sh" "realm.sh" "failover.sh" "ui.sh")
+# health.sh 提供连通性探测与健康检查服务，必须在 rules.sh/server.sh 之前
+# update.sh 提供更新中心（查版本 + 安全更新），必须在 ui.sh 之前（ui.sh 的菜单调用它）
+# ★ 不含 failover.sh：「进程级主备池 + 独立守护进程」那一整套已下线。
+#   留着 → lib/failover.sh 早就没了，_bootstrap 会下载失败 → 安装直接中断。
+LIB_FILES=("core.sh" "health.sh" "rules.sh" "server.sh" "realm.sh" "update.sh" "ui.sh")
 
 # 颜色
 _RED='\033[0;31m'
@@ -77,19 +80,9 @@ _bootstrap() {
 
     [ "$failed" -eq 1 ] && return 1
 
-    # 下载 cmd/ 守护进程源文件（xwpf-failover）
-    # 这里必须刷新 cmd/ 副本：lib/failover.sh 的 daemon 版本比对以 src_dir(=INSTALL_DIR/cmd)
-    # 的副本为准，副本不更新则版本比对永远判定「无变化」，守护进程永远升不了级。
-    # 下载失败不阻断安装：failover_install_files 还有 GitHub raw fallback。
-    local cmd_dir="${INSTALL_DIR}/cmd"
-    mkdir -p "$cmd_dir"
-    for f in xwpf-failover.py xwpf-failover.service; do
-        if _download "$REPO_RAW_URL/cmd/$f" "$cmd_dir/$f"; then
-            echo -e "  ${_GREEN}✓${_NC} cmd/$f"
-        else
-            echo -e "  ${_YELLOW}!${_NC} cmd/$f 下载失败（安装守护进程时会自动重试）"
-        fi
-    done
+    # ★ 不再下载 cmd/xwpf-failover.*：
+    #   主备池守护那一整套（cmd/xwpf-failover.py / .service）已随功能下线，
+    #   装了也不会被启用 —— 老机器上的残留由 _cleanup_legacy_failover_daemon 收拾。
 
     # 创建快捷命令
     ln -sf "$INSTALL_DIR/xwPF.sh" "$SHORTCUT_PATH"
@@ -98,6 +91,10 @@ _bootstrap() {
     echo -e "${_GREEN}=== 脚本安装完成${_NC}"
     echo ""
 }
+
+# ★ 老机器上「主备池守护残留」的清理实现**只有一份**，在 lib/ui.sh 的
+#   _cleanup_legacy_failover_daemon —— 菜单项 8「卸载服务」直接走 lib/ui.sh 的
+#   uninstall_realm，**不经过本文件**；清理写在这里，菜单卸载时够不着。
 
 # 加载模块
 _load_libs() {
@@ -123,9 +120,70 @@ case "${1:-}" in
         [ "$(id -u)" -ne 0 ] && { echo -e "${_RED}错误: 需要 root 权限${_NC}"; exit 1; }
         _bootstrap || exit 1
         _load_libs || exit 1
+        # 老机器上的主备池守护残留：产品不再安装该守护，残留必须收拾干净
+        # （否则留下一个没人管、但还占着端口的僵尸守护）
+        # 放在 smart_install 之前：先把守护占着的端口放掉，再让 realm 起服务。
+        _cleanup_legacy_failover_daemon
         _SKIP_SCRIPT_UPDATE=1 smart_install
-        # 安装 active/passive 主备故障转移守护（幂等：已装跳过）
-        failover_install_check && failover_service_enable
+        # 探测超时预算：规则里写死的 3 秒抬到 10 秒（老默认值太紧 → 主备误切）
+        health_migrate_connection_timeout || true
+        # 重新生成健康探测端产物（唯一真源 = lib/health.sh）
+        # ★ 装/升级不重新生成 → 机器上跑的是旧产物 = 探测端静默失效
+        #   （日志照样打「健康检查完成」，状态文件却停在几小时前）
+        # 不重启 timer：unit 是 Type=oneshot + ExecStart=<路径>，下个 tick 自然生效。
+        # ★ 首次安装 = **fail fast 中断**（Chief 裁定）：
+        #   装完但探测端是坏的 = 主备切换不可用 = 用户以为装好了。
+        #   安装失败是**可恢复**的（重跑一次），功能坏掉是**不可见**的
+        #   → 宁可中断，也不能留一个「看起来装好了」的坏机器。
+        if health_check_script_regenerate; then
+            echo -e "  ${_GREEN}✓${_NC} 已重新生成健康检查脚本"
+        else
+            echo -e ""
+            echo -e "  ${_RED}✗${_NC} 重新生成健康检查脚本失败：/etc/realm/health/health_check.sh 仍是旧产物"
+            echo -e "  ${_RED}  健康探测不可用 → 权重 10,0 主备的切换不可用${_NC}"
+            echo -e "  ${_RED}  （探测端不再更新状态文件 → 该切不切，且界面看不出来）${_NC}"
+            echo -e "  ${_YELLOW}  可执行的修复步骤：${_NC}"
+            echo -e "    1) 修好上面的报错原因后，重新执行一次安装："
+            echo -e "       ${_BLUE}wget -qO- ${REPO_RAW_URL}/xwPF.sh | sudo bash -s install${_NC}"
+            echo -e "    2) 或手工重生成探测端脚本（需 root）："
+            echo -e "       ${_BLUE}sudo bash -c 'source ${LIB_DIR}/health.sh && health_check_script_regenerate'${_NC}"
+            # 写日志（写日志本身失败也不影响主流程：函数内部已吞掉所有错误）
+            if declare -F health_regenerate_log_failure >/dev/null 2>&1; then
+                health_regenerate_log_failure "首次安装（xwPF.sh install）：/etc/realm/health/health_check.sh 仍是旧产物" || true
+            fi
+            echo -e ""
+            echo -e "  ${_RED}✗${_NC} 安装中断：健康探测端不可用，不能留一个坏掉的机器。"
+            echo -e "  ${_YELLOW}  详细日志：/var/log/xwPF/health-regenerate.log${_NC}"
+            exit 1
+        fi
+        # 快探测产物（**只观测**：每秒刷新菜单里的时延/丢包显示）
+        #   与判定端是**两条独立的流**：它不写判定端的状态文件、不触发配置重生成
+        #   ⇒ 起不来也不影响切换（这里**不** fail fast，与判定端不同）。
+        if declare -F fast_probe_script_regenerate >/dev/null 2>&1 && fast_probe_script_regenerate; then
+            echo -e "  ${_GREEN}✓${_NC} 已重新生成快探测脚本（只观测，不参与切换）"
+        else
+            echo -e "  ${_YELLOW}提示：${_NC}快探测脚本未生成（只影响菜单里的时延/丢包刷新，不影响主备切换）"
+        fi
+        ;;
+    uninstall)
+        [ "$(id -u)" -ne 0 ] && { echo -e "${_RED}错误: 需要 root 权限${_NC}"; exit 1; }
+        _load_libs || exit 1
+        # 老机器上的主备池守护残留：先收拾干净，再卸脚本
+        #   ★ 卸载路径传 force：用户明确要拆全部 ⇒ 不受「还在服务就跳过」的保护。
+        #     （只有 install / 升级路径才需要那个保护 —— 见 lib/ui.sh 的
+        #      _legacy_failover_daemon_in_use）
+        _cleanup_legacy_failover_daemon force
+        # 完整卸载（分阶段，需要交互确认）由 lib/ui.sh 的 uninstall_realm 负责
+        if declare -F uninstall_realm >/dev/null 2>&1; then
+            uninstall_realm
+        else
+            echo -e "${_YELLOW}提示: 未找到 uninstall_realm（lib/ui.sh 未加载），只清理了主备守护残留${_NC}"
+        fi
+        ;;
+    help|--help|-h)
+        # 打印用法（与 pf --help 一致）
+        _load_libs || exit 1
+        main "$@"
         ;;
     *)
         _load_libs || exit 1

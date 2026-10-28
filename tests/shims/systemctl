@@ -1,0 +1,13 @@
+#!/bin/bash
+# systemctl 替身：只记录调用，不碰真实 systemd。
+# is-active / is-enabled 返回 3（inactive），模拟「装完没有真服务在跑」。
+
+LOG="${SBX_LOG_DIR:-/tmp}/systemctl.log"
+[ -n "$LOG" ] && echo "systemctl $*" >> "$LOG"
+
+case "${1:-}" in
+    is-active|is-enabled)
+        exit 3
+        ;;
+esac
+exit 0

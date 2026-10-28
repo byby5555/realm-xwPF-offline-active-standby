@@ -1,0 +1,492 @@
+# 安装、升级与卸载
+
+本文覆盖 xwPF 脚本集的**首次安装、离线安装、升级、卸载、首次初始化**。
+
+> 文中每条命令、路径、默认值都指向**具体函数**（写法：`文件` 的 `函数名`），不写行号 ——
+> 行号会随代码改动整体漂移。核对基准是本仓库
+> `byby5555/realm-xwPF-offline-active-standby` 的 `main` 分支，而不是上游旧仓库。
+
+---
+
+## 1. 前置依赖
+
+### 1.1 系统与 init
+
+| 项目 | 支持范围 | 源码位置 |
+|------|----------|----------|
+| 发行版 | Debian / Ubuntu、Alpine、CentOS / RHEL / Rocky / AlmaLinux / Fedora | `lib/core.sh` 的 `_pkg_install` |
+| 包管理器 | `apt-get` / `apk` / `dnf` / `yum`（自动探测） | `lib/core.sh` 的 `manage_dependencies` |
+| init 系统 | `systemd`（`systemctl`）或 `openrc`（`rc-service`） | `lib/core.sh` 的 `manage_dependencies` |
+
+不支持的发行版会直接退出并提示，不会带着半截配置继续跑。
+
+### 1.2 必备工具
+
+必备工具清单（`lib/core.sh` 的 `REQUIRED_TOOLS`）：
+
+```
+curl  wget  tar  grep  cut  bc  jq  openssl  python3
+```
+
+安装脚本会自动补齐缺失的工具（`manage_dependencies`，`lib/core.sh` 的 `get_public_ip`），
+按检测到的包管理器分别走 `apt-get install -y` / `apk add --no-cache` / `yum|dnf install -y`。
+
+### 1.3 `nc` 不在自动安装清单里 —— 可选，但建议装
+
+- `lib/core.sh` 的 `REQUIRED_TOOLS` 里**没有** `nc`。
+- 健康检查（故障转移 / 权重主备自动切换）做的是 **TCP 端口探测**，
+  优先用 `nc -z -w`；**没有 `nc`（或 `nc` 不支持 `-z`，如 busybox）会自动回退到
+  `bash /dev/tcp` + `timeout`**，不再把全部目标误判成故障。
+- 唯一仍会导致全判故障的情况：系统里**既没有 `nc` 也没有 `timeout`**（`timeout` 属 coreutils，基本都有）。
+
+**建议装上 `nc`**（探测更快、更省进程）：
+
+```bash
+# Debian / Ubuntu
+apt-get update -qq && apt-get install -y netcat-openbsd
+# Alpine
+apk add --no-cache netcat-openbsd
+# CentOS / RHEL
+dnf install -y nmap-ncat || yum install -y nmap-ncat
+```
+
+验证：
+
+```bash
+command -v nc && nc -h 2>&1 | head -1
+```
+
+### 1.4 realm 二进制
+
+| 项目 | 值 | 源码位置 |
+|------|-----|----------|
+| 安装路径 | `/usr/local/bin/realm` | `lib/core.sh` 的 `REALM_PATH` |
+| 支持架构 | `x86_64` / `aarch64` / `armv7` | `lib/realm.sh` 的 `install_realm` |
+| libc 区分 | Alpine 用 `musl`，其余 `gnu` | `lib/realm.sh` 的 `install_realm` |
+| 兜底版本 | `v2.9.3`（`REALM_VERSION`，取版本失败时使用） | `lib/core.sh` 的 `REALM_VERSION` |
+
+realm 主程序来自 **官方仓库** `zhboner/realm` 的 release，不在本 fork 内 —— 这是上游二进制，与本项目的
+脚本分发是两回事：
+
+```
+https://github.com/zhboner/realm/releases/download/<版本>/realm-<架构>.tar.gz
+```
+
+下载源按顺序尝试 4 个（`lib/realm.sh` 的 `install_realm`）：官方 → `gh-proxy.com` → `ghproxy.net` → `mirror.ghproxy.com`。
+
+---
+
+## 2. 一键安装
+
+```bash
+wget -qO- https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-active-standby/main/xwPF.sh | sudo bash -s install
+```
+
+或：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-active-standby/main/xwPF.sh | sudo bash -s install
+```
+
+网络受限环境走加速源（加速源本身不是本项目的一部分，失效了就换别的）：
+
+```bash
+curl -fsSL https://v6.gh-proxy.org/https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-active-standby/main/xwPF.sh | sudo bash -s install
+```
+
+### 2.1 `install` 子命令做了什么
+
+`xwPF.sh` 的主入口 install 分支：
+
+| 步骤 | 动作 | 源码位置 |
+|------|------|----------|
+| 1 | 校验 root 权限 | `xwPF.sh` 的主入口 install 分支（root 校验写在该分支内） |
+| 2 | `_bootstrap`：拉取脚本文件 | `xwPF.sh` 的 `_bootstrap` |
+| 3 | `_load_libs`：source 全部模块 | `xwPF.sh` 的 `_load_libs` |
+| 4 | `smart_install`（带 `_SKIP_SCRIPT_UPDATE=1`，**不再询问**是否更新脚本） | `lib/realm.sh` 的 `smart_install` |
+| 5 | 清理老机器上遗留的「主备池守护」残留（unit / drop-in 目录 / 二进制 / 版本指纹；池配置留档不删） | `xwPF.sh` 的主入口 install 分支（清理逻辑在 `lib/ui.sh` 里的老机器残留清理段） |
+| 6 | 探测超时预算迁移（老规则里的 3 秒抬到 10 秒）+ **重新生成探测端产物**，失败即**中断安装**（退出码 1） | `xwPF.sh` 的主入口 install 分支（真源 = `lib/health.sh` 的 `health_migrate_connection_timeout`、`health_check_script_regenerate`） |
+
+> **第 5 步为什么不能省**：产品已不再安装那个进程级主备池守护进程，但**老机器上还留着它**
+> —— service 可能还在跑（占着监听端口），unit / drop-in / 二进制也都在。
+> 不清 = 留下一个没人管、但还在占端口的僵尸守护。残留清单见 §5。
+>
+> **第 6 步为什么失败就中断**：装完但探测端产物还是旧的 = 健康探测**静默失效** ——
+> 探测端不再更新状态文件 → 权重 `10,0` 主备「该切不切」，而界面上看不出来。
+> 安装失败是**可恢复**的（重跑一次就行），功能坏掉是**不可见**的 ⇒ 宁可中断，
+> 也不能留一个「看起来装好了」的坏机器。三条路径的处置口径见 §2.4。
+
+`_bootstrap` 下载的文件清单（`xwPF.sh` 的 `_bootstrap`）：
+
+- `xwPF.sh` → `/usr/local/bin/xwPF.sh`
+- `lib/{core,health,rules,server,realm,update,ui}.sh` → `/usr/local/bin/lib/`（加载顺序见 `xwPF.sh` 的 `LIB_FILES`）
+- 创建软链 `/usr/local/bin/pf` → `/usr/local/bin/xwPF.sh`（`xwPF.sh` 的 `_bootstrap`）
+
+下载是**原子化**的（`xwPF.sh` 的 `_download`）：先下到 `.tmp.$$`，校验非空，再 `mv -f` 覆盖目标。
+**故意不使用 `curl -C -` / `wget -c`** —— 断点续传只校验 HTTP Range 起点，不校验本地内容，
+远端变长时会把新版本追加到旧内容后面，产出「大小正常但内容损坏」的文件。
+
+### 2.2 安装后落盘清单
+
+| 路径 | 说明 | 源码位置 |
+|------|------|----------|
+| `/usr/local/bin/xwPF.sh` | 主入口 | `xwPF.sh` 的 `INSTALL_DIR` |
+| `/usr/local/bin/lib/*.sh` | 7 个模块 | `xwPF.sh` 的 `LIB_DIR` |
+| `/usr/local/bin/pf` | 快捷命令（软链） | `xwPF.sh` 的 `SHORTCUT_PATH` |
+| `/usr/local/bin/realm` | realm 主程序 | `lib/core.sh` 的 `REALM_PATH` |
+| `/etc/realm/config.json` | realm 工作配置 | `lib/core.sh` 的 `CONFIG_PATH` |
+| `/etc/realm/rules/` | 转发规则目录 | `lib/core.sh` 的 `RULES_DIR` |
+| `/etc/systemd/system/realm.service` | realm systemd unit | `lib/core.sh` 的 `SYSTEMD_PATH`、`lib/realm.sh` 的 `depend` |
+| `/var/log/xwPF/health-regenerate.log` | **仅在失败时写**：探测端产物重新生成失败的记录（每行一条，带时间戳 + 失败原因）；目录不存在会自动 `mkdir -p` | `lib/health.sh` 的 `health_regenerate_log_failure` |
+
+**按需下载**（用到才拉，不占安装体积）：
+
+| 路径 | 何时下载 | 源码位置 |
+|------|----------|----------|
+| `/etc/realm/xwFailover.sh` | 进入「故障转移管理」菜单 | `lib/ui.sh` 的 `download_failover_script` |
+| `/etc/realm/health/health_check.sh` | 开启故障转移时生成 | `lib/health.sh` 的 `start_health_check_service`、`lib/health.sh` 的 `start_health_check_service` |
+| `/etc/systemd/system/realm-health-check.service` / `.timer` | 开启故障转移时生成 | `lib/health.sh` 的 `start_health_check_service` |
+| `/etc/realm/health/health_status.conf` | 健康检查首次运行时创建 | `lib/health.sh` 的 `health_check_script_body` |
+| `/etc/realm/speedtest.sh` | 进入「中转网络链路测试」 | `lib/ui.sh` 的 `download_speedtest_script` |
+| `/usr/local/bin/port-traffic-dog.sh` | 进入「端口流量狗」 | `lib/ui.sh` 的 `port_traffic_dog_menu` |
+| `/etc/realm/xw_realm_OCR.sh` | 进入配置识别导入 | `lib/ui.sh` 的 `download_realm_ocr_script` |
+
+### 2.3 安装后验证
+
+```bash
+# 1. 脚本与模块就位
+ls -l /usr/local/bin/xwPF.sh /usr/local/bin/pf
+ls -1 /usr/local/bin/lib/
+# 期望：core.sh health.sh rules.sh server.sh realm.sh update.sh ui.sh
+
+# 2. realm 可执行
+/usr/local/bin/realm --version
+
+# 3. 服务已注册并运行
+systemctl status realm --no-pager -l
+
+# 4. 进入菜单
+pf
+```
+
+### 2.4 探测端重生成失败怎么处置
+
+「探测端产物」指 `/etc/realm/health/health_check.sh` —— 它才是健康探测真正执行的脚本，
+**真源唯一** = `lib/health.sh` 的 `health_check_script_regenerate`。
+装 / 升级不重新生成它，机器上跑的就是**旧产物** ⇒ 探测端静默失效。
+
+三条路径的处置**按路径分开**：
+
+| 路径 | 处置 | 退出码 | 源码位置 |
+|------|------|--------|----------|
+| 首次安装（`xwPF.sh install`） | **fail fast 中断**：醒目报错 + 可执行修复步骤 + 写日志 → **安装中断** | `1` | `xwPF.sh` 的主入口 install 分支 |
+| 首次安装（菜单 `1. 安装(更新)程序,脚本`） | **fail fast 中断**：醒目报错 + 可执行修复步骤 + 写日志 → 返回非 0（菜单把真实退出码传出） | `1` | `lib/realm.sh` 的 `smart_install`、`lib/ui.sh` 的 `show_menu`（菜单项 1） |
+| 升级（更新中心 → 更新脚本包） | **不中断整个升级**：脚本包已更新，继续更新 realm 主程序；但**返回非 0**，让调用方知道探测端是坏的 | `3` | `lib/update.sh` 的 `safe_update_scripts`、`lib/update.sh` 的 `update_center_menu` |
+
+升级路径的退出码约定（`lib/update.sh` 的 `safe_update_scripts`）：
+
+| 退出码 | 含义 |
+|--------|------|
+| `0` | 脚本包已更新，且探测端产物已重新生成 |
+| `1` | **脚本包本身没更新成**（下载失败 / 语法错 / 自检失败） |
+| `3` | 脚本包**已更新**，但探测端重生成失败（探测端不可用） |
+
+日志约定：
+
+- 路径：`/var/log/xwPF/health-regenerate.log`（`lib/health.sh` 的 `health_regenerate_log_failure`）
+- **只在失败时写**；每行一条，带时间戳 + 失败原因
+- 日志目录不存在会先 `mkdir -p`
+- **写日志本身失败不影响主流程** —— 不因为「记个日志失败」把安装或升级带崩
+
+手工修复（需 root）：
+
+```bash
+sudo bash -c 'source /usr/local/bin/lib/health.sh && health_check_script_regenerate'
+```
+
+> **老版本 / 降级的情况**：脚本包里根本没有 `health_check_script_regenerate` 时，
+> 升级路径按「无此能力」**跳过、不算失败**（用 `grep` 判能力是否存在）——
+> 否则老机器升级会被误判成失败。
+
+---
+
+## 3. 离线安装（完全无外网）
+
+### 3.1 在有网的机器上下载
+
+- 主脚本：`https://github.com/byby5555/realm-xwPF-offline-active-standby/raw/main/xwPF.sh`
+- 模块目录：`https://github.com/byby5555/realm-xwPF-offline-active-standby/tree/main/lib`
+- realm 主程序：见 §1.4 的架构表（`zhboner/realm` release）
+
+### 3.2 放置到目标服务器
+
+```
+/usr/local/bin/
+├── xwPF.sh                ← 主脚本
+├── lib/                   ← 必须创建
+│   ├── core.sh
+│   ├── health.sh
+│   ├── rules.sh
+│   ├── server.sh
+│   ├── realm.sh
+│   ├── update.sh
+│   └── ui.sh
+
+~/realm-xxx.tar.gz         ← realm 压缩包放任意位置
+```
+
+### 3.3 执行离线安装
+
+```bash
+chmod +x /usr/local/bin/xwPF.sh
+ln -sf /usr/local/bin/xwPF.sh /usr/local/bin/pf
+bash /usr/local/bin/xwPF.sh
+```
+
+选 `1. 安装(更新)程序,脚本`，然后：
+
+1. 提示 **是否更新脚本？(y/N):** → 直接回车跳过（离线拉不到远端）
+2. 提示 **离线安装realm输入完整路径(回车默认自动下载):** → 输入 realm 压缩包的完整路径
+
+---
+
+## 4. 升级
+
+### 4.0 更新中心（推荐）
+
+主菜单 `9. 检查更新 / 安全更新`（`lib/ui.sh` 的 `show_menu`）→ `update_center_menu`
+（`lib/update.sh` 的 `update_center_menu`）：
+
+```
+=== 版本对照 ===
+  realm 主程序  v2.9.3  → v2.9.6
+    架构型号: realm-x86_64-unknown-linux-gnu.tar.gz
+  脚本包       v2.2.1  → v2.2.1
+```
+
+能查能升的东西：
+
+| 对象 | 当前版本从哪来 | 最新版本从哪来 | 更新动作 |
+|------|----------------|----------------|----------|
+| realm 主程序 | `realm --version` | GitHub `releases/latest` 的 `tag_name` | `safe_update_realm`（`lib/update.sh`） |
+| 脚本包 | `lib/core.sh` 的 `SCRIPT_VERSION` | 远端 `lib/core.sh` 的 `SCRIPT_VERSION` | `safe_update_scripts`（`lib/update.sh`） |
+| 架构型号 | `detect_realm_asset_name`（`lib/core.sh`） | 同左 | CPU 架构 + libc（gnu/musl）→ 官方资产名 |
+
+**安全更新的五条纪律**（`lib/update.sh`）：
+
+1. **先下载到 staging，全部校验通过才动现有文件**
+   → 下载中断时现有文件一个字节都没被碰过，不会出现「半新半旧」的脚本
+2. **更新前备份**到 `/usr/local/bin/.xwpf-backup/<类型>-<时间戳>/`，保留最近 5 份
+   （`update_backup_dir_create` / `update_backup_file`）
+3. **sha256 校验**：realm 安装包按 GitHub release asset 的 `digest` 校验
+   （`update_realm_asset_digest`），对不上直接拒绝安装
+4. **更新后验证**：新二进制要能执行**且版本号与目标一致**、脚本要能正常启动；
+   验证不过自动回滚（`update_restore_backup`），并把服务恢复到更新前的状态
+5. **失败不 exit 整个脚本** → 回到菜单
+
+并发保护：更新期间用 `mkdir` 原子锁（`update_lock_acquire`），进程被 kill 留下的
+陈旧锁会自动识别并接管。
+
+> 脚本包更新会替换**正在运行的** `xwPF.sh`。bash 是按需读取脚本文件的，
+> 所以更新完成后必须退出当前进程（`update_center_menu` 负责 `exit`），
+> 提示「重新运行 pf 后生效」。
+
+### 4.1 升级脚本
+
+```bash
+pf
+# → 1. 安装(更新)程序,脚本
+# → 提示「是否更新脚本？(y/N):」→ y
+```
+
+`smart_install`（`lib/realm.sh` 的 `smart_install`）里：
+
+- `_SKIP_SCRIPT_UPDATE` 未设置时，询问是否更新脚本，答 y 走 `_bootstrap()` 重新拉全部脚本文件
+- 之后调用 `install_realm()`，realm 主程序**单独**做版本比对：
+  `get_latest_realm_version`（`lib/realm.sh` 的 `get_latest_realm_version`）→ `compare_and_ask_update`（`lib/realm.sh` 的 `compare_and_ask_update`）
+
+也可以直接重跑 `install` 子命令（此时**不**再询问是否更新脚本，直接覆盖）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-active-standby/main/xwPF.sh | sudo bash -s install
+```
+
+### 4.2 升级后必做
+
+```bash
+systemctl daemon-reload
+systemctl restart realm
+pf --restart-service   # 重新生成 /etc/realm/config.json 并重启 realm
+```
+
+---
+
+## 5. 卸载
+
+分两阶段，菜单内 `8. 卸载服务`（`lib/ui.sh` 的 `show_menu`）：
+
+```bash
+pf
+# → 8. 卸载服务
+```
+
+### 阶段一：Realm 服务与配置（`lib/ui.sh` 的 `uninstall_realm_stage_one`）
+
+> 阶段一**之前**还有第 0 步：清理老机器上遗留的「主备池守护」残留
+> （清单见下方「老机器残留清理」）—— 不先清，卸完机上还留着一个占端口的僵尸守护。
+
+1. 停止并禁用 realm 服务
+2. 若 `/etc/realm/xwFailover.sh` 存在 → 执行 `xwFailover.sh stop`，停掉健康检查 timer 与 service，
+   并删掉 `realm-health-check.{service,timer}` 与 `health_check.sh`
+3. `pkill` 掉残留的 `realm` 进程
+4. 删除：`/usr/local/bin/realm`、`/etc/realm`（含 `rules/`、`health/`）、`/etc/systemd/system/realm.service`、
+   `/etc/init.d/realm`、`/etc/systemd/system/realm-web.service`
+5. 按名字清理 `/var/log`、`/tmp`、`/var/tmp` 下的 realm 残留文件
+6. 删除 `/etc/sysctl.d/90-enable-MPTCP.conf` 并执行 `ip mptcp endpoint flush`
+
+### 阶段二：脚本文件（`lib/ui.sh` 的 `uninstall_script_files`）
+
+- `/usr/local/bin/xwPF.sh`
+- `/usr/local/bin/lib/`（整目录）
+- `/usr/local/bin/cmd/`（整目录；老机器上可能还留着已下线的守护进程源文件副本）
+- `pf` 快捷方式：扫描 `/usr/local/bin`、`/usr/bin`、`/bin`、`/opt/bin`、`/root/bin`，
+  删除内容含 `xwPF` 的同名文件或软链
+
+> 阶段二可以单独取消 —— 取消后脚本仍在，`pf` 还能继续用。
+
+### 老机器残留清理（主备池守护）
+
+产品已不再安装「进程级主备池」守护进程（`xwpf-failover`），但**老机器上还留着它**：
+service 可能还在跑（占着监听端口），unit / drop-in / 二进制也都在。
+升级（`install`）与卸载（菜单 `8. 卸载服务`）两条路径都会自动清理下列残留
+（清理逻辑在 `lib/ui.sh` 里的老机器残留清理段，`xwPF.sh` 的安装 / 升级路径也调它）：
+
+> 🚨 **安装 / 升级路径：守护还在服务就跳过清理**（`lib/ui.sh` 的 `_legacy_failover_daemon_in_use`）
+>
+> 「已下线」不等于「老机器上一定没在用」。实测有一台机器的老守护**正在对外服务** ——
+> 监听 `0.0.0.0:18443` / `0.0.0.0:18444` 两个**公开口**，两个池都在转发，
+> realm 侧的 `10443` / `10444` 端点配套。无条件清理 ⇒ **下一次 `pf install`
+> 就把这台机器正在用的公开转发口打黑，且没有任何提示**。
+>
+> 判据：**池配置文件存在且里面还有活池**（含 `"listen"` 字段）= 还在服务 → 跳过并提示。
+> 没有配置却在跑 = 崩溃循环残留（守护读不到配置就 `exit 1`、systemd 反复拉起）→ 那种**正是要清的**。
+>
+> 想强制拆干净（确认公开口可以下线时）：
+>
+> ```bash
+> XWPF_FORCE_LEGACY_FAILOVER_CLEAN=1 pf install
+> ```
+>
+> **卸载路径不受此保护**（菜单 `8. 卸载服务` 内部传 `force`）—— 用户明确要拆全部。
+
+| 残留对象 | 路径 | 处理 |
+|----------|------|------|
+| 守护 unit | `/etc/systemd/system/xwpf-failover.service`、`/lib/systemd/system/xwpf-failover.service` | 删除（守护还在服务时**跳过**） |
+| 守护 drop-in 目录 | `/etc/systemd/system/xwpf-failover.service.d/` | **整目录删除**（含历史人工文件） |
+| 守护二进制 | `/usr/local/bin/xwpf-failover` | 删除 |
+| 守护源文件副本 | `/usr/local/bin/cmd/` | 删除 |
+| 版本指纹文件 | `/usr/local/bin/.xwpf-failover-version` | 删除 |
+| 正在跑的守护进程 | `xwpf-failover` 进程 | **先 stop + disable，再删文件**（否则 systemd 会把它拉回来） |
+| 池配置 / 状态文件 | `/etc/xwpf/` 下的 `failover.json`、`failover-state.json` | **留档不删**（改名保留），用户可自己回查 |
+
+> ⚠️ **顺序**：先停服务 → 再删文件 → 最后 `systemctl daemon-reload`。
+> ⚠️ **占用的监听端口**：守护进程删掉后，真机上 `18443` / `18444` 这类端口就不再有监听 ——
+> **必须先把流量迁到保留路径**（同端口多目标 + 权重 `10,0`），否则转发会直接断。
+> 守护删掉之后**没有「建池」入口**能把它重建回来。
+
+> **验收口径（与「删 / 不删」这类决策无关，只钉行为）**：
+>
+> 1. **不得有活配置** —— 生效中的 `/etc/xwpf/failover.json` **不存在**。
+> 2. **留档允许，但须登记** —— 改名留档的 `.disabled` 文件**允许存在**
+>    （产品现状就是改名留档：既不删文件，也不删目录），但**必须在验收清单里登记**：
+>    文件名 + 大小 + 时间。
+> 3. **`/etc/xwpf` 目录保留不删**。
+>
+> ⇒ 判据刻意**不写**「文件必须被删掉」这种与某个决策绑死的表述：
+> 只钉「**没有活配置**」这一条不变式，留不留档按产品现状走、怎么留由验收清单登记。
+> （反例：`/etc/xwpf` 目录被整个删掉、或 `failover.json` 仍以原名存在并生效 ⇒ 判红。）
+
+### 手工兜底（菜单不可用时）
+
+```bash
+# 下面几行 xwpf-failover 相关的是「已下线的主备池守护」在老机器上的残留清理
+systemctl stop realm xwpf-failover realm-health-check.timer 2>/dev/null
+systemctl disable realm xwpf-failover realm-health-check.timer 2>/dev/null
+rm -f /etc/systemd/system/realm.service \
+      /etc/systemd/system/xwpf-failover.service \
+      /etc/systemd/system/realm-health-check.service \
+      /etc/systemd/system/realm-health-check.timer
+rm -rf /etc/realm /usr/local/bin/lib /usr/local/bin/cmd
+# ★ 池配置目录：**保留目录**，池文件**改名留档**（不是删掉）——
+#   删了用户没法回查；这与本文「验收口径」第 2、3 条一致，
+#   也与产品实现 lib/ui.sh 清理段的行为一致。
+if [ -d /etc/xwpf ]; then
+  [ -f /etc/xwpf/failover.json ]       && mv -f /etc/xwpf/failover.json       /etc/xwpf/failover.json.disabled
+  [ -f /etc/xwpf/failover-state.json ] && mv -f /etc/xwpf/failover-state.json /etc/xwpf/failover-state.json.disabled
+fi
+rm -f /usr/local/bin/realm /usr/local/bin/xwPF.sh /usr/local/bin/xwpf-failover \
+      /usr/local/bin/.xwpf-failover-version /usr/local/bin/pf
+systemctl daemon-reload
+```
+
+> ⚠️ 改名留档的 `.disabled` 文件**必须按「验收口径」第 2 条登记进验收清单**（文件名 + 大小 + 时间）。
+> ⚠️ 这一步**不能删 `/etc/xwpf` 目录**：验收口径第 3 条要求目录保留，删目录 = 判红。
+
+---
+
+## 6. 首次初始化
+
+安装完成后 realm 以**空配置**启动（`start_empty_service`，`lib/realm.sh` 的 `start_empty_service`），
+写入 `{"endpoints": []}` 并生成 systemd unit —— 这是为了让脚本能识别「已安装」状态。
+
+真正的初始化是建第一条转发规则：
+
+```
+pf
+# → 2. 转发配置管理
+# → 新建转发规则
+```
+
+配置分两个角色（`RULE_ROLE`）：
+
+| 角色 | 含义 | 关键字段 |
+|------|------|----------|
+| `1` | 中转服务器（客户端侧） | `LISTEN_PORT` / `LISTEN_IP` / `THROUGH_IP` / `REMOTE_HOST` / `REMOTE_PORT` |
+| `2` | 服务端服务器（双端 realm 架构） | `LISTEN_PORT` / `FORWARD_TARGET` |
+
+规则落盘在 `/etc/realm/rules/rule-N.conf`，一条规则一个文件。
+文件解析走 `read_rule_file`（`lib/health.sh` 的 `read_rule_file`），**只接受白名单里的 KEY**
+（白名单变量 `_allowed` 就定义在这个函数里），并且**不使用 `source` / `eval`** —— 手工往规则文件里塞
+`$(cmd)` 或反引号不会被执行。
+
+规则创建后规则目录会被打上初始化标记 `/etc/realm/rules/.initialized`（`lib/rules.sh` 的 `init_rules_dir`）。
+
+规则 ID 会按「监听端口 → 角色 → 原 ID」排序重排（`reorder_rule_ids`，`lib/rules.sh` 的 `reorder_rule_ids`），
+重排时会同步更新健康状态文件里的 RULE_ID（`sync_health_status_ids`，`lib/rules.sh` 的 `sync_health_status_ids`），
+并在动原文件前先打一份 tar 备份到 `/tmp/realm-rules-backup-XXXXXX.tar.gz`。
+
+---
+
+## 7. 命令行接口
+
+> **非交互环境（管道 / 后台 / cron）里跑不带子命令的 `pf`**：
+> 交互菜单要求 stdin 是终端，否则直接干净退出（退出码 0）并打印一行提示 ——
+> 这是有意为之（EOF 下 `read` 立刻返回非 0 → 菜单会无限重绘 + 无界输出，
+> 真机上曾把 tmpfs 灌满、把机器压垮）。无人值守安装请用 `xwPF.sh install`。
+> 详见 [故障排查手册 §12](troubleshooting.md#12-非交互环境里跑-pf-的行为)。
+
+| 命令 | 作用 | 源码位置 |
+|------|------|----------|
+| `pf` | 交互式主菜单 | `lib/ui.sh` 的 `show_menu` |
+| `pf --generate-config-only` | 只生成 `/etc/realm/config.json`，不重启、不显示菜单 | `lib/ui.sh` 的 `main` |
+| `pf --restart-service` | 重排序规则 → 重新生成配置 → 重启 realm | `lib/ui.sh` 的 `main`、`lib/realm.sh` 的 `service_restart` |
+| `xwPF.sh install` | 一键安装（需 root） | `xwPF.sh` 的主入口 install 分支 |
+| `xwFailover.sh toggle\|config\|status\|start\|stop\|restart-realm\|help` | 故障转移管理，见 [健康检查与故障转移](health-check-and-failover.md) | `xwFailover.sh` 的 `main` |
+
+---
+
+## 8. 相关文档
+
+- [端口组与权重](port-groups-and-weights.md) —— 配多个出口、权重、权重主备写法
+- [健康检查与故障转移](health-check-and-failover.md) —— 自动切换的参数与链路
+- [故障排查手册](troubleshooting.md) —— 装不上、切不动、日志在哪
