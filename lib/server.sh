@@ -78,6 +78,15 @@ create_single_nat_rule() {
     local rule_file="${RULES_DIR}/rule-${rule_id}.conf"
     local rule_name="中转"
 
+    # ★ 规则目录必须先在：目录不存在时下面的重定向会失败 ⇒ 规则文件**写不进去**，
+    #   而原实现照样打「✓ 中转配置已创建」⇒ **静默失效**（界面说建好了，磁盘上没有）。
+    #   （真机踩到：install 路径没建 rules 目录，连建 4 条规则全部没落盘。）
+    if [ ! -d "$RULES_DIR" ]; then
+        echo -e "${RED}✗ 中转配置创建失败：规则目录不存在${NC}"
+        echo -e "${YELLOW}  目录: ${RULES_DIR}${NC}"
+        return 1
+    fi
+
     # ★ 新增规则键时，必须同时加进 lib/health.sh 的 read_rule_file 白名单（_allowed），
     #   否则该键不会被解析出来（set -u 下还是未定义变量）。
     tr -d '\r' > "$rule_file" <<EOF
@@ -118,6 +127,12 @@ PROBE_QUALITY_WINDOW="20"
 MPTCP_MODE="off"
 PROXY_MODE="off"
 EOF
+
+    # ★ 落盘自检：写完必须真的在磁盘上（重定向失败时 bash 只报一句就继续往下走）
+    if [ ! -s "$rule_file" ]; then
+        echo -e "${RED}✗ 中转配置创建失败（规则文件没写进去: $rule_file）${NC}"
+        return 1
+    fi
 
     echo -e "${GREEN}✓ 中转配置已创建 (ID: $rule_id) 端口: $listen_port->$REMOTE_IP:$remote_port${NC}"
 }

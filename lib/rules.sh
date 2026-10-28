@@ -3076,6 +3076,11 @@ auto_enable_active_standby() {
                 local _ts_count _full_count
                 _ts_count=$(printf '%s' "${TARGET_STATES:-}" | awk -F',' '{if ($0=="") print 0; else print NF}')
                 _full_count=$(printf '%s' "${REMOTE_HOST:-}" | awk -F',' '{if ($0=="") print 0; else print NF}')
+                # ★ `printf '%s' ""` 输出 **0 字节** ⇒ awk **一条记录都没有** ⇒ 输出空串
+                #   ⇒ `[ "" -lt "" ]` 报「integer expression expected」（真机日志里刷这条错）。
+                #   ⇒ 两边都兜底成 0（空列表 = 0 个条目，语义正确）。
+                _ts_count=${_ts_count:-0}
+                _full_count=${_full_count:-0}
                 if [ "$_ts_count" -lt "$_full_count" ]; then
                     # 剔除模式残留 ⇒ 清空，让主备回到完整目标集
                     if grep -q "^TARGET_STATES=" "$rule_file"; then

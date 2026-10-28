@@ -29,6 +29,7 @@ n4-del        2beb7bd  删除进程级主备池整块的那一版（补历史文
 sync-pre      75379aa  T95/T96 负向对照：迁移端 sync_health_status_ids 只按目标地址认领、没改一对一的那一版（= 84fe096^）
 static3-pre   b9db576  T89/T93 负向对照：加 xwpf:noninteractive-io 标记**之前**的实现（循环头行上有无标记、无 EOF 收口的读入 ⇒ 静态 3 判红）
 readend-pre   63b6ec9  T114 负向对照：读端 generate_endpoints_from_rules 建 map 键**不含 RULE_ID** 的那一版（同 target 两行 ⇒ 塌缩成一行 ⇒ 双向误切）
+install-guard-pre e4ac5eb  T128/T129/T130 负向对照：安装完整性与「静默失效」修复之前的那一版（install 不补齐 service/config/rules；create_single_nat_rule 不检查规则目录；空 TARGET_STATES 触发整数比较错误）
 EOF
 }
 

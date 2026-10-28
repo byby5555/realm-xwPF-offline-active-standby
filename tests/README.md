@@ -430,3 +430,27 @@ export PATH="$PWD/tests/shims:$PATH"
   - **退出码语义补齐**：`4`（`--only` 点名未登记）与 `5`（已知缺陷预期红在位）进 `run_tests.sh` 头部与 `TEST-HARNESS.md`。
 - ★ 汇总行格式从 `汇总: 总计 N 条，通过 N，失败 N` 变成 `…，失败 N，预期红 N`
   ⇒ **引用旧结论必须写清基线台架版本**（旧行不是新行的逐字原文）。
+
+## 第 25 轮（台架 v2.21.0）· 2026-10-28
+- 台架升到 **v2.21.0**：新增三组用例 **T128~T130**（`cases/29_install_completeness_t128.sh`）——
+  三个缺陷都是**真机上踩出来的**，不是理论推导：
+  - **install 报「安装完成」但服务根本没装**：`lib/realm.sh` 的 `install_realm` 在「二进制已是最新」时
+    直接返回，而 `start_empty_service` 只挂在「下载安装」那条路径上
+    ⇒ 机器上只有 realm 二进制、没有 unit / config.json / rules 目录时，
+    install 一路报成功，**转发一个都没跑**。
+    新增 `lib/realm.sh` 的 `ensure_realm_service_installed`：按缺什么补什么，**不覆盖已有 config.json**；
+    空规则时服务起不来**不算安装失败**（配好规则后会被拉起来）。
+  - **规则没落盘却报「✓ 中转配置已创建」**：`lib/server.sh` 的 `create_single_nat_rule`
+    在规则目录不存在时重定向失败（bash 只报一句就继续往下走），磁盘上什么都没有，界面却说建好了。
+    ⇒ 目录不存在就判红返回非 0，写完再做一次落盘自检。
+  - **空 TARGET_STATES 刷「integer expression expected」**：`lib/rules.sh` 的 `auto_enable_active_standby`
+    里 `printf '%s' ""` 输出 0 字节 ⇒ awk 一条记录都没有 ⇒ 计数是空串 ⇒ 整数比较报错。
+    ⇒ 两个计数都兜底成 0（空列表 = 0 个条目，语义正确）。
+- 负向对照用**修复前的真实实现**（历史对象 `install-guard-pre` = `e4ac5eb`），不是合成探针。
+  并加**对照有效性自检**：老树里确实没有这次修的东西 —— 只断言「老树没补齐」不够，
+  老树选错时那条断言会一直绿。
+- 台架纪律（本轮踩到，写下来免得再踩）：
+  - 沙箱里 `lib/core.sh` 的 `SYSTEMD_PATH` 是**无条件赋值** ⇒ 想让 unit 落在隔离目录，
+    必须**source 之后**再覆盖它（source 之前 export 会被直接盖掉 ⇒ 断言查的是别的文件 ⇒ 假红）。
+  - 被测函数必须先证明存在（沙箱里打 `FUNC_OK=1`）——
+    否则「函数没加载 ⇒ 什么都没发生」会让断言恒绿（零覆盖的假绿）。

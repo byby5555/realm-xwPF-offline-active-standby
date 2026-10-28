@@ -123,6 +123,26 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #         · 菜单侧：时延优先取快探测（1 秒刷新），没有快探测数据时回落状态文件；
 #           [健康]/[故障] 仍只取判定流；丢包 = SYN 被丢（SYN 被丢弃）的采样占比
 #         · 台架：新增 T123~T127（cases/28_fast_probe_t123.sh）
+# v2.21.0：第 25 轮 —— 安装完整性与「静默失效」护栏（真机踩出来的三个缺陷）
+#         · lib/realm.sh：install_realm 的「二进制已是最新」分支原先直接 return 0
+#           （start_empty_service 只挂在「下载安装」那条路径上）
+#           ⇒ `pf install` 报「安装完成」但 **realm.service 根本没装**（无 unit、无监听）
+#           ⇒ 新增 ensure_realm_service_installed：按缺什么补什么（service / config.json / rules 目录），
+#             **不覆盖已有 config.json**；空规则时启动失败不算安装失败
+#         · lib/server.sh：create_single_nat_rule 在规则目录不存在时重定向失败
+#           ⇒ 规则没落盘却打「✓ 中转配置已创建」（静默失效）
+#           ⇒ 改为目录不存在就判红返回 1，写完再做落盘自检
+#         · lib/rules.sh：auto_enable_active_standby 里 `printf '%s' ""` 输出 0 字节
+#           ⇒ awk 无记录 ⇒ `[ "" -lt "" ]` 报「integer expression expected」⇒ 两值兜底成 0
+#         · 台架：新增 T128~T130（cases/29_install_completeness_t128.sh）
+#             负向对照用**修复前的真实实现**（历史对象 install-guard-pre），
+#             并加「对照有效性自检」：老树里确实没有这次修的东西
+#             （只断言「老树没补齐」不够 —— 老树选错时那条断言会一直绿）
+#         · 台架纪律（这轮踩到的）：沙箱里 core.sh 的 SYSTEMD_PATH 是**无条件赋值**
+#           ⇒ 想让 unit 落在隔离目录，必须 source **之后**再覆盖
+#           （source 之前 export 会被盖掉 ⇒ 断言查的是别的文件 ⇒ 假红）
+#         · 台架纪律：被测函数必须先证明存在（沙箱里打 FUNC_OK=1）——
+#           否则「函数没加载 ⇒ 什么都没发生」会让断言恒绿（零覆盖的假绿）
 # v2.19.0：第 24 轮 —— 探测端生成物的「共用真源」护栏
 #         · 产品侧：health.sh 新增 health_shared_core_lib（core.sh 定位：同级目录 → LIB_DIR
 #           → 标准安装路径）；抽取不到时报错，**不装**残缺的探测端
@@ -270,7 +290,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #         · 负向对照：helper 层用注入式退化（helper 是新引入的，修复前没有等价形态，
 #           如实标注）；入口层用**真实修复前实现**（d0366b3 的 lib/）复现忙循环，
 #           断言的是「坏情况确实发生」（124 + 输出膨胀），不是「坏情况没发生」
-HARNESS_VERSION="v2.20.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive + negctl-selfcheck + t45-portable-equiv + t45-win-mv-truth + t32-locale-pin + t53-menu-eof + t32-copy-form-2 + t32-anchor-guard + t32-clause-exempt + t53-helper-count + t53-neg-floor + history-preflight + preflight-empty-guard + preflight-exit-passthrough + t54-ui-eof-closure-invariants + t54-judge-selfcheck + t53-rel-threshold + only-unregistered-exit4 + registry-selfcheck + t40-case-count-contract + probe-budget-10s + install-list-from-product + t63-t67-quality-observation + t68-t76-switch-reliability + t77-t84-weight10-exclusive + t85-t88-n4-probe-regen + run-lock-done-marker + t114-readend-collapse + expect-fail-exit5 + t54-affirm-default-7b + t115-t116-claim-gate-identity + t117-t118-legacy-failover-guard + t119-t121-standby-target-parity + t122-shared-core-guard + pgrep-shim + t123-t127-fast-probe)"
+HARNESS_VERSION="v2.21.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive + negctl-selfcheck + t45-portable-equiv + t45-win-mv-truth + t32-locale-pin + t53-menu-eof + t32-copy-form-2 + t32-anchor-guard + t32-clause-exempt + t53-helper-count + t53-neg-floor + history-preflight + preflight-empty-guard + preflight-exit-passthrough + t54-ui-eof-closure-invariants + t54-judge-selfcheck + t53-rel-threshold + only-unregistered-exit4 + registry-selfcheck + t40-case-count-contract + probe-budget-10s + install-list-from-product + t63-t67-quality-observation + t68-t76-switch-reliability + t77-t84-weight10-exclusive + t85-t88-n4-probe-regen + run-lock-done-marker + t114-readend-collapse + expect-fail-exit5 + t54-affirm-default-7b + t115-t116-claim-gate-identity + t117-t118-legacy-failover-guard + t119-t121-standby-target-parity + t122-shared-core-guard + pgrep-shim + t123-t127-fast-probe + t128-t130-install-completeness)"
 
 # shellcheck source=lib/harness.sh
 . "$SCRIPT_DIR/lib/harness.sh"
@@ -520,6 +540,11 @@ CASES=(
     "T125:case_T125_fast_probe_classify_and_window"
     "T126:case_T126_menu_latency_prefers_fast_probe"
     "T127:case_T127_fast_probe_failure_does_not_roll_back_standby"
+    # 安装完整性与「静默失效」护栏（T128~T130 · cases/29_install_completeness_t128.sh）
+    #   真机踩出来的三个缺陷：install 报「安装完成」但服务没装 / 规则没落盘却报「已创建」/ 空 TARGET_STATES 刷整数比较错误
+    "T128:case_T128_install_completeness"
+    "T129:case_T129_rule_write_guard"
+    "T130:case_T130_empty_target_states_no_integer_error"
 )
 
 
