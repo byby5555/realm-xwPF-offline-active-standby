@@ -47,6 +47,19 @@ get_active_rules_count() {
     echo "$count"
 }
 
+# 判断「(RULE_ID, 目标)」这一对是否已经被认领（临时文件里已写过同键的行）
+#   ★ 用 awk 做**字段级**比较，不能用 grep -F 的子串匹配：
+#     "1|X|" 是 "11|X|" 的子串 ⇒ 会把另一条规则误判成「已认领」，
+#     结果就是「明明还有规则能认领，却把这一行丢掉」= 状态丢失 = 该切不切。
+_sync_status_pair_claimed() {
+    local _f="$1" _rid="$2" _tgt="$3"
+    [ -f "$_f" ] || return 1
+    awk -F'|' -v r="$_rid" -v t="$_tgt" '
+        $1 == r && $2 == t { found = 1; exit }
+        END { exit (found ? 0 : 1) }
+    ' "$_f" 2>/dev/null
+}
+
 # 规则重排序后同步更新健康监控记录，保持数据一致性
 sync_health_status_ids() {
     local health_status_file="${HEALTH_STATUS_FILE}"
@@ -58,26 +71,102 @@ sync_health_status_ids() {
     local temp_health_file="${health_status_file}.tmp"
     grep "^#" "$health_status_file" > "$temp_health_file" 2>/dev/null || true
 
-    while IFS='|' read -r old_rule_id target status fail_count success_count last_check failure_start_time; do
+    while IFS='|' read -r old_rule_id target status fail_count success_count last_check failure_start_time; do   # xwpf:noninteractive-io（输入来自健康状态文件）
         [[ "$old_rule_id" =~ ^#.*$ ]] && continue
         [[ -z "$old_rule_id" ]] && continue
+        [[ -z "$target" ]] && continue
 
+        # ── 认领：一行状态只能被**一条**规则认领 ──────────────────────
+        #   为什么必须「一对一」：
+        #     两条规则共用同一后端（host:port）时，状态文件里就有**两行**同目标
+        #     （写端按 (RULE_ID, 目标) 一行一行写，见 lib/health.sh 的 health_check_script_body）。
+        #     老实现「按目标地址找到第一条匹配规则就 break」⇒ **两行都被同一条规则认领**
+        #     ⇒ 迁移后状态文件里出现两行相同的 (RULE_ID, TARGET)
+        #     ⇒ 一条规则的状态重复、另一条规则的行**丢失**（状态归零 = 该切不切）。
+        #   认领顺序：
+        #     ① 「RULE_ID == 行首 old_rule_id」的候选优先（保住「这行本来是谁的」）
+        #     ② 退到「还没认领过这个目标」的候选规则（文件顺序 = RULE_ID 升序）
+        #     ③ 都没有 ⇒ 这行不写（目标的规则已经没了 = 陈旧行，随整份重建一起消失）
         local new_rule_id=""
+        # ★ 候选规则的 RULE_ID 列表，用**空格分隔的普通变量**存，不用数组：
+        #   bash 4.4 之前（macOS 自带的 bash 3.2），`set -u` 下展开**空数组**会报
+        #   unbound variable（bash 4.4 起空数组不再算「未设置」）。
+        #   而「这个目标没有任何规则匹配」是**正常路径** ⇒ 候选列表为空是常态。
+        #   RULE_ID 是纯数字 ⇒ 空格分隔安全，对所有 bash 版本都免疫。
+        #   （注：产品脚本本身不开 set -u —— 只有 port-traffic-dog.sh 开 ——
+        #     所以这不是当前可达的崩溃，属于「不留坑」。）
+        local _cand_ids=""
+        local _cand_id=""
         for rule_file in "${RULES_DIR}"/rule-*.conf; do
             if [ -f "$rule_file" ] && read_rule_file "$rule_file"; then
-                if [ "$RULE_ROLE" = "1" ]; then
-                    if [[ "$REMOTE_HOST" == *"$target"* ]] || [[ "$target" == "${REMOTE_HOST}:${REMOTE_PORT}" ]]; then
-                        new_rule_id="$RULE_ID"
-                        break
+                # ★ 候选只认「**被健康检查监控**」的规则。
+                #   门槛与写端逐字对齐（见 lib/health.sh 的健康检查体）：
+                #     RULE_ROLE=1 && ENABLED=true && FAILOVER_ENABLED=true
+                #   写端只给这几类规则的行 ⇒ **没被监控的规则在状态文件里本来就没有行**，
+                #   它不该认领任何行。
+                #   不设这道门槛的后果（审稿实测复现）：规则重编号后，
+                #   一条**没开故障转移**的规则会按「目标地址相同」抢走被监控规则的行
+                #   ⇒ 被监控规则的失败状态丢失（状态归零 = 该切不切的静默失效）。
+                #   ⇒ 门槛同时把「角色 2（服务端服务器）」也排除掉：它不被健康检查监控，
+                #     状态文件里不会有它的行（原来那条 FORWARD_TARGET 匹配分支因此作废）。
+                if [ "$RULE_ROLE" != "1" ] || [ "$ENABLED" != "true" ] || [ "$FAILOVER_ENABLED" != "true" ]; then
+                    continue
+                fi
+                # ★ TARGET 口径是 host:port：按「REMOTE_HOST 里的某个 host + 本规则的 REMOTE_PORT」匹配。
+                #   老口径拿 REMOTE_HOST 做子串匹配，多地址规则（REMOTE_HOST=a,b）匹配不上
+                #   host:port 形式的记录 → 记录被整条丢掉。
+                #   旧格式（TARGET 只有 host）先按 host 精确匹配，匹配不上再退回老口径，
+                #   保证升级过程里老记录不会被丢。
+                local _matched=false
+                local _h
+                local _rh=()
+                IFS=',' read -ra _rh <<< "$REMOTE_HOST"
+                for _h in "${_rh[@]}"; do
+                    _h=$(echo "$_h" | xargs)  # 去除空格
+                    [ -n "$_h" ] || continue
+                    if [[ "$target" == *:* ]]; then
+                        if [ "${_h}:${REMOTE_PORT}" = "$target" ]; then
+                            _matched=true
+                            break
+                        fi
+                    else
+                        if [ "$_h" = "$target" ]; then
+                            _matched=true
+                            break
+                        fi
                     fi
-                else
-                    if [[ "$FORWARD_TARGET" == "$target" ]]; then
-                        new_rule_id="$RULE_ID"
-                        break
+                done
+                if [ "$_matched" != true ] && [[ "$target" != *:* ]]; then
+                    # 旧口径兜底（**刻意保留，不是漏改**）：老记录的 host 可能只是 REMOTE_HOST 的子串，
+                    # 精确匹配认不出来时仍按老口径认领 —— 升级期间宁可沿用老认领方式，
+                    # 也不能把老记录整条丢掉（丢掉 = 状态归零 = 故障转移静默失效）。
+                    if [[ "$REMOTE_HOST" == *"$target"* ]]; then
+                        _matched=true
                     fi
+                fi
+                if [ "$_matched" = true ]; then
+                    _cand_ids="${_cand_ids} ${RULE_ID}"
                 fi
             fi
         done
+
+        # ① 身份优先：RULE_ID 与行首 old_rule_id 一致的候选
+        for _cand_id in $_cand_ids; do
+            [ "$_cand_id" = "$old_rule_id" ] || continue
+            if ! _sync_status_pair_claimed "$temp_health_file" "$_cand_id" "$target"; then
+                new_rule_id="$_cand_id"
+                break
+            fi
+        done
+        # ② 退到还没认领过这个目标的候选
+        if [ -z "$new_rule_id" ]; then
+            for _cand_id in $_cand_ids; do
+                if ! _sync_status_pair_claimed "$temp_health_file" "$_cand_id" "$target"; then
+                    new_rule_id="$_cand_id"
+                    break
+                fi
+            done
+        fi
 
         if [ -n "$new_rule_id" ]; then
             echo "${new_rule_id}|${target}|${status}|${fail_count}|${success_count}|${last_check}|${failure_start_time}" >> "$temp_health_file"
@@ -200,42 +289,20 @@ generate_rule_id() {
     echo $((max_id + 1))
 }
 
-# 运行白名单：read_rule_file 解析时仅允许这些 KEY 被赋值
-_READ_RULE_ALLOWED_KEYS='RULE_ID RULE_ROLE RULE_NAME SECURITY_LEVEL LISTEN_PORT LISTEN_IP THROUGH_IP REMOTE_HOST REMOTE_PORT FORWARD_TARGET TLS_SERVER_NAME TLS_CERT_PATH TLS_KEY_PATH WS_PATH WS_HOST RULE_NOTE ENABLED CREATED_TIME BALANCE_MODE TARGET_STATES WEIGHTS FAILOVER_ENABLED HEALTH_CHECK_INTERVAL FAILURE_THRESHOLD SUCCESS_THRESHOLD CONNECTION_TIMEOUT RECOVERY_COOLDOWN MPTCP_MODE PROXY_MODE'
-
-read_rule_file() {
-    local rule_file="$1"
-    local _line _k _v
-    if [ ! -f "$rule_file" ]; then
-        return 1
+# read_rule_file 的唯一实现位于 lib/health.sh（白名单逐行解析，全程不用 source 规则文件）。
+# 本文件被单独 source 时（只加载 rules.sh 的脚本 / 测试），把唯一实现所在文件一并加载，
+# 免得出现「找不到 read_rule_file」这种含糊报错。
+if ! declare -F read_rule_file >/dev/null 2>&1; then
+    _REALM_RULES_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+    if [ -f "${_REALM_RULES_LIB_DIR}/health.sh" ]; then
+        # shellcheck disable=SC1091
+        . "${_REALM_RULES_LIB_DIR}/health.sh"
     fi
-
-    # 安全解析：line-by-line 读，剥双引号/单引号，KEY 必须落在白名单。
-    # 绝不使用 source / eval，文件内的 $(cmd)、反引号、换行注入全部不再被执行。
-    while IFS= read -r _line || [ -n "$_line" ]; do
-        [[ -z "$_line" ]] && continue
-        [[ "$_line" =~ ^[[:space:]]*# ]] && continue
-
-        if [[ "$_line" =~ ^[[:space:]]*([A-Z_][A-Z0-9_]*)=(.*)$ ]]; then
-            _k="${BASH_REMATCH[1]}"
-            _v="${BASH_REMATCH[2]}"
-            # 剥外层双引号
-            [[ "$_v" =~ ^\"(.*)\"$ ]] && _v="${BASH_REMATCH[1]}"
-            # 剥外层单引号
-            [[ "$_v" =~ ^\'(.*)\'$ ]] && _v="${BASH_REMATCH[1]}"
-
-            # 白名单校验：只对已知允许的 KEY 进行赋值
-            if [[ " $_READ_RULE_ALLOWED_KEYS " == *" $_k "* ]]; then
-                printf -v "$_k" '%s' "$_v"
-            fi
-        fi
-    done < "$rule_file"
-
-    RULE_NOTE="${RULE_NOTE:-}"
-    MPTCP_MODE="${MPTCP_MODE:-off}"
-    PROXY_MODE="${PROXY_MODE:-off}"
-    return 0
-}
+    unset _REALM_RULES_LIB_DIR
+fi
+if ! declare -F read_rule_file >/dev/null 2>&1; then
+    echo "错误: 缺少 lib/health.sh，或其版本过旧（没有 read_rule_file），请先执行 pf install 更新脚本" >&2
+fi
 
 get_balance_info_display() {
     local remote_host="$1"
@@ -492,35 +559,35 @@ edit_rule_interactive() {
     echo ""
     
     if ! list_rules_with_info "management"; then
-        read -p "按回车键返回..."
+        ui_pause "按回车键返回..."
         return 1
     fi
     
     echo ""
-    read -p "请输入要编辑的规则ID: " rule_id
+    ui_read_into "请输入要编辑的规则ID: " rule_id
     
     if [ -z "$rule_id" ]; then
         echo -e "${RED}未输入规则ID${NC}"
-        read -p "按回车键返回..."
+        ui_pause "按回车键返回..."
         return 1
     fi
     
     if ! [[ "$rule_id" =~ ^[0-9]+$ ]]; then
         echo -e "${RED}无效的规则ID${NC}"
-        read -p "按回车键返回..."
+        ui_pause "按回车键返回..."
         return 1
     fi
     
     local rule_file="${RULES_DIR}/rule-${rule_id}.conf"
     if [ ! -f "$rule_file" ]; then
         echo -e "${RED}规则 $rule_id 不存在${NC}"
-        read -p "按回车键返回..."
+        ui_pause "按回车键返回..."
         return 1
     fi
     
     if ! read_rule_file "$rule_file"; then
         echo -e "${RED}无法读取规则文件${NC}"
-        read -p "按回车键返回..."
+        ui_pause "按回车键返回..."
         return 1
     fi
     
@@ -539,7 +606,7 @@ edit_rule_interactive() {
         service_restart
     fi
     
-    read -p "按回车键返回..."
+    ui_pause "按回车键返回..."
 }
 
 # 从TARGET_STATES移除指定目标，保持目标与权重的索引对应关系
@@ -620,8 +687,8 @@ edit_nat_server_config() {
     
     local new_listen_port
     while true; do
-        echo -ne "请输入本地监听端口 (客户端连接的端口，回车默认${GREEN}${LISTEN_PORT}${NC}): "
-        read new_listen_port
+        sleep 0.2
+        ui_read_default "请输入本地监听端口 (客户端连接的端口，回车默认${GREEN}${LISTEN_PORT}${NC}): " new_listen_port
         if [ -z "$new_listen_port" ]; then
             new_listen_port="$LISTEN_PORT"
             break
@@ -634,8 +701,7 @@ edit_nat_server_config() {
     done
     
     local new_listen_ip
-    echo -ne "自定义(指定)入口监听IP/网卡接口(客户端连接IP/网卡,回车默认${GREEN}${LISTEN_IP:-::}${NC}): "
-    read new_listen_ip
+    ui_read_default "自定义(指定)入口监听IP/网卡接口(客户端连接IP/网卡,回车默认${GREEN}${LISTEN_IP:-::}${NC}): " new_listen_ip
     if [ -z "$new_listen_ip" ]; then
         new_listen_ip="${LISTEN_IP:-::}"
     elif ! validate_ip "$new_listen_ip" && ! [[ "$new_listen_ip" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
@@ -644,8 +710,7 @@ edit_nat_server_config() {
     fi
     
     local new_through_ip
-    echo -ne "自定义(指定)出口IP/网卡接口(适用于多IP/网卡出口情况,回车默认${GREEN}${THROUGH_IP:-::}${NC}): "
-    read new_through_ip
+    ui_read_default "自定义(指定)出口IP/网卡接口(适用于多IP/网卡出口情况,回车默认${GREEN}${THROUGH_IP:-::}${NC}): " new_through_ip
     if [ -z "$new_through_ip" ]; then
         new_through_ip="${THROUGH_IP:-::}"
     elif ! validate_ip "$new_through_ip" && ! [[ "$new_through_ip" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
@@ -657,8 +722,7 @@ edit_nat_server_config() {
     echo -e "${YELLOW}=== 编辑出口服务器信息配置 ===${NC}"
     
     local new_remote_host
-    echo -ne "出口服务器的IP地址或域名(回车默认${GREEN}${REMOTE_HOST}${NC}): "
-    read new_remote_host
+    ui_read_default "出口服务器的IP地址或域名(回车默认${GREEN}${REMOTE_HOST}${NC}): " new_remote_host
     if [ -z "$new_remote_host" ]; then
         new_remote_host="$REMOTE_HOST"
     elif ! validate_single_address "$new_remote_host"; then
@@ -668,8 +732,8 @@ edit_nat_server_config() {
     
     local new_remote_port
     while true; do
-        echo -ne "出口服务器的监听端口(回车默认${GREEN}${REMOTE_PORT}${NC}): "
-        read new_remote_port
+        sleep 0.2
+        ui_read_default "出口服务器的监听端口(回车默认${GREEN}${REMOTE_PORT}${NC}): " new_remote_port
         if [ -z "$new_remote_port" ]; then
             new_remote_port="$REMOTE_PORT"
             break
@@ -687,7 +751,8 @@ edit_nat_server_config() {
     local old_listen_port="$LISTEN_PORT"
     local is_balance_mode=false
 
-    if [ "$BALANCE_MODE" != "off" ] && [ -n "$TARGET_STATES" ]; then
+    # 双保险：同 lib/realm.sh 的同名判定点 —— 解析器已保证有值，这里再兜一层默认值
+    if [ "${BALANCE_MODE:-}" != "off" ] && [ -n "${TARGET_STATES:-}" ]; then
         is_balance_mode=true
     fi
 
@@ -700,8 +765,7 @@ edit_nat_server_config() {
 
     # 规则备注编辑
     local current_note="${RULE_NOTE:-}"
-    echo -ne "规则备注(回车默认${GREEN}${current_note}${NC}): "
-    read new_note
+    ui_read_default "规则备注(回车默认${GREEN}${current_note}${NC}): " new_note
     new_note=$(echo "$new_note" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | cut -c1-50)
     if [ -z "$new_note" ]; then
         new_note="$current_note"
@@ -792,8 +856,8 @@ edit_exit_server_config() {
     
     local new_listen_port
     while true; do
-        echo -ne "请输入监听端口 (回车默认${GREEN}${LISTEN_PORT}${NC}): "
-        read new_listen_port
+        sleep 0.2
+        ui_read_default "请输入监听端口 (回车默认${GREEN}${LISTEN_PORT}${NC}): " new_listen_port
         if [ -z "$new_listen_port" ]; then
             new_listen_port="$LISTEN_PORT"
             break
@@ -809,8 +873,7 @@ edit_exit_server_config() {
     local current_target_port="${FORWARD_TARGET##*:}"
     
     local new_target_host
-    echo -ne "转发目标IP地址(回车默认${GREEN}${current_target_host}${NC}): "
-    read new_target_host
+    ui_read_default "转发目标IP地址(回车默认${GREEN}${current_target_host}${NC}): " new_target_host
     if [ -z "$new_target_host" ]; then
         new_target_host="$current_target_host"
     elif ! validate_target_address "$new_target_host"; then
@@ -820,8 +883,8 @@ edit_exit_server_config() {
     
     local new_target_port
     while true; do
-        echo -ne "转发目标业务端口(回车默认${GREEN}${current_target_port}${NC}): "
-        read new_target_port
+        sleep 0.2
+        ui_read_default "转发目标业务端口(回车默认${GREEN}${current_target_port}${NC}): " new_target_port
         if [ -z "$new_target_port" ]; then
             new_target_port="$current_target_port"
             break
@@ -835,8 +898,7 @@ edit_exit_server_config() {
     
     # 规则备注编辑
     local current_note="${RULE_NOTE:-}"
-    echo -ne "规则备注(回车默认${GREEN}${current_note}${NC}): "
-    read new_note
+    ui_read_default "规则备注(回车默认${GREEN}${current_note}${NC}): " new_note
     new_note=$(echo "$new_note" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | cut -c1-50)
     if [ -z "$new_note" ]; then
         new_note="$current_note"
@@ -868,7 +930,8 @@ interactive_add_rule() {
     echo ""
     local RULE_ROLE
     while true; do
-        read -p "请输入数字 [1-2]: " RULE_ROLE
+        sleep 0.2
+        ui_read_into "请输入数字 [1-2]: " RULE_ROLE
         case $RULE_ROLE in
             1)
                 echo -e "${GREEN}已选择: 中转服务器${NC}"
@@ -986,7 +1049,7 @@ delete_rule() {
             fi
             echo ""
 
-            read -p "确认删除此规则？(y/n): " confirm
+            ui_read_into "确认删除此规则？(y/n): " confirm
             if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
                 echo "删除已取消"
                 return 1
@@ -1072,7 +1135,7 @@ batch_delete_rules() {
     done
     echo ""
 
-    read -p "确认删除以上 $valid_count 个规则？(y/n): " confirm
+    ui_read_into "确认删除以上 $valid_count 个规则？(y/n): " confirm
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
         local deleted_count=0
         for id in "${valid_ids_array[@]}"; do
@@ -1152,7 +1215,7 @@ export_config_package() {
     if [ $rules_count -eq 0 ]; then
         echo -e "${RED}没有可导出的配置数据${NC}"
         echo ""
-        read -p "按回车键返回..."
+        ui_pause "按回车键返回..."
         return 1
     fi
 
@@ -1162,10 +1225,10 @@ export_config_package() {
     echo -e "  备注权重: ${GREEN}完整保留${NC}"
     echo ""
 
-    read -p "确认导出配置包？(y/n): " confirm
+    ui_read_into "确认导出配置包？(y/n): " confirm
     if ! echo "$confirm" | grep -qE "^[Yy]$"; then
         echo -e "${BLUE}已取消导出操作${NC}"
-        read -p "按回车键返回..."
+        ui_pause "按回车键返回..."
         return
     fi
 
@@ -1222,14 +1285,14 @@ export_config_package() {
     else
         echo -e "${RED}✗ 配置包创建失败${NC}"
         rm -rf "$temp_dir"
-        read -p "按回车键返回..."
+        ui_pause "按回车键返回..."
         return 1
     fi
 
     rm -rf "$temp_dir"
 
     echo ""
-    read -p "按回车键返回..."
+    ui_pause "按回车键返回..."
 }
 
 export_config_with_view() {
@@ -1249,7 +1312,7 @@ export_config_with_view() {
     echo -e "${GREEN}1.${NC}  一键导出为压缩包 "
     echo -e "${GREEN}0.${NC} 返回菜单"
     echo ""
-    read -p "请输入选择 [0-1]: " export_choice
+    ui_read_into "请输入选择 [0-1]: " export_choice
     echo ""
 
     case $export_choice in
@@ -1260,7 +1323,7 @@ export_config_with_view() {
             ;;
         *)
             echo -e "${RED}无效选择${NC}"
-            read -p "按回车键继续..."
+            ui_pause "按回车键继续..."
             ;;
     esac
 }
@@ -1296,18 +1359,18 @@ import_config_package() {
     echo -e "${YELLOW}=== 导入配置包 ===${NC}"
     echo ""
 
-    read -p "请输入配置包的完整路径：" package_path
+    ui_read_into "请输入配置包的完整路径：" package_path
     echo ""
 
     if [ -z "$package_path" ]; then
         echo -e "${BLUE}已取消操作${NC}"
-        read -p "按回车键返回..."
+        ui_pause "按回车键返回..."
         return
     fi
 
     if [ ! -f "$package_path" ]; then
         echo -e "${RED}文件不存在: $package_path${NC}"
-        read -p "按回车键返回..."
+        ui_pause "按回车键返回..."
         return
     fi
 
@@ -1315,7 +1378,7 @@ import_config_package() {
     local config_dir=$(validate_config_package_content "$package_path")
     if [ $? -ne 0 ] || [ -z "$config_dir" ]; then
         echo -e "${RED}无效的配置包文件${NC}"
-        read -p "按回车键返回..."
+        ui_pause "按回车键返回..."
         return
     fi
 
@@ -1340,11 +1403,11 @@ import_config_package() {
     echo -e "${RED}警告: 导入操作将覆盖所有现有配置！${NC}"
     echo ""
 
-    read -p "确认导入配置包？(y/n): " confirm
+    ui_read_into "确认导入配置包？(y/n): " confirm
     if ! echo "$confirm" | grep -qE "^[Yy]$"; then
         echo -e "${BLUE}已取消导入操作${NC}"
         rm -rf "$(dirname "$config_dir")"
-        read -p "按回车键返回..."
+        ui_pause "按回车键返回..."
         return
     fi
 
@@ -1390,7 +1453,7 @@ import_config_package() {
         echo -e "${YELLOW}正在恢复MPTCP端点配置...${NC}"
         /usr/bin/ip mptcp endpoint flush 2>/dev/null
 
-        while IFS= read -r line; do
+        while IFS= read -r line; do   # xwpf:noninteractive-io（输入来自 MPTCP 端点配置）
             if [ -n "$line" ]; then
                 local addr=$(echo "$line" | awk '{print $1}')
                 local dev=$(echo "$line" | awk '/dev/ {for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}')
@@ -1426,7 +1489,7 @@ import_config_package() {
     fi
 
     echo ""
-    read -p "按回车键返回..."
+    ui_pause "按回车键返回..."
 }
 
 get_proxy_mode_display() {
@@ -1489,7 +1552,8 @@ proxy_management_menu() {
     init_proxy_fields
 
     while true; do
-        clear
+        sleep 0.2
+        ui_clear
         echo -e "${GREEN}=== Proxy Protocol 管理 ===${NC}"
         echo ""
 
@@ -1506,13 +1570,13 @@ proxy_management_menu() {
 
         if ! list_rules_with_info "proxy"; then
             echo ""
-            read -p "按回车键返回..."
+            ui_pause "按回车键返回..."
             return
         fi
 
         echo ""
         echo "多ID使用逗号,分隔"
-        read -p "请输入要配置的规则ID（输入0切换全局状态）: " rule_input
+        ui_read_into "请输入要配置的规则ID（输入0切换全局状态）: " rule_input
         if [ -z "$rule_input" ]; then
             return
         fi
@@ -1544,7 +1608,7 @@ proxy_management_menu() {
 
             restart_realm_service true
 
-            read -p "按回车键继续..."
+            ui_pause "按回车键继续..."
             continue
         fi
 
@@ -1555,7 +1619,7 @@ proxy_management_menu() {
         echo -e "${GREEN}3.${NC} 协议v2"
         echo ""
 
-        read -p "请选择协议版本（回车默认v2） [1-3]: " version_choice
+        ui_read_into "请选择协议版本（回车默认v2） [1-3]: " version_choice
         if [ -z "$version_choice" ]; then
             version_choice="3"
         fi
@@ -1570,7 +1634,7 @@ proxy_management_menu() {
                     echo -e "${RED}无效的规则ID${NC}"
                 fi
             fi
-            read -p "按回车键继续..."
+            ui_pause "按回车键继续..."
             continue
         fi
 
@@ -1581,7 +1645,7 @@ proxy_management_menu() {
         echo -e "${GREEN}3.${NC} 双向 (send + accept)"
         echo ""
 
-        read -p "请选择方向 [1-3]: " direction_choice
+        ui_read_into "请选择方向 [1-3]: " direction_choice
         if [ -z "$direction_choice" ]; then
             continue
         fi
@@ -1595,7 +1659,7 @@ proxy_management_menu() {
                 echo -e "${RED}无效的规则ID${NC}"
             fi
         fi
-        read -p "按回车键继续..."
+        ui_pause "按回车键继续..."
     done
 }
 
@@ -1630,7 +1694,7 @@ batch_set_proxy_mode() {
     done
     echo ""
 
-    read -p "确认为以上 $valid_count 个规则设置Proxy模式？(y/n): " confirm
+    ui_read_into "确认为以上 $valid_count 个规则设置Proxy模式？(y/n): " confirm
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
         local success_count=0
         for id in "${valid_ids_array[@]}"; do
@@ -1777,14 +1841,15 @@ restart_service_for_proxy() {
 
 load_balance_management_menu() {
     while true; do
-        clear
+        sleep 0.2
+        ui_clear
         echo -e "${GREEN}=== 负载均衡管理(按端口组管理) ===${NC}"
         echo ""
 
         if [ ! -d "$RULES_DIR" ] || [ -z "$(ls -A "$RULES_DIR"/*.conf 2>/dev/null)" ]; then
             echo -e "${YELLOW}暂无转发规则，请先创建转发规则${NC}"
             echo ""
-            read -p "按回车键返回..."
+            ui_pause "按回车键返回..."
             return
         fi
 
@@ -1794,6 +1859,9 @@ load_balance_management_menu() {
         declare -A port_balance_modes
         declare -A port_weights
         declare -A port_failover_status
+        # ★ 端口组 → 目标 → 归属规则的 RULE_ID（先声明者为准，与读端同口径）
+        #   质量观测指标的键是 (RULE_ID, 目标) ⇒ 展示端查指标时必须带 RULE_ID
+        declare -A port_target_owner
 
         for rule_file in "${RULES_DIR}"/rule-*.conf; do
             if [ -f "$rule_file" ]; then
@@ -1820,6 +1888,14 @@ load_balance_management_menu() {
                                     port_groups[$port_key]="${port_groups[$port_key]:-},$target"
                                 fi
                             fi
+                            # ★ 归属规则 = 该目标在本端口组里归属的那条规则（**先声明者为准**）
+                            #   —— 与读端（lib/realm.sh 的 generate_endpoints_from_rules）同口径。
+                            #   质量观测指标的键是 (RULE_ID, 目标) 组合键 ⇒ 展示端必须带 RULE_ID 查，
+                            #   否则同后端被两条规则共用时会显示成另一条规则的指标。
+                            local _own_key="${port_key}|${target}"
+                            if [ -z "${port_target_owner[$_own_key]:-}" ]; then
+                                port_target_owner[$_own_key]="$RULE_ID"
+                            fi
                         done
                     else
                         local target="$REMOTE_HOST:$REMOTE_PORT"
@@ -1829,6 +1905,10 @@ load_balance_management_menu() {
                             else
                                 port_groups[$port_key]="${port_groups[$port_key]:-},$target"
                             fi
+                        fi
+                        local _own_key="${port_key}|${target}"
+                        if [ -z "${port_target_owner[$_own_key]:-}" ]; then
+                            port_target_owner[$_own_key]="$RULE_ID"
                         fi
                     fi
                 fi
@@ -1894,10 +1974,12 @@ load_balance_management_menu() {
                     if [ "$balance_mode" != "off" ] && [ "${port_failover_status[$port_key]:-}" = "true" ]; then
                         local health_status_file="${HEALTH_STATUS_FILE}"
                         local node_status="healthy"
-                        local host_only=$(echo "$target" | cut -d':' -f1)
 
                         if [ -f "$health_status_file" ]; then
-                            local health_record=$(get_health_status_record "$host_only")
+                            # ★ 按 host:port 取记录：同 host 不同端口各自独立；
+                            #   旧格式（TARGET 只有 host）的老行查不到就当无记录 ——
+                            #   不按裸 host 兜底（那会显示成同 host 另一个端口的状态）
+                            local health_record=$(get_health_status_record "$target")
                             if [ -n "$health_record" ]; then
                                 IFS='|' read -r _ _ _ _ _ _ _ lat_ms lat_hist <<< "$health_record"
                                 local found_status=$(echo "$health_record" | cut -d'|' -f3)
@@ -1908,6 +1990,18 @@ load_balance_management_menu() {
                             fi
                         fi
 
+                        # ── N5 阶段 1 · 质量观测指标（**只显示，不做任何自动切换**）────
+                        #   ★ 独立文件（quality_metrics.conf），不碰 health_status.conf。
+                        #   ★ 展示口径只有一处（lib/health.sh 的 quality_window_display）⇒
+                        #     这里不再自己拼字符串 ⇒ 两处不会漂。
+                        #   ★ 老机器没这个文件 / 窗口还没采样 ⇒ 显示 "-"（向后兼容，缺字段不报错）。
+                        local quality_info=""
+                        local _own_rule="${port_target_owner[${port_key}|${target}]:-}"
+                        if [ -n "$_own_rule" ] && declare -F quality_window_display >/dev/null 2>&1; then
+                            quality_info=" ${BLUE}$(quality_window_display "$target" "$_own_rule")${NC}"
+                        fi
+                        # ───────────────────────────────────────────────────
+
                         case "$node_status" in
                             "healthy") failover_info=" ${GREEN}[健康]${NC}" ;;
                             "failed") failover_info=" ${RED}[故障]${NC}" ;;
@@ -1916,11 +2010,15 @@ load_balance_management_menu() {
 
                     # 显示服务器信息（只在负载均衡模式下显示权重）
                     if [ "$balance_mode" != "off" ]; then
-                        echo -e "    ${BLUE}$((i+1)).${NC} $target ${GREEN}[权重: $current_weight]${NC} ${BLUE}($percentage%)${NC}$failover_info$latency_info"
+                        echo -e "    ${BLUE}$((i+1)).${NC} $target ${GREEN}[权重: $current_weight]${NC} ${BLUE}($percentage%)${NC}$failover_info$latency_info$quality_info"
                     else
-                        echo -e "    ${BLUE}$((i+1)).${NC} $target$failover_info$latency_info"
+                        echo -e "    ${BLUE}$((i+1)).${NC} $target$failover_info$latency_info$quality_info"
                     fi
                 done
+                echo ""
+                # ★ N5 阶段 1 · 观测模式说明（**只显示指标，不做任何自动切换**）
+                #   写明「30ms·10% 仅参考不作为判据」⇒ 避免有人把窗口指标当阈值用。
+                echo -e "  ${BLUE}注：窗口指标为只观测（不影响切换/权重）；30ms·10% 仅参考，不作为判据${NC}"
                 echo ""
             fi
         done
@@ -1929,7 +2027,7 @@ load_balance_management_menu() {
             echo -e "${YELLOW}暂无符合条件的负载均衡组${NC}"
             echo -e "${BLUE}提示: 只显示单端口有至少两台服务器的中转规则${NC}"
             echo ""
-            read -p "按回车键返回..."
+            ui_pause "按回车键返回..."
             return
         fi
 
@@ -1944,7 +2042,7 @@ load_balance_management_menu() {
         echo -e "${RED}0.${NC} 返回上级菜单"
         echo ""
 
-        read -p "请输入选择 [0-4]: " choice
+        ui_read_into "请输入选择 [0-4]: " choice
         echo ""
 
         case $choice in
@@ -1963,7 +2061,7 @@ load_balance_management_menu() {
             4)
                 # 立即测试所有目标的连通性与时延
                 probe_all_targets_latency
-                read -p "按回车键返回..." 
+                ui_pause "按回车键返回..."
                 ;;
             0)
                 # 返回上级菜单
@@ -1971,7 +2069,7 @@ load_balance_management_menu() {
                 ;;
             *)
                 echo -e "${RED}无效选择，请输入 0-4${NC}"
-                read -p "按回车键继续..."
+                ui_pause "按回车键继续..."
                 ;;
         esac
     done
@@ -2008,7 +2106,7 @@ probe_all_targets_latency() {
             esac
 
             total=$((total + 1))
-            if probe_with_latency "$probe_target" "$probe_port" "${CONNECTION_TIMEOUT:-3}"; then
+            if probe_with_latency "$probe_target" "$probe_port" "${CONNECTION_TIMEOUT:-10}"; then
                 ok=$((ok + 1))
                 printf "  %s  %-30s %s\n" "${GREEN}可达${NC}" "${probe_target}:${probe_port}"                     "$(format_latency_display "$PROBE_LATENCY_MS" "")"
             else
@@ -2030,7 +2128,8 @@ probe_all_targets_latency() {
 # 切换负载均衡模式（按端口分组管理）
 switch_balance_mode() {
     while true; do
-        clear
+        sleep 0.2
+        ui_clear
         echo -e "${YELLOW}=== 切换负载均衡模式 ===${NC}"
         echo ""
 
@@ -2134,14 +2233,14 @@ switch_balance_mode() {
             echo -e "${YELLOW}如果您需要添加更多目标服务器：${NC}"
             echo -e "${BLUE}  请到 '转发配置管理' → '添加转发规则' 创建更多规则${NC}"
             echo ""
-            read -p "按回车键返回..."
+            ui_pause "按回车键返回..."
             return
         fi
 
         echo ""
         echo -e "${WHITE}注意: 负载均衡模式将应用到选定端口组的所有相关规则${NC}"
         echo ""
-        read -p "请输入规则编号 [1-${#rule_ports[@]}] (或按回车返回): " choice
+        ui_read_into "请输入规则编号 [1-${#rule_ports[@]}] (或按回车返回): " choice
 
         if [ -z "$choice" ]; then
             return
@@ -2150,7 +2249,7 @@ switch_balance_mode() {
         # 验证数字输入
         if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt ${#rule_ports[@]} ]; then
             echo -e "${RED}无效的规则编号${NC}"
-            read -p "按回车键继续..."
+            ui_pause "按回车键继续..."
             continue
         fi
 
@@ -2170,7 +2269,7 @@ switch_balance_mode() {
         echo -e "${GREEN}4.${NC} 主备模式 (active-standby) - 严格主备：1 主 N 备按顺序接替，主恢复后切回主"
         echo ""
 
-        read -p "请输入选择 [1-4]: " mode_choice
+        ui_read_into "请输入选择 [1-4]: " mode_choice
 
         local new_mode=""
         local mode_display=""
@@ -2193,7 +2292,7 @@ switch_balance_mode() {
                 ;;
             *)
                 echo -e "${RED}无效选择${NC}"
-                read -p "按回车键继续..."
+                ui_pause "按回车键继续..."
                 continue
                 ;;
         esac
@@ -2232,6 +2331,20 @@ switch_balance_mode() {
                 if read_rule_file "$rule_file" && [ "$RULE_ROLE" = "1" ] && [ "$LISTEN_PORT" = "$selected_port" ]; then
                     sed -i "s/^BALANCE_MODE=.*/BALANCE_MODE=\"$new_mode\"/" "$rule_file"
 
+                    # 同步「切出主备后要回到的模式」：
+                    # 切进主备 → 记下原来的模式；切到别的模式 → 记住现在这个模式。
+                    # 这样之后自动切回时能还回用户真正想要的模式，而不是写死 roundrobin。
+                    if [ "$new_mode" = "active-standby" ]; then
+                        local _prev_mode="${current_balance_mode:-roundrobin}"
+                        case "$_prev_mode" in
+                            roundrobin|iphash) ;;
+                            *) _prev_mode="roundrobin" ;;
+                        esac
+                        _rule_set_field "$rule_file" "PREV_BALANCE_MODE" "$_prev_mode"
+                    else
+                        _rule_set_field "$rule_file" "PREV_BALANCE_MODE" "$new_mode"
+                    fi
+
                     # 切出 active-standby 时重置 WEIGHTS / TARGET_STATES
                     if [ "$reset_stale_weights" = true ]; then
                         if [ "$new_mode" = "off" ]; then
@@ -2268,7 +2381,7 @@ switch_balance_mode() {
             echo -e "${RED}✗ 未找到相关规则文件${NC}"
         fi
 
-        read -p "按回车键继续..."
+        ui_pause "按回车键继续..."
     done
 }
 
@@ -2276,7 +2389,8 @@ switch_balance_mode() {
 # 权重配置管理菜单
 weight_management_menu() {
     while true; do
-        clear
+        sleep 0.2
+        ui_clear
         echo -e "${GREEN}=== 权重配置管理 ===${NC}"
         echo ""
 
@@ -2370,14 +2484,14 @@ weight_management_menu() {
             echo -e "${YELLOW}如果您有多目标规则但未启用负载均衡：${NC}"
             echo -e "  请先选择 '切换负载均衡模式' 启用负载均衡，然后再配置权重"
             echo ""
-            read -p "按回车键返回..."
+            ui_pause "按回车键返回..."
             return
         fi
 
         echo ""
         echo -e "${GRAY}注意: 只有多个目标服务器的规则组才需要权重配置${NC}"
         echo ""
-        read -p "请输入规则编号 [1-${#rule_ports[@]}] (或按回车返回): " selected_number
+        ui_read_into "请输入规则编号 [1-${#rule_ports[@]}] (或按回车返回): " selected_number
 
         if [ -z "$selected_number" ]; then
             break
@@ -2386,7 +2500,7 @@ weight_management_menu() {
         # 验证数字输入
         if ! [[ "$selected_number" =~ ^[0-9]+$ ]] || [ "$selected_number" -lt 1 ] || [ "$selected_number" -gt ${#rule_ports[@]} ]; then
             echo -e "${RED}无效的规则编号${NC}"
-            read -p "按回车键继续..."
+            ui_pause "按回车键继续..."
             continue
         fi
 
@@ -2407,7 +2521,7 @@ configure_port_group_weights() {
     local targets_str="$3"
     local current_weights_str="$4"
 
-    clear
+    ui_clear
     echo -e "${GREEN}=== 权重配置: $rule_name ===${NC}"
     echo ""
 
@@ -2438,21 +2552,23 @@ configure_port_group_weights() {
     echo ""
     echo "请输入权重序列 (用逗号分隔):"
     echo -e "${WHITE}格式说明: 按服务器顺序输入权重值，如 \"2,1,3\"${NC}"
-    echo -e "${WHITE}权重范围: 0-10，数值越大分配流量越多${NC}"
+    echo -e "${WHITE}权重范围: 0-10；普通负载均衡下数值越大分配流量越多${NC}"
     echo -e "${GREEN}含 0 即自动主备: 如 \"10,0\" → 自动进入主备模式并开启主备路由${NC}"
-    echo -e "${BLUE}  权重>0 的目标当主，权重=0 的目标当备；主故障自动切备，主恢复自动切回${NC}"
+    echo -e "${GREEN}权重 10 是独占权重: 只能给一个目标, 给了 10 其余必须全是 0${NC}"
+    echo -e "${BLUE}  主备模式下：权重数值大的排在前，同一时刻只有一个主承接流量；权重表示优先级，不是分流比例${NC}"
+    echo -e "${BLUE}  权重 0 的目标不参与主备；主故障自动切备，主恢复自动切回${NC}"
     echo ""
 
-    read -p "权重序列: " weight_input
+    ui_read_into "权重序列: " weight_input
 
     if [ -z "$weight_input" ]; then
         echo -e "${YELLOW}未输入权重，保持原配置${NC}"
-        read -p "按回车键返回..."
+        ui_pause "按回车键返回..."
         return
     fi
 
     if ! validate_weight_input "$weight_input" "$target_count"; then
-        read -p "按回车键返回..."
+        ui_pause "按回车键返回..."
         return
     fi
 
@@ -2497,6 +2613,35 @@ validate_weight_input() {
         return 1
     fi
 
+    # ★ 10 是独占权重（第 4 条校验）
+    #
+    # 等价说法（写在这里便于后人理解）：
+    #   要么所有权重都在 0-9  →  负载均衡，按比例分流
+    #   要么恰好一个 10 且其余全是 0  →  主备，10 独占一个目标、其余待命
+    #
+    # 为什么必须拦：10,5 这种写法「不含 0」→ 会被当成普通负载均衡按 10:5 分摊，
+    # 而 10 的语义是「主、其余待命」—— 两者相反，放过去就是静默跑错模式，
+    # 主故障时没有探测驱动的切换状态机，只有比例分摊。
+    local ten_count=0
+    local other_non_zero=0
+    for weight in "${weights[@]}"; do
+        if [ "$weight" -eq 10 ]; then
+            ten_count=$((ten_count + 1))
+        elif [ "$weight" -ne 0 ]; then
+            other_non_zero=$((other_non_zero + 1))
+        fi
+    done
+    if [ "$ten_count" -gt 1 ]; then
+        echo -e "${RED}只能有一个目标拿 10${NC}"
+        echo -e "  ${BLUE}写法示例: 10,0 = 主备（主故障自动切备、主恢复自动切回）；5,5 = 负载均衡按比例分流${NC}"
+        return 1
+    fi
+    if [ "$ten_count" -eq 1 ] && [ "$other_non_zero" -gt 0 ]; then
+        echo -e "${RED}权重 10 只能给一个目标独占：给了 10 之后，其余目标只能是 0${NC}"
+        echo -e "  ${BLUE}写法示例: 10,0 = 主备（主故障自动切备、主恢复自动切回）；5,5 = 负载均衡按比例分流${NC}"
+        return 1
+    fi
+
     return 0
 }
 
@@ -2525,7 +2670,7 @@ preview_port_group_weight_config() {
     shift 3
     local targets=("$@")
 
-    clear
+    ui_clear
     echo -e "${GREEN}=== 配置预览 ===${NC}"
     echo ""
     echo "规则组: $rule_name (端口: $port)"
@@ -2605,20 +2750,23 @@ preview_port_group_weight_config() {
     # 权重含 0 → 预览里明确告知会自动进入主备模式
     if weights_contain_zero "$weight_input"; then
         echo -e "${GREEN}检测到权重 0，将自动启用主备模式 (active-standby):${NC}"
-        echo -e "  ${BLUE}· 权重 > 0 的目标为主，权重 = 0 的目标为备${NC}"
+        echo -e "  ${BLUE}· 权重数值大的排在前，同一时刻只有一个主承接流量；权重 0 的目标不参与主备（权重是优先级，不是分流比例）${NC}"
         echo -e "  ${BLUE}· 自动开启故障转移与健康检查：主故障自动切到备，主恢复后切回主${NC}"
         echo -e "  ${BLUE}· 健康检查探测方式: TCP 连接探测 (目标端口)，不是 ping${NC}"
+        echo -e "  ${YELLOW}· 会拉起常驻健康检查服务（systemd timer，周期性探测目标端口，直到用故障转移菜单关闭）${NC}"
         echo ""
     fi
 
-    read -p "确认应用此配置? [y/n]: " confirm
+    ui_read_into "确认应用此配置? [y/n]: " confirm
 
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
         # 应用权重配置到该端口的所有相关规则
-        apply_port_group_weight_config "$port" "$weight_input"
+        # 第三个参数 1 = 本次已经确认过（预览里已写明会拉起常驻健康检查），
+        # apply_port_group_weight_config 里不再重复询问一次。
+        apply_port_group_weight_config "$port" "$weight_input" 1
     else
         echo -e "${YELLOW}已取消配置更改${NC}"
-        read -p "按回车键返回..."
+        ui_pause "按回车键返回..."
     fi
 }
 
@@ -2634,11 +2782,24 @@ apply_port_group_weight_config() {
         if [ -f "$rule_file" ]; then
             if read_rule_file "$rule_file" && [ "$RULE_ROLE" = "1" ] && [ "$LISTEN_PORT" = "$port" ]; then
                 # 更新规则文件中的权重配置
-                # 对于第一个规则，存储完整权重；对于其他规则，存储对应的单个权重
+                #
+                # ★ 索引口径：用户填的权重序列是按**目标序号**编号的 ——
+                #   展示侧把每条规则的 REMOTE_HOST 按逗号展开成目标序列，
+                #   validate_weight_input 也是按目标数校验个数。
+                #   旧实现却按**规则序号**去取 weight_array[rule_index]，
+                #   两套口径不一致 → 一条规则含多个地址时，后续规则会拿到
+                #   别的目标的权重（串位）。这里改成按目标序号取。
+                #
+                #   落盘约定不变：
+                #     · 组内第一条规则存**完整**权重串（组权重串的落点）
+                #     · 其余规则存**自己那个目标**对应的单个权重（不含逗号，
+                #       因此不会覆盖组权重串 —— 读取侧取「含逗号的那份」）
                 local rule_index=0
+                local target_offset=0
                 local target_weight="$weight_input"
 
-                # 计算当前规则在同端口规则中的索引
+                # 计算当前规则在同端口规则中的序号，
+                # 以及它在**目标序列**里的起始下标（前面的规则各占多少个目标）
                 for check_rule_file in "${RULES_DIR}"/rule-*.conf; do
                     if [ -f "$check_rule_file" ]; then
                         if read_rule_file "$check_rule_file" && [ "$RULE_ROLE" = "1" ] && [ "$LISTEN_PORT" = "$port" ]; then
@@ -2646,18 +2807,26 @@ apply_port_group_weight_config() {
                                 break
                             fi
                             rule_index=$((rule_index + 1))
+                            # 该规则展开后占用的目标数（REMOTE_HOST 可能含多个地址）
+                            local n_targets=1
+                            if [[ "$REMOTE_HOST" == *","* ]]; then
+                                local -a _wi_hosts
+                                IFS=',' read -ra _wi_hosts <<< "$REMOTE_HOST"
+                                n_targets=${#_wi_hosts[@]}
+                            fi
+                            target_offset=$((target_offset + n_targets))
                         fi
                     fi
                 done
 
-                # 根据规则索引确定要存储的权重
+                # 按目标序号取权重（不再按规则序号）
                 if [ $rule_index -eq 0 ]; then
                     # 第一个规则存储完整权重
                     target_weight="$weight_input"
                 else
-                    # 其他规则存储对应位置的单个权重
+                    # 其他规则存储自己第一个目标对应的单个权重
                     IFS=',' read -ra weight_array <<< "$weight_input"
-                    target_weight="${weight_array[$rule_index]:-1}"
+                    target_weight="${weight_array[$target_offset]:-1}"
                 fi
 
                 if grep -q "^WEIGHTS=" "$rule_file"; then
@@ -2687,6 +2856,26 @@ apply_port_group_weight_config() {
         if weights_contain_zero "$weight_input"; then
             echo -e "${BLUE}检测到权重 0，自动切换为主备模式 (active-standby)...${NC}"
 
+            # 二次确认（M8）：「只改权重」与「改模式 + 拉常驻 timer」不是一回事，
+            # 后者会改写规则、开启故障转移并拉起常驻健康检查服务，必须让用户明确知情。
+            # 调用方已经确认过（第三个参数 1）时不再重复询问。
+            if [ "${3:-}" != "1" ]; then
+                echo -e "${YELLOW}注意：切到主备模式会同时做三件事：${NC}"
+                echo -e "  ${YELLOW}· 把该端口组的 BALANCE_MODE 改成 active-standby，并开启故障转移${NC}"
+                echo -e "  ${YELLOW}· 拉起常驻健康检查服务（systemd timer，周期性探测目标端口）${NC}"
+                echo -e "  ${YELLOW}· 之后主备切换由健康检查自动完成，不需要手动干预${NC}"
+                ui_read_into "确认切换到主备模式? [Y/n]: " mode_confirm
+                if [ -n "$mode_confirm" ] && ! [[ "$mode_confirm" =~ ^[Yy]$ ]]; then
+                    echo -e "${YELLOW}已取消主备模式切换（权重已保存，负载均衡模式保持原样）${NC}"
+                    ui_pause "按回车键返回..."
+                    return 0
+                fi
+            fi
+
+            # 先记下当前的模式 / 故障转移开关 / TARGET_STATES：
+            # 健康检查（探测端）起不来时必须原样回滚。
+            _capture_port_mode_state "$port"
+
             if auto_enable_active_standby "$port"; then
                 echo -e "${GREEN}✓ 已进入主备模式，故障转移已开启${NC}"
 
@@ -2694,7 +2883,11 @@ apply_port_group_weight_config() {
                 if ensure_health_check_service; then
                     echo -e "${GREEN}✓ 健康检查服务已启动 (TCP 端口探测)${NC}"
                 else
-                    echo -e "${YELLOW}! 健康检查服务未启动，主备不会自动切换，请检查网络或手动执行 pf 故障转移菜单${NC}"
+                    # 探测端没起来 = 主备不会自动切换。
+                    # 这时必须回滚主备开关，不能留下「配置显示主备、实际不切换」的半吊子状态。
+                    echo -e "${RED}✗ 健康检查服务启动失败，主备不会自动切换${NC}"
+                    _restore_port_mode_state
+                    echo -e "${YELLOW}  已回滚该端口组的 BALANCE_MODE / FAILOVER_ENABLED / TARGET_STATES${NC}"
                 fi
             else
                 echo -e "${RED}✗ 主备模式启用失败${NC}"
@@ -2712,11 +2905,30 @@ apply_port_group_weight_config() {
             done
 
             if [ "$current_balance_mode" = "active-standby" ]; then
-                echo -e "${BLUE}权重全部大于 0，自动切回轮询模式 (roundrobin)...${NC}"
+                # 切回用户原来选的负载均衡模式（iphash / roundrobin），不写死 roundrobin：
+                # 进主备时把原模式记在 PREV_BALANCE_MODE 里，这里原样还回去。
+                local restore_mode="roundrobin"
                 for mode_rule_file in "${RULES_DIR}"/rule-*.conf; do
                     if [ -f "$mode_rule_file" ]; then
                         if read_rule_file "$mode_rule_file" && [ "$RULE_ROLE" = "1" ] && [ "$LISTEN_PORT" = "$port" ]; then
-                            sed -i "s/^BALANCE_MODE=.*/BALANCE_MODE=\"roundrobin\"/" "$mode_rule_file"
+                            if [ -n "${PREV_BALANCE_MODE:-}" ]; then
+                                restore_mode="$PREV_BALANCE_MODE"
+                            fi
+                            break
+                        fi
+                    fi
+                done
+                case "$restore_mode" in
+                    roundrobin|iphash) ;;
+                    *) restore_mode="roundrobin" ;;
+                esac
+
+                echo -e "${BLUE}权重全部大于 0，自动切回${restore_mode}模式...${NC}"
+                for mode_rule_file in "${RULES_DIR}"/rule-*.conf; do
+                    if [ -f "$mode_rule_file" ]; then
+                        if read_rule_file "$mode_rule_file" && [ "$RULE_ROLE" = "1" ] && [ "$LISTEN_PORT" = "$port" ]; then
+                            _rule_set_field "$mode_rule_file" "BALANCE_MODE" "$restore_mode"
+                            _rule_set_field "$mode_rule_file" "PREV_BALANCE_MODE" "$restore_mode"
                             sed -i "s|^TARGET_STATES=.*|TARGET_STATES=\"\"|" "$mode_rule_file"
                         fi
                     fi
@@ -2736,7 +2948,54 @@ apply_port_group_weight_config() {
         echo -e "${RED}✗ 未找到相关规则文件${NC}"
     fi
 
-    read -p "按回车键返回..."
+    ui_pause "按回车键返回..."
+}
+
+# 写入规则文件的键值（存在则替换，不存在则追加）
+_rule_set_field() {
+    local rule_file="$1"
+    local key="$2"
+    local value="$3"
+
+    if grep -q "^${key}=" "$rule_file"; then
+        sed -i "s|^${key}=.*|${key}=\"${value}\"|" "$rule_file"
+    else
+        echo "${key}=\"${value}\"" >> "$rule_file"
+    fi
+}
+
+# 端口组模式状态快照（用于失败回滚）
+_REALM_PORT_STATE_FILES=()
+_REALM_PORT_STATE_VALUES=()
+
+_capture_port_mode_state() {
+    local port="$1"
+    local rule_file
+
+    _REALM_PORT_STATE_FILES=()
+    _REALM_PORT_STATE_VALUES=()
+
+    for rule_file in "${RULES_DIR}"/rule-*.conf; do
+        if [ -f "$rule_file" ] && read_rule_file "$rule_file" && [ "$RULE_ROLE" = "1" ] && [ "$LISTEN_PORT" = "$port" ]; then
+            _REALM_PORT_STATE_FILES+=("$rule_file")
+            _REALM_PORT_STATE_VALUES+=("${BALANCE_MODE:-off}|${FAILOVER_ENABLED:-false}|${TARGET_STATES:-}")
+        fi
+    done
+}
+
+_restore_port_mode_state() {
+    local i
+    for ((i = 0; i < ${#_REALM_PORT_STATE_FILES[@]}; i++)); do
+        local rule_file="${_REALM_PORT_STATE_FILES[$i]}"
+        local value="${_REALM_PORT_STATE_VALUES[$i]}"
+        local mode="${value%%|*}"
+        local rest="${value#*|}"
+        local failover="${rest%%|*}"
+        local target_states="${rest#*|}"
+        _rule_set_field "$rule_file" "BALANCE_MODE" "$mode"
+        _rule_set_field "$rule_file" "FAILOVER_ENABLED" "$failover"
+        _rule_set_field "$rule_file" "TARGET_STATES" "$target_states"
+    done
 }
 
 # 规则文件字段：不存在时才写入默认值（不覆盖用户已有配置）
@@ -2754,7 +3013,7 @@ _ensure_rule_field_default() {
 
 # 自动进入主备模式并开启主备路由（故障转移）
 # 供「权重配置管理」在检测到权重含 0 时调用，
-# 这样用户不需要再走 xwpf-failover 的「建立主备池」流程
+# 这样用户在「权重配置管理」里填一次权重就能进主备，不需要额外的建池流程
 auto_enable_active_standby() {
     local port="$1"
     local updated_count=0
@@ -2763,11 +3022,31 @@ auto_enable_active_standby() {
     for rule_file in "${RULES_DIR}"/rule-*.conf; do
         if [ -f "$rule_file" ]; then
             if read_rule_file "$rule_file" && [ "$RULE_ROLE" = "1" ] && [ "$LISTEN_PORT" = "$port" ]; then
+                # 记住切出主备后要回到的模式（M7）：
+                # 用户原来可能选的是 iphash，写死 roundrobin 会把用户的选择抹掉。
+                if [ "${BALANCE_MODE:-off}" != "active-standby" ]; then
+                    local prev_mode="${BALANCE_MODE:-off}"
+                    case "$prev_mode" in
+                        roundrobin|iphash) ;;
+                        *) prev_mode="roundrobin" ;;
+                    esac
+                    _rule_set_field "$rule_file" "PREV_BALANCE_MODE" "$prev_mode"
+                fi
+
                 # 负载均衡模式 → 主备模式
                 if grep -q "^BALANCE_MODE=" "$rule_file"; then
                     sed -i "s/^BALANCE_MODE=.*/BALANCE_MODE=\"active-standby\"/" "$rule_file"
                 else
                     echo "BALANCE_MODE=\"active-standby\"" >> "$rule_file"
+                fi
+
+                # 清空 TARGET_STATES（M2）：
+                # 主备模式下 lib/realm.sh 用 TARGET_STATES 覆盖 REMOTE_HOST，
+                # 留着剔除模式留下的陈旧结果会让备机静默丢掉流量。
+                if grep -q "^TARGET_STATES=" "$rule_file"; then
+                    sed -i "s|^TARGET_STATES=.*|TARGET_STATES=\"\"|" "$rule_file"
+                else
+                    echo "TARGET_STATES=\"\"" >> "$rule_file"
                 fi
 
                 # 开启故障转移（主备路由的开关）
@@ -2781,7 +3060,7 @@ auto_enable_active_standby() {
                 _ensure_rule_field_default "$rule_file" "HEALTH_CHECK_INTERVAL" "4"
                 _ensure_rule_field_default "$rule_file" "FAILURE_THRESHOLD" "2"
                 _ensure_rule_field_default "$rule_file" "SUCCESS_THRESHOLD" "2"
-                _ensure_rule_field_default "$rule_file" "CONNECTION_TIMEOUT" "3"
+                _ensure_rule_field_default "$rule_file" "CONNECTION_TIMEOUT" "10"
                 _ensure_rule_field_default "$rule_file" "RECOVERY_COOLDOWN" "120"
 
                 updated_count=$((updated_count + 1))
@@ -2795,10 +3074,22 @@ auto_enable_active_standby() {
 # 确保健康检查服务已安装并运行
 # 健康检查（探测端）在 lib/health.sh 里，实现与故障转移脚本共用，
 # 这里直接调用即可，不需要下载任何脚本
+#
+# 失败时必须让用户看到真实原因（不再 >/dev/null 2>&1 把一切吞掉）：
+# 主备模式没有探测端就等于「永远不会自动切换」，
+# 静默失败会让人以为已经切过去了，实际却在默默丢流量。
 ensure_health_check_service() {
-    if ! command -v start_health_check_service >/dev/null 2>&1; then
+    if ! declare -F start_health_check_service >/dev/null 2>&1; then
+        echo -e "${RED}✗ 未找到 start_health_check_service（lib/health.sh 未加载）${NC}" >&2
         return 1
     fi
 
-    start_health_check_service "$(get_effective_health_check_interval)" >/dev/null 2>&1
+    local interval=""
+    interval="$(get_effective_health_check_interval 2>/dev/null)" || interval="4"
+
+    local out=""
+    local rc=0
+    out="$(start_health_check_service "$interval" 2>&1)" || rc=$?
+    [ -n "$out" ] && echo "$out"
+    return $rc
 }

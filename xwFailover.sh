@@ -52,6 +52,13 @@ else
     exit 1
 fi
 
+# read_rule_file / check_connectivity 的唯一实现在 lib/health.sh。
+# 装的 lib/health.sh 版本过旧时（升级前遗留），明确报错而不是让调用处报 command not found。
+if ! declare -F read_rule_file >/dev/null 2>&1; then
+    echo -e "${RED}错误: lib/health.sh 版本过旧（缺少 read_rule_file），请先执行 pf install 更新脚本${NC}" >&2
+    exit 1
+fi
+
 check_root() {
     if [[ $EUID -ne 0 ]]; then
         echo -e "${RED}错误: 此脚本需要 root 权限运行。${NC}"
@@ -59,36 +66,79 @@ check_root() {
     fi
 }
 
-# 连通性检查
-
-# 读取规则文件
-read_rule_file() {
-    local rule_file="$1"
-    if [ -f "$rule_file" ]; then
-        source "$rule_file"
-        return 0
+# === 交互菜单读入：stdin EOF 安全（无人值守场合的硬要求）===
+# ★ 交互菜单若直接用 `read`，在 stdin 是 EOF 时（管道 / 后台 / cron / systemd /
+#   无人值守执行 / 终端关闭）`read` 会立刻返回非 0 → 变量为空 → case 不匹配 →
+#   回到 while 顶部 → 无限重绘 + 忙循环 + 无界输出。
+#   实机后果：/tmp 是 tmpfs，无界输出灌满它 → 内存+swap 耗尽 → sshd 握不上手。
+#   修法：菜单读入统一走下面几个 helper，读到 EOF 绝不回到菜单循环顶部。
+#
+# ★ 三种读入语义（按「EOF 之后该做什么」区分，别混用）：
+#   ui_read_into    —— 菜单读入。EOF → 立刻干净退出（退出码 0）。
+#   ui_pause        —— 「按回车键继续」类。EOF → 立刻干净退出（退出码 0）。
+#   ui_read_default —— 一次性询问。EOF → **不退出**，取默认值并返回 1
+#                      （给安装流程等可能被无人值守触发的路径用：那里 EOF 是常态，
+#                        当成错误把流程打断会变成「静默空跑」）。
+#
+# ★ 本块在 lib/core.sh 与 3 个独立脚本（xwFailover.sh / port-traffic-dog.sh /
+#   speedtest.sh）里各有一份。独立脚本是**独立安装单元**、拿不到 lib/，
+#   所以「一份实现」只能是「四份逐字一致的拷贝」——
+#   台架把「份数 == 4 且四份逐字一致」钉成不变式，任何漂移都判红。
+#
+# 用法：ui_read_into "提示语" 变量名   —— 把读到的内容放进指定变量
+ui_read_into() {
+    local __prompt="$1" __name="$2" __val
+    if ! read -r -p "$__prompt" __val; then
+        # EOF / 读失败：干净退出，不回菜单循环
+        exit 0
     fi
-    return 1
+    printf -v "$__name" '%s' "$__val"
 }
 
-# 健康检查专用的读取规则文件函数
-read_rule_file_for_health_check() {
-    local rule_file="$1"
-    if [ ! -f "$rule_file" ]; then
+# 用法：ui_pause "提示语"   —— 「按回车键继续 / 返回」类读入
+ui_pause() {
+    read -p "$1" || exit 0
+}
+
+# 用法：ui_read_default "提示语" 变量名 [默认值]
+#   读到 EOF 时把变量置成默认值（缺省空串）并返回 1，由调用方决定分支。
+ui_read_default() {
+    local __prompt="$1" __name="$2" __default="${3:-}" __val=""
+    if ! read -r -p "$__prompt" __val; then
+        printf -v "$__name" '%s' "$__default"
         return 1
     fi
-
-    # 清空所有变量
-    unset RULE_ID RULE_NAME RULE_ROLE LISTEN_PORT LISTEN_IP THROUGH_IP REMOTE_HOST REMOTE_PORT
-    unset FORWARD_TARGET SECURITY_LEVEL
-    unset TLS_SERVER_NAME TLS_CERT_PATH TLS_KEY_PATH WS_PATH WS_HOST
-    unset ENABLED BALANCE_MODE FAILOVER_ENABLED HEALTH_CHECK_INTERVAL
-    unset FAILURE_THRESHOLD SUCCESS_THRESHOLD CONNECTION_TIMEOUT RECOVERY_COOLDOWN
-    unset TARGET_STATES WEIGHTS CREATED_TIME
-
-    source "$rule_file"
+    printf -v "$__name" '%s' "$__val"
     return 0
 }
+
+# 用法：ui_require_tty   —— 菜单入口护栏：stdin 不是终端就不进菜单
+ui_require_tty() {
+    if [ ! -t 0 ]; then
+        echo -e "${YELLOW}检测到标准输入不是终端（管道 / 后台 / 无人值守执行），已退出交互菜单。${NC}"
+        echo "Interactive menu requires a terminal on stdin; exiting."
+        exit 0
+    fi
+}
+
+# 用法：ui_clear   —— 清屏。TERM 没设时 `clear` 会往 stderr 吐
+#   "TERM environment variable not set." 并返回非 0（无人值守时输出更难看），
+#   所以自己兜底：TERM 正常用 clear，缺失或 dumb 用 ANSI 序列。
+ui_clear() {
+    if [ -n "${TERM:-}" ] && [ "${TERM}" != "dumb" ]; then
+        clear 2>/dev/null || printf '\033[H\033[2J'
+    else
+        printf '\033[H\033[2J'
+    fi
+}
+
+
+# 连通性检查
+
+# 读取规则文件：read_rule_file 由 lib/health.sh 提供（白名单逐行解析）。
+# 这里**不再**自己实现一份 ——
+# 旧实现是直接 source 规则文件，规则文件里的命令替换会被执行；
+# 而生成的 health_check.sh 是以 root 跑的，等于开了一个 root 提权面。
 
 # 查找文件路径
 find_file_path() {
@@ -138,8 +188,10 @@ find_file_path() {
 
 # 故障转移切换功能（按端口分组管理）
 toggle_failover_mode() {
+    ui_require_tty
     while true; do
-        clear
+        sleep 0.2
+        ui_clear
         echo -e "${YELLOW}=== 开启/关闭故障转移 ===${NC}"
         echo ""
 
@@ -236,14 +288,14 @@ toggle_failover_mode() {
             echo -e "${BLUE}  2. 已启用负载均衡模式（轮询/IP哈希/主备）${NC}"
             echo -e "${BLUE}  3. 有多个目标服务器${NC}"
             echo ""
-            read -p "按回车键返回..."
+            ui_pause "按回车键返回..."
             return
         fi
 
         echo ""
         echo -e "${WHITE}注意: 故障转移功能会自动检测节点健康状态并动态调整负载均衡${NC}"
         echo ""
-        read -p "请输入规则编号 [1-${#rule_ports[@]}] (或按回车返回): " choice
+        ui_read_into "请输入规则编号 [1-${#rule_ports[@]}] (或按回车返回): " choice
 
         if [ -z "$choice" ]; then
             return
@@ -251,7 +303,7 @@ toggle_failover_mode() {
 
         if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt ${#rule_ports[@]} ]; then
             echo -e "${RED}无效的选择，请输入 1-${#rule_ports[@]} 之间的数字${NC}"
-            read -p "按回车键继续..."
+            ui_pause "按回车键继续..."
             continue
         fi
 
@@ -279,7 +331,7 @@ toggle_failover_mode() {
             echo -e "${GREEN}1.${NC} 剔除模式（原有） - 故障目标从负载均衡列表中移除"
             echo -e "${BLUE}2.${NC} 主备模式 (active-standby) - 严格主备：1 主 N 备按顺序接替，主恢复后切回主"
             echo ""
-            read -p "请选择 [1-2] (默认 1): " failover_type_choice
+            ui_read_into "请选择 [1-2] (默认 1): " failover_type_choice
 
             case "$failover_type_choice" in
                 2)
@@ -309,6 +361,19 @@ toggle_failover_mode() {
                     # 主备模式：同时将该端口下所有规则的 BALANCE_MODE 设为 active-standby
                     # （保证 generate_endpoints_from_rules 走主备分支，按健康状态翻转权重）
                     if [ "$new_status" = "true" ] && [ "$failover_type" = "active-standby" ]; then
+                        # 记住原来的负载均衡模式，切出主备时原样还回去
+                        if [ "${BALANCE_MODE:-off}" != "active-standby" ]; then
+                            local prev_mode="${BALANCE_MODE:-off}"
+                            case "$prev_mode" in
+                                roundrobin|iphash) ;;
+                                *) prev_mode="roundrobin" ;;
+                            esac
+                            if grep -q "^PREV_BALANCE_MODE=" "$rule_file"; then
+                                sed -i "s|^PREV_BALANCE_MODE=.*|PREV_BALANCE_MODE=\"$prev_mode\"|" "$rule_file"
+                            else
+                                echo "PREV_BALANCE_MODE=\"$prev_mode\"" >> "$rule_file"
+                            fi
+                        fi
                         if grep -q "^BALANCE_MODE=" "$rule_file"; then
                             sed -i "s/^BALANCE_MODE=.*/BALANCE_MODE=\"active-standby\"/" "$rule_file"
                         else
@@ -367,7 +432,7 @@ toggle_failover_mode() {
 
         echo -e "${GREEN}✓ 故障转移设置已生效${NC}"
         echo ""
-        read -p "按回车键继续..."
+        ui_pause "按回车键继续..."
         # 重新显示菜单以显示更新的状态
     done
 }
@@ -375,7 +440,7 @@ toggle_failover_mode() {
 # 健康检查服务管理
 
 configure_failover_params() {
-    clear
+    ui_clear
     echo -e "${YELLOW}=== 故障转移参数配置（按端口组） ===${NC}"
     echo ""
 
@@ -422,7 +487,7 @@ configure_failover_params() {
     fi
 
     echo ""
-    read -p "请选择规则编号 [1-${#selectable_ports[@]}] (回车返回): " choice
+    ui_read_into "请选择规则编号 [1-${#selectable_ports[@]}] (回车返回): " choice
     [ -z "$choice" ] && return 0
     if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt ${#selectable_ports[@]} ]; then
         echo -e "${RED}无效的编号${NC}"
@@ -439,11 +504,11 @@ configure_failover_params() {
 
     echo ""
     echo -e "${BLUE}当前规则组:${NC} ${selected_name} (端口: ${selected_port})"
-    read -p "检查间隔秒数 [当前 ${current_interval}]: " input_interval
-    read -p "失败阈值(连续失败次数) [当前 ${current_failure}]: " input_failure
-    read -p "成功阈值(连续成功次数) [当前 ${current_success}]: " input_success
-    read -p "连接超时秒数 [当前 ${current_timeout}]: " input_timeout
-    read -p "恢复冷却秒数 [当前 ${current_cooldown}]: " input_cooldown
+    ui_read_into "检查间隔秒数 [当前 ${current_interval}]: " input_interval
+    ui_read_into "失败阈值(连续失败次数) [当前 ${current_failure}]: " input_failure
+    ui_read_into "成功阈值(连续成功次数) [当前 ${current_success}]: " input_success
+    ui_read_into "连接超时秒数 [当前 ${current_timeout}]: " input_timeout
+    ui_read_into "恢复冷却秒数 [当前 ${current_cooldown}]: " input_cooldown
 
     local new_interval="${input_interval:-$current_interval}"
     local new_failure="${input_failure:-$current_failure}"
@@ -535,7 +600,7 @@ show_health_status() {
 
     # 读取并显示健康状态
     local has_data=false
-    while read -r line; do
+    while read -r line; do   # xwpf:noninteractive-io（输入来自健康状态文件）
         # 跳过注释行和空行
         [[ "$line" =~ ^#.*$ ]] && continue
         [[ -z "$line" ]] && continue

@@ -13,27 +13,37 @@
 > 不要在其它地方实现第二份健康检查脚本生成逻辑；需要复用就 `source` 它。
 >
 > **当前状态（已落盘）**：健康检查脚本由 `lib/health.sh` 的 `health_check_script_body`
-> 生成（`lib/health.sh` 内的一段 heredoc），`xwFailover.sh` 与 `pf` 主脚本
-> 都 `source` 同一个文件，不再各写一份。
+> 生成（`lib/health.sh` 内的一段 heredoc）。**真源只有这一份** ——
+> `xwFailover.sh`（规则级故障转移的 CLI）与 `pf` 主脚本都 `source` 同一个文件，
+> 不存在第二份实现。
 >
 > 例外只有一处：生成的 `/etc/realm/health/health_check.sh` 是一份**独立可执行**的脚本
-> （systemd 直接调用它，不能依赖 pf 的安装目录），
-> 所以它的探测逻辑在 `lib/health.sh` 里另有一份内联副本。
-> **改动 `check_connectivity` 时两处必须同步**——
-> `tests/test_connectivity.sh` 的 C 组用例专门盯这一条。
+> （systemd 直接调用它，不能依赖 pf 的安装目录）。
+> 但它里面的探测逻辑**不是手抄的第二份**：生成时由 `lib/health.sh` 的 `health_emit_function`
+> 从 `lib/health.sh` 里**原样抽取** `check_connectivity` 拼进去，
+> 所以两边不可能漂移，改探测实现不需要在别处手工同步。
+> 台架用例 T28 盯这一条（源实现与生成物里的探测实现必须一致）。
 
 ---
 
-## 1. 两种「故障转移」不是一回事
+## 1. 本文档讲的是哪一套「故障转移」
 
-这个项目里有**两套独立机制**，容易混：
+本文档讲的**只有一套**故障转移机制：**规则级** —— 同一个端口组内的多个出口之间。
 
-| 机制 | 作用域 | 开关 | 说明 |
+| 机制 | 作用域 | 开关 | 驱动 |
 |------|--------|------|------|
-| **负载均衡故障转移**（剔除模式 / 主备模式） | 端口组内多目标之间 | `FAILOVER_ENABLED` + `BALANCE_MODE` | 本文档讲的这一套，由 `realm-health-check.timer` 驱动 |
-| **主备 active/passive**（进程级） | 整机级主备热切换 | `xwpf-failover` 守护进程 | 独立守护进程 + realm 回环监听，详见 `cmd/README-failover.md` |
+| **规则级故障转移**（剔除模式 / 权重主备模式） | 端口组内多目标之间 | `FAILOVER_ENABLED` + `BALANCE_MODE` | `realm-health-check.timer` 周期探测 → 翻转权重 / 剔除目标 → 重写 `/etc/realm/config.json` → 重启 realm |
 
-两者互不替代。
+> ⛔ **已废弃：进程级主备池**
+>
+> 项目曾有第二套机制 —— **进程级主备池**：一个独立守护进程（`xwpf-failover`）
+> 自己持有公开监听口、自己探测目标、自己转发，另有「建池 / 列池 / 删池」与
+> 崩溃循环防护（systemd 限流 / drop-in）那一整套。
+> **该整块能力已随 2026-10-24 的删除下线**，守护进程、池配置、菜单入口与相关文档都不再提供。
+>
+> ⚠️ **别把两套「主备」混写**：本文档后面讲的「主备模式（`active-standby`）」是
+> **规则级权重主备** —— 它**没有独立进程**，靠健康检查定时器探测并翻转规则里的权重。
+> 判定口径：**「同一端口组内多目标之间切换」= 保留路径；「另一个进程持有监听口转发」= 已删除的主备池。**
 
 ---
 
@@ -48,7 +58,7 @@
 | `HEALTH_CHECK_INTERVAL` | 探测间隔（秒） | `4` | `1`-`60` | 默认 `lib/rules.sh` 的 `auto_enable_active_standby`、`lib/health.sh` 的 `get_port_failover_params`；范围 `xwFailover.sh` 的 `validate_int_range` |
 | `FAILURE_THRESHOLD` | 连续失败多少次判定为故障 | `2` | `1`-`10` | 默认 `lib/rules.sh` 的 `auto_enable_active_standby`、`lib/health.sh` 的 `get_port_failover_params`；范围 `xwFailover.sh` 的 `validate_int_range` |
 | `SUCCESS_THRESHOLD` | 连续成功多少次判定为恢复 | `2` | `1`-`10` | 默认 `lib/rules.sh` 的 `auto_enable_active_standby`、`lib/health.sh` 的 `get_port_failover_params`；范围 `xwFailover.sh` 的 `validate_int_range` |
-| `CONNECTION_TIMEOUT` | 单次 TCP 连接超时（秒） | `3` | `1`-`10` | 默认 `lib/rules.sh` 的 `auto_enable_active_standby`、`lib/health.sh` 的 `get_port_failover_params`；范围 `xwFailover.sh` 的 `validate_int_range` |
+| `CONNECTION_TIMEOUT` | 单次 TCP 连接超时（秒） | `10` | `1`-`10` | 默认 `lib/rules.sh` 的 `auto_enable_active_standby`、`lib/health.sh` 的 `get_port_failover_params`；范围 `xwFailover.sh` 的 `validate_int_range` |
 | `RECOVERY_COOLDOWN` | 恢复冷却期（秒） | `120` | `10`-`3600` | 默认 `lib/rules.sh` 的 `auto_enable_active_standby`、`lib/health.sh` 的 `get_port_failover_params`；范围 `xwFailover.sh` 的 `validate_int_range` |
 
 取值非法时：
@@ -71,7 +81,7 @@ pf
 检查间隔秒数 [当前 4]:
 失败阈值(连续失败次数) [当前 2]:
 成功阈值(连续成功次数) [当前 2]:
-连接超时秒数 [当前 3]:
+连接超时秒数 [当前 10]:
 恢复冷却秒数 [当前 120]:
 ```
 
@@ -109,7 +119,7 @@ if command -v timeout >/dev/null 2>&1; then
 fi
 ```
 
-`nc` 不在 `REQUIRED_TOOLS` 里（`lib/core.sh:24`）不会被自动安装，
+`nc` 不在 `lib/core.sh` 的 `REQUIRED_TOOLS` 里，不会被自动安装，
 但**没有 `nc` 也能正常探测** —— 会自动回退到 `bash /dev/tcp`。
 旧版本没有回退，系统没装 `nc` 时会把所有目标标记为故障、触发不必要的切换。
 
@@ -145,8 +155,97 @@ fi
 只看一个数容易误判。平均值的算法是这 5 个样本的算术平均
 （`lib/health.sh` 的 `latency_avg_ms`）。
 
+> ⚠️ **这 5 个样本是「显示口径」，不要改**：菜单的 `[时延: Xms (均 Yms)]` 用它算均值，
+> 台架也锁死了「跑 3 轮累积 3 个样本、跑 7 轮封顶 5 个」。
+> **质量观测另开自己的窗口**（见 §3.3.1），两者互不影响。
+
 > 时延是 **TCP 握手耗时**，包含建连开销，不等于纯网络 RTT；
 > 跨境链路上通常比 ping 大一个量级（TCP 三次握手 + 内核调度）。
+
+### 3.3.1 质量观测窗口（**只观测，不动作**）
+
+除了上面那个「显示口径」，另有一个**质量观测窗口**，用来长期看一个目标的
+稳定程度 —— 窗口默认 **20** 次采样。
+
+窗口大小写在**规则文件**里，**两个写法都生效**：
+
+| 写法 | 角色 | 说明 |
+|---|---|---|
+| `PROBE_QUALITY_WINDOW="12"` | **规范名（推荐）** | 与 `CONNECTION_TIMEOUT` / `RECOVERY_COOLDOWN` 同一套命名；规则解析器的白名单认它 |
+| `probe.quality_window="12"` | 兼容别名 | 点号小写写法**规则解析器认不得**（键名规则只允许大写字母与下划线）⇒ 产品按文本单独兜底读一次；**两个都写时规范名优先** |
+
+⇒ 值不是正整数（如 `abc`、`0`）一律**回退默认 20**，不报错、不中断探测端。
+⇒ 生效值会随每行一起记进指标文件（末列 `WINDOW`）⇒ 「配的值有没有真被读到」
+可以直接从文件里看出来，不用反推采样条数。
+
+> **台架盯着这件事**：质量观测那一组台架用例里有一条专门盯「值真被读到了」——
+> 规则里写 `12` ⇒ 生效 `12`（≠ 默认值）／没配 ⇒ 默认值／兼容别名 ⇒ `12`／
+> 非法值 ⇒ 回退；外加一条**注入式负向对照**（把窗口函数换成恒返回默认值的坏实现，
+> 同一条断言必须判红）⇒ 「可配」不会悄悄退化成「看起来可配」。
+
+**它记四样东西**（都落在一个**独立文件**里）：
+
+| 量 | 口径 |
+|---|---|
+| 采样总数 | 窗口内采样次数（**成功与失败各算一次**） |
+| 失败次数 | 窗口内探测不通的次数（**不区分 timeout / refused**） |
+| 成功样本时延均值 | 窗口内**成功**样本的时延平均（毫秒） |
+| 失败样本时延分布 | 窗口内**失败**样本的时延（个数 / 均值 / 最大值，毫秒） |
+
+⇒ **失败率 = 失败次数 / 采样总数**（**比例**；分母随窗口一起滚，不写死）
+⇒ 成功时延只用**成功样本**、失败时延只用**失败样本**（两个序列分开存，互不串）
+⇒ 失败样本的耗时同样有观测价值（「一直超时」和「秒拒」是两种完全不同的故障形态）
+
+**两套窗口并存，不要合并**：
+
+- `latency_hist`（上限 5）= **显示口径**，给菜单看的平均值分母；
+- 质量窗口（默认 20）= **观测口径**，给「这个目标最近稳不稳」看的。
+
+**落盘在独立文件** `/var/lib/realm/quality_metrics.conf`
+（**不动** `health_status.conf` —— 后者的形态被台架锁着：每轮原子重建、
+只留当前规则的行）。格式：
+
+```
+TARGET|RULE_ID|SAMPLE_SEQ|LAT_SEQ|WINDOW|FAIL_LAT_SEQ
+```
+
+`SAMPLE_SEQ` 是窗口内最近 N 次采样的**成败位**（`0`=成功 / `1`=失败，逗号分隔）；
+`LAT_SEQ` 是各**成功**样本的时延（毫秒，与 `SAMPLE_SEQ` 里的 `0` 一一对应）；
+`FAIL_LAT_SEQ` 是各**失败**样本的时延（毫秒，与 `SAMPLE_SEQ` 里的 `1` 一一对应，
+追加在**最后一列** ⇒ 前 5 列位置不变，老文件与老读取方式都不受影响）。
+存序列而不是存「总数 + 总和」，是为了窗口滚动时能**精确**移除最旧那次样本
+（丢最旧的失败样本时，它的时延会跟 `FAIL_LAT_SEQ` 一起被丢，不会错位）。
+`WINDOW` 是**这一行生效的窗口大小**（= 规则里配的值；没配 = 默认 20）——
+它让「配的值有没有真被读到」可被外部直接核对。
+
+> **窗口是「本轮被采样到的目标」的窗口**：某个目标这一轮没被采到，它的整段窗口
+> 会从文件里消失（不留残留行），下次再出现时从零开始。
+> 这是「不留陈旧残留」与「跨轮延续」之间的取舍 —— 阶段 1 只观测不动作，
+> 保留后者要额外存「上次见到的时间」，收益不抵复杂度。
+> 需要跨轮延续时再改。
+
+**⚠️ 硬红线：这些数字不参与任何判定。**
+
+- **不**参与切换 / 权重决策；
+- **不**影响探测端对目标的 `status` 判定；
+- **不**写进任何影响 realm 配置生成的字段。
+
+菜单里的展示形如：
+
+```
+1. 203.0.113.10:8080 [权重: 10] (100.0%) [健康] [时延: 12ms (均 12ms)] [窗口: 失败率 0% (0/20) · 成功时延均值 12ms · 失败时延 -]
+```
+
+没有失败样本时，失败时延显示 `-`（不是 `0ms` —— `0ms` 会被读成「失败得很快」）。
+老机器上没有这个文件、或还没采样够 ⇒ 显示 `[窗口: -]`（**向后兼容**，缺字段不报错）。
+
+> 「30ms · 10%」这类参考值**仅供人看**，**不作为判据**。
+
+> **时延的单位契约**：探测端的时间源（`lib/health.sh` 的 `now_us`）返回**微秒**，
+> 两条取数分支（`EPOCHREALTIME` 与 `date +%s%N`）**必须产出同一个单位** ——
+> `date +%s%N` 给的是**纳秒**，换算在 `now_us` 内部完成。
+> 换算漏掉时，老 bash 机器（bash 4 + GNU coreutils，如 CentOS 7）上
+> 所有时延会被**放大 1000 倍**（显示口径与质量窗口一起错）。
 
 ### 3.4 在负载均衡菜单里看时延
 
@@ -286,7 +385,7 @@ RULE_ID|TARGET|STATUS|FAIL_COUNT|SUCCESS_COUNT|LAST_CHECK|FAILURE_START_TIME|LAT
 | 字段 | 说明 |
 |------|------|
 | `RULE_ID` | 规则 ID |
-| `TARGET` | `host:port` |
+| `TARGET` | `host:port`（同一个 host 上的不同端口是不同目标，状态互不覆盖；旧格式只有 host，见 §6.4） |
 | `STATUS` | `healthy` / `failed` |
 | `FAIL_COUNT` | 连续失败次数 |
 | `SUCCESS_COUNT` | 连续成功次数 |
@@ -327,7 +426,30 @@ mv "$HEALTH_STATUS_FILE.tmp" "$HEALTH_STATUS_FILE"
 
 规则 ID 重排（`reorder_rule_ids`）后，健康状态文件里的 `RULE_ID` 会按
 `REMOTE_HOST` / `FORWARD_TARGET` 重新匹配并改写（`sync_health_status_ids`，`lib/rules.sh` 的 `sync_health_status_ids`）。
+匹配按「host + 端口」逐个比对（`TARGET` 是 `host:port`，多地址规则要拆开逐个 host 比），
 匹配不上的旧行会被丢弃。
+
+**一行状态只会被一条规则认领**（同一后端被两条规则共用时的关键）：
+
+| 认领顺序 | 说明 |
+|----------|------|
+| ① `RULE_ID` 与行首旧 `RULE_ID` 一致的候选 | 保住「这行本来是谁的」 |
+| ② 还没认领过这个目标的候选 | 规则文件顺序 = `RULE_ID` 升序 |
+| ③ 都没有 | 这个目标已经没有规则了 ⇒ 整行丢弃（陈旧行） |
+
+⇒ 状态文件里**不会出现两行相同的 `(RULE_ID, TARGET)`**；
+⇒ 也不会出现「一条行被两条规则抢认、另一条规则的状态丢失」——
+**状态丢失 = 归零 = 该切不切**（探测端不再把它算成 failed）。
+
+> **★ 候选只认「被健康检查监控」的规则**（`RULE_ROLE=1` + `ENABLED=true` + `FAILOVER_ENABLED=true`，
+> 与写端逐字对齐）：状态文件里**只有这几类规则的行** ⇒ 没被监控的规则本来就没有行，
+> **不该认领任何行**。
+> 不设这道门槛的后果（审稿实测复现）：规则重编号后，一条**没开故障转移**的规则会按
+> 「目标地址相同」抢走被监控规则的行 ⇒ 被监控规则的失败状态丢失（归零）= **该切不切**。
+
+> 认领判定按 `(RULE_ID, 目标)` **字段级**比较，不用子串匹配 ——
+> `"1|X|"` 是 `"11|X|"` 的子串，用子串匹配会把另一条规则误判成「已认领」，
+> 结果反而是丢行。
 
 ---
 
@@ -364,10 +486,67 @@ status == failed  且  success_count >= SUCCESS_THRESHOLD
 **冷却期是必需的**：连续成功达标但冷却期没到，状态**保持 failed**。
 这是防止节点抖动导致频繁切换的关键。
 
-### 6.4 旧格式兼容
+### 6.4 旧格式兼容（缺字段与旧 TARGET 口径）
 
 早期版本的状态文件没有 `FAILURE_START_TIME` 字段，这时会拿 `LAST_CHECK` 顶替
 （`lib/health.sh` 的 `health_check_script_body`）。
+
+加时延功能之前的状态行还**只有 8 列**（现在是 9 列），即没有 `LATENCY_MS` /
+`LATENCY_HISTORY` 两列 —— 这与 `TARGET` 口径**无关**：读取端按**缺字段兼容**处理，
+缺这两列就当没有时延数据，不影响状态判定与失败/恢复计数。
+
+早期版本的 `TARGET` 字段还只有 `host`（没有端口），所以**同一 host 上跑不同端口的目标会互相覆盖**
+（同一主备组里两个目标都指向同一台机器的不同端口时，最典型）。
+现在的 `TARGET` 是 `host:port`，两种格式都能认：
+
+- 探测端（`lib/health.sh` 的 `health_check_script_body`）：先按 `RULE_ID|host:port` 找自己的记录，
+  找不到再按旧口径 `RULE_ID|host` 找；找到就**沿用旧记录的状态与计数**，
+  写回时写成新格式并顺手删掉同一 host 的旧行 —— 老文件里的 `failed` 不会因为升级被当成「健康」。
+- 消费端（`lib/realm.sh` 的 `generate_endpoints_from_rules`）：**按 (RULE_ID, 目标地址) 组合键查**——
+  与写端（`target_key="${RULE_ID}|${target_endpoint}"`）同口径。
+  旧格式的行按该行 `RULE_ID` 对应规则的 `REMOTE_PORT` 补出端口，入**精确键** `RULE_ID|host:port`。
+  **认得出归属时只入精确键，不另外存一份裸 host 的宽键** —— 宽键会把「一个端口的故障」
+  传播给同 host 的其他端口：同一主备组里两个目标都是同 host 不同端口时，两个目标会同时被判 failed
+  → 走「全部目标都挂了」的兜底 → 保持原主不切备（该切不切的静默失效）。
+  **认不出归属**（规则已删、行号式的老记录）时**当无记录**：让健康检查下一轮重新探测、生成精确键。
+  ★ **为什么键里必须带 RULE_ID**：同一个后端被**两条规则**共用时，状态文件里本来就有**两行**
+  （各带自己的 RULE_ID），只按目标地址建键 ⇒ 后读的行覆盖先读的 ⇒ 两条规则读到**同一个**状态 ⇒
+  **双向误切**：真挂了的那条被判成健康（该切不切）、健康的那条被判成故障（不该切却切）。
+  归属规则 = 该目标在**本端口组**里归属的那条规则（先声明者为准；端口组的目标列表是跨规则合并的）。
+- 展示端（`lib/health.sh` 的 `get_health_status_record`）：按 `TARGET` 字段精确匹配；
+  查不到就是查不到，**不**按裸 host 兜底（否则会把同 host 另一个端口的记录显示成这条目标的）。
+  ⚠️ 展示端**只拿到目标地址**（调用处没有规则上下文）⇒ 同一后端被两条规则共用时，显示的是
+  **文件里第一行**那条的状态 ⇒ 可能显示成另一条规则的状态（**显示口径**，不参与切换判定）。
+
+### 6.5 跨轮继承：状态行怎么找到「自己上一轮的那一行」
+
+探测端每一轮都要回答同一个问题：**这个目标上一轮的状态行在哪？**
+找到 ⇒ 沿用它的 `fail_count` / `success_count` / `status`（这才是「连续失败」的计数基础）；
+找不到 ⇒ 当作没有记录，从零重新计数。
+
+查找由 `lib/health.sh` 的 `health_status_find_row` 完成，**匹配键 = `(RULE_ID, TARGET)`**，
+两个字段都要对上：
+
+| 行格式 | 命中条件 |
+|--------|----------|
+| 新格式（`TARGET` = `host:port`） | `RULE_ID` 相等 **且** `TARGET` 相等 |
+| 旧格式（`TARGET` 只有 `host`） | `RULE_ID` 相等 **且** `TARGET` 等于裸 host（本轮没命中精确键时才用） |
+
+**★ 为什么键里必须同时带 `RULE_ID` 和目标地址**（`lib/health.sh` 的 `health_status_find_row`）：
+
+1. **只按 `RULE_ID` 匹配**：规则 ID 会被复用（删掉一条规则后，下一条规则可能拿到同一个 ID）
+   ⇒ 老规则的 `failed` / 失败计数算到新规则头上 ⇒ 新鲜健康的目标一上来就显示「故障」。
+2. **只按目标地址匹配**：两条规则共用同一个后端时（同 host 同 port），一条规则的失败状态
+   会**过户**给另一条规则 ⇒ 误继承 ⇒ 误切。
+3. 组合键同时挡住两个方向：`RULE_ID` 或目标地址**任一**不同 ⇒ 认不出旧行 ⇒ 当成「没有记录」
+   ⇒ 从零重新计数。**认不出时的方向是安全方向**（重新计数 = 最多晚几轮才切换），
+   不是危险方向（误继承 = 刚建好的目标被判 failed = 误切）。
+
+> 写回时用同一把钥匙：`target_key="${RULE_ID}|${target_endpoint}"`
+> （`lib/health.sh` 的 `health_check_script_body`），并顺手删掉同一 host 的旧格式行 ——
+> 老文件里的 `failed` 不会因为升级被当成「健康」。
+> 这套口径与**消费端**（`lib/realm.sh` 的 `generate_endpoints_from_rules`）同源：
+> 切换判定读的必须是同一把钥匙 —— 不能一个按 `RULE_ID` 找、另一个按目标地址找。
 
 ---
 
@@ -487,7 +666,7 @@ bash /etc/realm/xwFailover.sh status
 
 | 项 | 说明 |
 |----|------|
-| `lib/health.sh` 已落盘 | 健康检查脚本由 `lib/health.sh` 的 `health_check_script_body` 生成，`xwFailover.sh` 与 `pf` 共用同一份实现。生成的 `health_check.sh` 是独立可执行脚本，其探测逻辑另有一份内联副本（两处必须同步，`tests/test_connectivity.sh` C 组盯着） |
+| `lib/health.sh` 已落盘 | 健康检查脚本由 `lib/health.sh` 的 `health_check_script_body` 生成，`xwFailover.sh` 与 `pf` 共用同一份实现。生成的 `health_check.sh` 是独立可执行脚本，其探测逻辑由 `lib/health.sh` 的 `health_emit_function` 原样抽取注入，与真源逐字一致，无需手工同步 |
 | 主备优先级按权重排序 | 已实现：主目标 = 权重最大的健康目标（同权重保持原始顺序）。详见 [端口组与权重 §5.3](port-groups-and-weights.md#53-主备优先级与权重的关系) |
 | 探测只到 TCP 握手 | 端口通但业务已死、或故障发生在「客户端 → 中转机」这一段，探测都发现不了 → 排查见 [故障排查 §6.7](troubleshooting.md#67-ip-还通但链路不通为什么没切) |
 | 探测对象不可自定义 | 探测目标固定为规则里的 `REMOTE_HOST:REMOTE_PORT`，不支持换成独立的健康端口 |

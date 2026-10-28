@@ -15,10 +15,11 @@
 | 所有目标都被判成故障 | [§3](#3-所有目标都被判成故障) |
 | 下载 404 / 脚本拉不下来 | [§4](#4-下载-404--脚本拉不下来) |
 | 去哪看日志 | [§5](#5-日志在哪) |
-| 主备不切换 / 切错了 | [§6](#6-主备不切换或切错目标) |
+| 权重主备不切换 / 切错了 | [§6](#6-规则级权重主备不切换或切错目标) |
 | 权重不生效 / 报错 | [§7](#7-权重不生效或报错) |
 | 端口冲突 | [§8](#8-端口冲突) |
 | 权限 / root 相关 | [§9](#9-权限相关) |
+| 非交互环境里 pf 直接退出 | [§12](#12-非交互环境里跑-pf-的行为) |
 
 ---
 
@@ -68,14 +69,14 @@ Alpine 必须用 `musl` 后缀的包，脚本已自动区分（`lib/realm.sh` �
 
 ### 1.4 规则文件里有非法内容
 
-规则解析走白名单 + 不用 `eval`（`lib/rules.sh:204`、`lib/rules.sh` 的 `read_rule_file`）。
+规则解析走白名单 + 不用 `eval`（`lib/health.sh` 的 `read_rule_file`）。
 但**字段名写错**（不在白名单里）会被**静默忽略**，表现为配置项没生效。
 
 排查：
 
 ```bash
 cat /etc/realm/rules/rule-1.conf
-# 逐条对照 lib/rules.sh:204 的白名单
+# 逐条对照 `lib/health.sh` 的 `read_rule_file` 里的白名单（`_allowed`）
 ```
 
 ### 1.5 同一个端口混了中转和服务端规则
@@ -172,7 +173,7 @@ systemctl restart realm-health-check.timer
 | 目标端口确实不通 | 手动 `nc -z -w3 <目标IP> <目标端口>` |
 | 探测的是 TCP 而不是应用层 | 端口通但服务已死（SYN 有人应答但业务无响应）→ 探测无法发现，需人工介入 |
 | 目标只监听 127.0.0.1 | 健康检查从本机探测，`REMOTE_HOST` 必须是可达地址 |
-| 超时太短 | `CONNECTION_TIMEOUT` 默认 3 秒，跨国链路建议调大（范围 1-10） |
+| 超时太短 | `CONNECTION_TIMEOUT` 默认 10 秒（范围 1-10，默认已是上限）；跨境链路仍偏紧属探测方式问题，调大超时已无空间 |
 | 失败阈值太小 | `FAILURE_THRESHOLD` 默认 2，网络抖动会误判。调大到 3-5 |
 
 ---
@@ -189,13 +190,12 @@ https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-active-standby/mai
 
 | 文件 | 下载 URL | 源码位置 |
 |------|----------|----------|
-| `xwPF.sh` + `lib/*.sh` | `.../main/xwPF.sh`、`.../main/lib/<f>` | `xwPF.sh:12`、`xwPF.sh` 的 `_bootstrap` |
-| `cmd/*` | `.../main/cmd/<f>` | `xwPF.sh` 的 `_bootstrap` |
+| `xwPF.sh` + `lib/*.sh` | `.../main/xwPF.sh`、`.../main/lib/<f>` | `xwPF.sh` 的 `REPO_RAW_URL`、`xwPF.sh` 的 `_bootstrap` |
 | `xwFailover.sh` | `.../main/xwFailover.sh` | `lib/ui.sh` 的 `download_failover_script` |
 | `speedtest.sh` | `.../main/speedtest.sh` | `lib/ui.sh` 的 `download_speedtest_script` |
 | `port-traffic-dog.sh` | `.../main/port-traffic-dog.sh` | `lib/ui.sh` 的 `port_traffic_dog_menu` |
 | `xw_realm_OCR.sh` | `.../main/xw_realm_OCR.sh` | `lib/ui.sh` 的 `download_realm_ocr_script` |
-| `notifications/*` | `.../main/notifications` | `port-traffic-dog.sh:2390` |
+| `notifications/*` | `.../main/notifications` | `port-traffic-dog.sh` 的 `download_notification_modules` |
 
 ### 4.2 主脚本 404 的排查顺序
 
@@ -217,16 +217,12 @@ curl -fsSL https://v6.gh-proxy.org/https://raw.githubusercontent.com/byby5555/re
 
 | 失败对象 | 后果 | 源码位置 |
 |----------|------|----------|
-| `xwPF.sh` 或任一 `lib/*.sh` | `_bootstrap` 返回 1 → **整个安装中止** | `xwPF.sh` 的 `_bootstrap`、`xwPF.sh` 的 `_bootstrap`、`xwPF.sh:125` |
-| `cmd/*` | **不阻断安装**，只是打印黄色警告 | `xwPF.sh` 的 `_bootstrap` |
-
-`cmd/` 下载失败会在安装守护进程时由 `failover_install_files` 从 GitHub raw 兜底
-（`lib/failover.sh` 的 `failover_install_files`）；离线环境下则保留本地已有文件（`lib/failover.sh` 的 `failover_install_files`）。
+| `xwPF.sh` 或任一 `lib/*.sh` | `_bootstrap` 返回 1 → **整个安装中止** | `xwPF.sh` 的 `_bootstrap` |
 
 ### 4.4 下载不完整 / 文件损坏
 
 下载是**原子化**的：先下到 `.tmp.$$`，校验非空，再 `mv -f` 覆盖
-（`xwPF.sh:30-50`、`lib/realm.sh` 的 `download_from_sources`）。
+（`xwPF.sh` 的 `_download`、`lib/realm.sh` 的 `download_from_sources`）。
 **故意不用 `curl -C -` / `wget -c`** —— 断点续传只校验 HTTP Range 起点，不校验本地内容，
 远端变长时会把新版本追加到旧内容后面，产出「大小正常但内容损坏」的文件。
 
@@ -247,10 +243,9 @@ rm -f /usr/local/bin/xwPF.sh /usr/local/bin/lib/*.sh
 | realm（OpenRC） | `tail -f /var/log/messages` | `lib/realm.sh` 的 `svc_logs` |
 | 健康检查 | `journalctl -u realm-health-check.service -f` | `lib/health.sh` 的 `start_health_check_service` |
 | 健康检查（按 tag） | `journalctl -t realm-health -f` | `lib/health.sh` 的 `start_health_check_service` |
-| xwpf-failover 守护 | `journalctl -fu xwpf-failover` | `lib/failover.sh` 的 `failover_log_follow` |
 
-菜单里也能直接看：`pf` → `5. 查看日志`（realm，实时）、`9. 主备 active/passive` 菜单里的
-日志选项（守护进程）。
+菜单里也能直接看：`pf` → `5. 查看日志`（realm，实时）。
+健康检查的日志看上面两行（`realm-health-check.service` / `realm-health` tag）。
 
 ### 健康状态不是日志
 
@@ -267,7 +262,12 @@ bash /etc/realm/xwFailover.sh status
 
 ---
 
-## 6. 主备不切换或切错目标
+## 6. 规则级权重主备不切换或切错目标
+
+> 本节讲的「主备」= **规则级权重主备**：同一个端口组内的多个目标之间，
+> 靠健康检查翻转权重来切换（主故障切备、主恢复切回）。
+> 它**不是**已下线的「进程级主备池」（另一个进程自己持有监听口转发的那一套）——
+> 后者已随 2026-10-24 的删除整块下线。
 
 ### 6.1 健康检查服务根本没在跑
 
@@ -428,13 +428,30 @@ ss -tulnp | grep ":8080 "
 端口合法性由 `is_valid_port` / `validate_port` 校验：1-65535
 （`lib/core.sh` 的 `is_valid_port`、`lib/core.sh` 的 `check_port_usage`）。
 
+### 8.1 误报「端口已被占用」—— 协议族在本机不可用
+
+> ⛔ **已废弃**：本节记录的是**已下线的「进程级主备池」**建池前的 listen 端口预检
+> （试绑 `0.0.0.0` 与 `::` 判断端口是否空闲）。该功能随主备池整块删除而移除，
+> 这里只保留结论，供排查时参考。
+
+**某个协议族在本机不可用 ≠ 端口被占用**：IPv6-only 主机上
+`bind(("0.0.0.0", port))` 报 `EADDRNOTAVAIL`、内核禁用 IPv6 时 `socket()` 直接失败 ——
+这两种都是「这个族用不了」，不是「端口有人占了」。
+
+> 旧版本把这类错误一律报成「端口被占用」→ 在 IPv6-only 主机上会**拒绝建池**，
+> 而且给出的理由完全不对。
+
+现在建规则时的端口占用检查走 `ss -tulnp`（`lib/core.sh` 的 `check_port_usage`），
+不靠试绑：判「被占用」时先看占用进程是不是 realm 本身
+（realm 占用会提示「支持单端口中转多服务端配置」并允许继续），其它进程则要你确认才继续。
+
 ---
 
 ## 9. 权限相关
 
 | 场景 | 要求 | 源码位置 |
 |------|------|----------|
-| `pf` / `xwPF.sh install` | root | `lib/core.sh` 的 `generate_complete_config`、`xwPF.sh:123` |
+| `pf` / `xwPF.sh install` | root | `lib/core.sh` 的 `generate_complete_config`、`xwPF.sh` 的主入口 install 分支 |
 | `xwFailover.sh` | root（`check_root`） | `xwFailover.sh` 的 `check_root` |
 | 健康检查脚本 | `User=root`（unit 里写死） | `lib/health.sh` 的 `start_health_check_service` |
 
@@ -455,7 +472,6 @@ grep -E '^SCRIPT_VERSION|^REALM_VERSION' /usr/local/bin/lib/core.sh
 echo "=== 服务状态 ==="
 systemctl status realm --no-pager -l
 systemctl status realm-health-check.timer --no-pager -l
-systemctl status xwpf-failover --no-pager -l
 
 echo "=== 规则 ==="
 cat /etc/realm/rules/rule-*.conf
@@ -477,3 +493,100 @@ journalctl -u realm-health-check.service -n 50 --no-pager
 ```
 
 > ⚠️ 贴日志前请自行检查里面有没有真实服务器地址、内网 IP 或敏感信息。
+
+---
+
+## 11. 更新失败
+
+更新中心（主菜单 `9. 检查更新 / 安全更新`）失败时，**现有版本不会被破坏** ——
+先看它属于哪一类：
+
+| 提示 | 原因 | 怎么办 |
+|------|------|--------|
+| `sha256 校验不通过，拒绝安装` | 下载到的包与上游对不上（下载损坏 / 代理劫持） | 换个网络或加速源重试；**不要**手工解压安装 |
+| `新二进制无法执行或不是有效程序` | 架构不匹配（armv7 拿了 x86_64 的包） | 检查 `detect_realm_asset_name` 推出来的资产名与 `uname -m` 是否匹配 |
+| `新二进制版本与目标不符` | 拿到的不是目标版本（代理返回了旧包） | 换个源重试 |
+| `新版本启动失败，自动回滚` | 新版 realm 起不来（配置不兼容等） | 已自动回滚到旧版本；看 `journalctl -u realm -n 50` 定位原因 |
+| `下载 xxx 失败，现有文件未改动` | 网络/代理问题 | 现有文件完好，直接重试即可 |
+| `语法检查失败: xxx` | 下载到的脚本不完整 | 现有文件未动，重试 |
+| `另一个更新进程正在运行` | 有人正在更新 | 等它结束；进程被 kill 留下的陈旧锁会自动接管 |
+| `获取上游最新版本失败` | 拿不到 GitHub release 信息 | 检查网络；脚本会退回解析 release 页面 |
+| `Text file busy` | 直接 `cp` 覆盖了正在运行的二进制 | 改用「拷到临时文件 + `mv` 覆盖」（见下方手工回滚） |
+| `恢复失败: /xxx` | 自动回滚时覆盖不到文件 | 按提示手工从备份目录恢复（脚本会打印备份路径） |
+
+### 手工回滚
+
+更新前的备份都在 `/usr/local/bin/.xwpf-backup/`（保留最近 5 份）：
+
+```bash
+ls -1dt /usr/local/bin/.xwpf-backup/*/ | head
+
+# 例如把 realm 回滚到某一份
+#
+# 关键：**不要直接 cp 覆盖** /usr/local/bin/realm ——
+# 正在运行的二进制会被内核挡住（ETXTBSY / "Text file busy"）。
+# 而 realm 是被健康检查服务拉起来的（每秒一次），
+# systemctl stop realm 只能按住 2 秒，cp 照样失败。
+# 正确做法：先拷到临时文件，再用 mv 覆盖 ——
+# mv 改的是目录项（unlink + link），不受 ETXTBSY 限制。
+cp -p /usr/local/bin/.xwpf-backup/realm-20261024-120000/usr/local/bin/realm /tmp/realm.rollback
+chmod +x /tmp/realm.rollback
+mv -f /tmp/realm.rollback /usr/local/bin/realm
+systemctl restart realm
+systemctl status realm --no-pager
+```
+
+脚本包的回滚同理（把 `scripts-时间戳/` 里的文件拷回原位，同样走「临时文件 + mv」）。
+
+---
+
+## 12. 非交互环境里跑 pf 的行为
+
+### 12.1 现象
+
+```bash
+$ pf < /dev/null
+检测到标准输入不是终端（管道 / 后台 / 无人值守执行），已退出交互菜单。
+Interactive menu requires a terminal on stdin; exiting.
+$ echo $?
+0
+```
+
+（`lib/core.sh` 的 `ui_require_tty`）
+
+### 12.2 这是有意的行为变更，不是缺陷
+
+stdin 是 EOF 时（管道 / 后台 / cron / systemd / 终端被关闭），`read` 会**立刻返回
+非 0**（不阻塞）→ 读到的变量为空 → `case` 不匹配任何分支 → 回到菜单循环顶部 →
+**无限重绘 + 忙循环 + 输出量无上限**。
+
+`/tmp` 在真机上是 tmpfs（吃的是内存），无界输出会把它灌满 → 内存 + swap 耗尽 →
+**sshd 握不上手，整机被压垮**。这是本项目踩过的真实事故，不是理论风险。
+
+所以交互菜单入口加了 TTY 护栏：stdin 不是终端就**不进菜单**，直接干净退出
+（退出码 0）。
+
+### 12.3 该怎么办
+
+| 场景 | 做法 |
+|---|---|
+| 想在真终端里改配置 | 直接跑 `pf`（TTY 下菜单与子菜单照常，选数字、进子菜单都不受影响） |
+| 无人值守安装 | `wget -qO- https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-active-standby/main/xwPF.sh \| sudo bash -s install`；安装流程里的询问在 EOF 时**按默认值走**（不会静默空跑） |
+| 只想看用法 | `pf --help` |
+| 脚本里要改配置 | 走 `pf` 的子命令（见 [安装、升级与卸载](install-and-upgrade.md) 的「命令行接口」一节），不要指望管道喂数字进菜单 |
+
+### 12.4 自检（改过菜单相关代码后跑一遍）
+
+```bash
+# 非 TTY：必须**自己**退出，且输出量有上限
+timeout 5 bash /usr/local/bin/xwPF.sh < /dev/null > /tmp/nontty.out 2>&1
+echo "rc=$? bytes=$(wc -c < /tmp/nontty.out)"
+```
+
+判据：`rc` **不是 124**（124 = 被 `timeout` 杀掉 = 还在忙循环）；`bytes` 有上限
+（百字节量级；无界输出会到几百 KB）；输出非空且命中入口提示语（否则「根本没跑起来」
+也会表现为「输出很小」）。
+
+> 注意：从 Windows 工作区直接传上机的文件是 **CRLF**，bash 第一行就报
+> `$'\r': command not found`，看起来「输出很小、也退出了」，其实**根本没跑起来**。
+> 上机自测请用 `git show <SHA>:<path>` 取提交态（本来就是 LF），或先转 LF。

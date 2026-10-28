@@ -10,8 +10,56 @@ BLUE='\033[0;34m'
 WHITE='\033[1;37m'
 NC='\033[0m'
 
+
+# 健康检查逻辑统一放在 lib/health.sh（唯一真源），这里只加载不重复实现
+HEALTH_LIB=""
+for _hc in "/usr/local/bin/lib/health.sh" "/etc/realm/lib/health.sh" "$(dirname "$0")/lib/health.sh"; do
+    if [ -f "$_hc" ]; then
+        HEALTH_LIB="$_hc"
+        break
+    fi
+done
+
+if [ -n "$HEALTH_LIB" ]; then
+    # shellcheck disable=SC1090
+    . "$HEALTH_LIB"
+else
+    echo -e "${RED}错误: 缺少 lib/health.sh，请先执行 pf install 更新脚本${NC}" >&2
+    exit 1
+fi
+
+# read_rule_file / check_connectivity 的唯一实现在 lib/health.sh。
+# 装的 lib/health.sh 版本过旧时（升级前遗留），明确报错而不是让调用处报 command not found。
+if ! declare -F read_rule_file >/dev/null 2>&1; then
+    echo -e "${RED}错误: lib/health.sh 版本过旧（缺少 read_rule_file），请先执行 pf install 更新脚本${NC}" >&2
+    exit 1
+fi
+
 get_gmt8_time() {
     TZ='GMT-8' date "$@"
+}
+
+# OCR 文本清洗：落盘前剔除会破坏规则文件格式、或触发命令替换的字符。
+# 字段名是脚本写死的固定集，已全部在 read_rule_file 的白名单内；
+# 这里管的是**值** —— OCR 出来的文本不可信。
+#
+# 为什么必须在**落盘前**清洗（规则文件用未加引号的 heredoc 写）：
+#   tr -d '\r' > "$rule_file" << RULE_EOF
+# 未加引号的 heredoc 在写入时就做参数展开与命令替换：
+#   - 值里带 $ 或 `   -> 写入瞬间就可能执行命令；
+#   - 值里带 "       -> 破坏 KEY="value" 的引号配对；
+#   - 值里带换行/制表 -> 破坏一条 KEY=VALUE 一行的结构；
+#   - 值以 \ 结尾  -> heredoc 当行续行处理，把两条 KEY 粘成一行。
+sanitize_rule_value() {
+    local v="$1"
+    v="${v//$'\n'/ }"
+    v="${v//$'\r'/ }"
+    v="${v//$'\t'/ }"
+    v="${v//$'\x22'/}"   # 双引号：会破坏 KEY="value" 的引号配对
+    v="${v//$'\x60'/}"   # 反引号：命令替换
+    v="${v//$'\x24'/}"   # 美元符号：$(...) 命令替换
+    v="${v//$'\\'/}"  # 反斜杠：行尾会触发 heredoc 行续行，把两条 KEY 粘成一行
+    printf '%s' "$v"
 }
 
 # 规则ID生成器（临时使用，最终由主脚本重排序）
@@ -43,7 +91,7 @@ if ! pwd >/dev/null 2>&1; then
 fi
 
 # 输入配置文件路径
-read -p "请输入配置文件的完整路径：" CONFIG_FILE
+read -p "请输入配置文件的完整路径：" CONFIG_FILE || CONFIG_FILE=""
 echo ""
 
 if [ -z "$CONFIG_FILE" ]; then
@@ -323,6 +371,26 @@ process_json() {
                 fi
             fi
 
+            # ★ 双保险：OCR 文本不可信 —— 落盘前统一清洗。
+            #   规则文件会被复制进 /etc/realm/rules/，除 read_rule_file 外，
+            #   旧版本代码路径仍可能 source 它；值里带 $(...) / 引号 / 换行
+            #   会破坏引号配对或触发命令替换。
+            rule_id=$(sanitize_rule_value "$rule_id")
+            rule_name=$(sanitize_rule_value "$rule_name")
+            rule_role=$(sanitize_rule_value "$rule_role")
+            security_level=$(sanitize_rule_value "$security_level")
+            listen_port=$(sanitize_rule_value "$listen_port")
+            listen_ip=$(sanitize_rule_value "$listen_ip")
+            rule_balance_mode=$(sanitize_rule_value "$rule_balance_mode")
+            rule_target_states=$(sanitize_rule_value "$rule_target_states")
+            rule_weights=$(sanitize_rule_value "$rule_weights")
+            target=$(sanitize_rule_value "$target")
+            target_host=$(sanitize_rule_value "$target_host")
+            target_port=$(sanitize_rule_value "$target_port")
+            tls_server_name=$(sanitize_rule_value "$tls_server_name")
+            ws_path=$(sanitize_rule_value "$ws_path")
+            ws_host=$(sanitize_rule_value "$ws_host")
+
             tr -d '\r' > "$rule_file" << RULE_EOF
 RULE_ID=$rule_id
 RULE_NAME="$rule_name"
@@ -344,7 +412,7 @@ FAILOVER_ENABLED="false"
 HEALTH_CHECK_INTERVAL="4"
 FAILURE_THRESHOLD="2"
 SUCCESS_THRESHOLD="2"
-CONNECTION_TIMEOUT="3"
+CONNECTION_TIMEOUT="10"
 
 # MPTCP配置
 MPTCP_MODE="off"
@@ -482,10 +550,20 @@ fi
 echo -e "${BLUE}识别到 $rule_count 个转发规则:${NC}"
 for rule_file in "$OUTPUT_DIR"/rule-*.conf; do
     if [ -f "$rule_file" ]; then
-        source "$rule_file"
-
-        # 设置全局变量TLS_SERVER_NAME（ws_tls模式需要）
-        TLS_SERVER_NAME="$TLS_SERVER_NAME"
+        # 读取规则文件：read_rule_file 由 lib/health.sh 提供（白名单逐行解析）。
+        # 这里**不再** source 规则文件 ——
+        #   ① source 会执行规则文件里的命令替换（规则文件由 OCR 文本生成，
+        #      不可信；规则文件最终会被复制进 /etc/realm/rules/，
+        #      而其它代码路径仍可能 source 它 → 提权面）；
+        #   ② source 会把上一条规则没写的键留成陈旧值；
+        #      read_rule_file 每次调用都重置全部白名单键。
+        # 读取失败直接中止导入：导入是破坏性操作（会清空现有规则），
+        # 不能带着半份/陈旧数据往下走。
+        if ! read_rule_file "$rule_file"; then
+            echo -e "${RED}错误: 读取规则文件失败: $rule_file${NC}" >&2
+            rm -rf "$OUTPUT_DIR"
+            exit 1
+        fi
 
         # 使用主脚本的get_security_display函数显示传输模式
         third_param=""
@@ -530,7 +608,7 @@ echo ""
 echo -e "${RED}警告: 导入操作将清空现有规则并导入新配置！${NC}"
 echo -e "${YELLOW}这是初始化导入，会删除所有现有的转发规则${NC}"
 echo ""
-read -p "确认清空现有规则并导入新配置？(y/n): " confirm
+read -p "确认清空现有规则并导入新配置？(y/n): " confirm || confirm=""
 if ! echo "$confirm" | grep -qE "^[Yy]$"; then
     echo -e "${BLUE}已取消导入操作${NC}"
     rm -rf "$OUTPUT_DIR"

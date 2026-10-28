@@ -107,6 +107,7 @@ wecom_test() {
 
 wecom_configure() {
     while true; do
+        sleep 0.2
         local status_notifications_enabled=$(jq -r '.notifications.wecom.status_notifications.enabled // false' "$CONFIG_FILE")
         local webhook_url=$(jq -r '.notifications.wecom.webhook_url // ""' "$CONFIG_FILE")
 
@@ -137,7 +138,7 @@ wecom_configure() {
         echo "4. 查看通知日志"
         echo "0. 返回上级菜单"
         echo
-        read -p "请选择操作 [0-4]: " choice
+        ui_read_into "请选择操作 [0-4]: " choice
 
         case $choice in
             1) wecom_configure_webhook ;;
@@ -174,7 +175,7 @@ wecom_configure_webhook() {
     fi
     echo
 
-    read -p "请输入Webhook URL: " webhook_url
+    ui_read_into "请输入Webhook URL: " webhook_url
     if [ -z "$webhook_url" ]; then
         echo -e "${RED}Webhook URL不能为空${NC}"
         sleep 2
@@ -192,7 +193,7 @@ wecom_configure_webhook() {
     fi
 
     local default_server_name=$(hostname)
-    read -p "请输入服务器名称 (回车默认: $default_server_name): " server_name
+    ui_read_into "请输入服务器名称 (回车默认: $default_server_name): " server_name
     if [ -z "$server_name" ]; then
         server_name="$default_server_name"
     fi
@@ -230,12 +231,13 @@ wecom_configure_webhook() {
 
 wecom_manage_settings() {
     while true; do
+        sleep 0.2
         echo -e "${BLUE}=== 通知设置管理 ===${NC}"
         echo "1. 状态通知间隔"
         echo "2. 开启/关闭切换"
         echo "0. 返回上级菜单"
         echo
-        read -p "请选择操作 [0-2]: " choice
+        ui_read_into "请选择操作 [0-2]: " choice
 
         case $choice in
             1) wecom_configure_interval ;;
@@ -297,5 +299,5 @@ wecom_view_logs() {
     tail -n 20 "$log_file"
     echo "────────────────────────────────────────────────────────"
     echo
-    read -p "按回车键返回..."
+    ui_pause "按回车键返回..."
 }

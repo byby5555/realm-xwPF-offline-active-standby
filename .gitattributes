@@ -1,0 +1,16 @@
+# 行尾统一：仓库内文本文件一律以 LF 存储与签出。
+#
+# 本文件之前不存在，行尾靠本地 core.autocrlf=true 转换
+# （索引 LF / 工作区 CRLF）。显式声明后，不再依赖每个开发机的 git 配置，
+# 也不会因为某台机器 autocrlf 设成 false 就把 CRLF 提交进索引。
+#
+# ★ 变更行尾是大动作：请单独排一轮执行 `git add --renormalize .`，
+#   不要和功能改动混在同一次提交里（会产生大面积 diff，且容易和别人的并行改动打架）。
+
+*.sh text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.service text eol=lf
+
+*.xlsx binary
+*.png binary

@@ -2,6 +2,11 @@
 
 本文说明**端口组**怎么分组、**权重**怎么写、`1,0,0` 主备写法到底做了什么。
 
+> **术语口径**：本文的「主备」= **规则级权重主备** —— 同一个端口组内的多个目标之间，
+> 靠健康检查翻转 `WEIGHTS` 来切换（主故障切备、主恢复切回），**没有独立进程**。
+> 它**不是**已下线的「进程级主备池」（另一个进程自己持有监听口转发的那一套）——
+> 后者已随 2026-10-24 的删除整块下线。
+
 > 文中每条规则都指向**具体函数**（写法：`文件` 的 `函数名`），不写行号 —— 行号会随代码改动整体漂移。
 > 需要行号时现查：`grep -n '<函数名>' <文件>`。
 
@@ -159,7 +164,7 @@ REMOTE_PORT="8080"
      | `HEALTH_CHECK_INTERVAL` | `4` | `lib/rules.sh` 的 `auto_enable_active_standby` |
      | `FAILURE_THRESHOLD` | `2` | `lib/rules.sh` 的 `auto_enable_active_standby` |
      | `SUCCESS_THRESHOLD` | `2` | `lib/rules.sh` 的 `auto_enable_active_standby` |
-     | `CONNECTION_TIMEOUT` | `3` | `lib/rules.sh` 的 `auto_enable_active_standby` |
+     | `CONNECTION_TIMEOUT` | `10` | `lib/rules.sh` 的 `auto_enable_active_standby` |
      | `RECOVERY_COOLDOWN` | `120` | `lib/rules.sh` 的 `auto_enable_active_standby` |
 
 2. 调用 `ensure_health_check_service` 启动健康检查服务（`lib/rules.sh` 的 `apply_port_group_weight_config`）。
@@ -267,8 +272,8 @@ pf
 |------|------|
 | 权重保存后不生效 | 是否重启了 realm？`pf --restart-service` |
 | 权重填了报错「数量不匹配」 | 权重个数必须等于端口组展开后的目标数 |
-| 主备没切换 | 健康检查服务是否在跑：`systemctl status realm-health-check.timer`；探测日志 `journalctl -u realm-health-check.service -n 50` |
-| 主备没切换（IP 明明通） | 探测的是 **TCP 端口**不是 ping；IP 通不代表端口通，也不代表业务正常 |
+| 权重主备没切换 | 健康检查服务是否在跑：`systemctl status realm-health-check.timer`；探测日志 `journalctl -u realm-health-check.service -n 50` |
+| 权重主备没切换（IP 明明通） | 探测的是 **TCP 端口**不是 ping；IP 通不代表端口通，也不代表业务正常 |
 | 所有目标都被判故障 | 探测日志里看报错；`nc` 与 `timeout` 至少要有一个（见[排查手册](troubleshooting.md)） |
 | 菜单里看不到端口组 | 该端口目标数必须 > 1，且必须是中转规则（`RULE_ROLE=1`） |
 | 权重显示成 `1` | `WEIGHTS` 字段不存在 → 按 1 处理 |
@@ -281,6 +286,6 @@ pf
 | 项 | 说明 |
 |----|------|
 | 主备优先级 | 已实现：按权重降序选主（同权重保持原始顺序）。权重个数与目标数不一致时退化为原始顺序 |
-| `TARGET_STATES` 字段用途 | 该字段在规则白名单里（`lib/rules.sh:204`），当前 `active-standby` 分支实际不依赖它，只影响「用户手动摘除目标」的旧逻辑 |
+| `TARGET_STATES` 字段用途 | 该字段在规则白名单里（`lib/health.sh` 的 `read_rule_file` 里的 `_allowed` 白名单），当前 `active-standby` 分支实际不依赖它，只影响「用户手动摘除目标」的旧逻辑 |
 | 全挂兜底 | 所有目标都故障时强制把优先级最高的目标置 1，保证不断流；该目标实际也是不通的，需人工介入 |
 | 探测深度 | 只探 TCP 握手。端口通但业务已死、或故障在「客户端 → 中转机」这一段，探测都发现不了 |
