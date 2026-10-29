@@ -123,6 +123,22 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #         · 菜单侧：时延优先取快探测（1 秒刷新），没有快探测数据时回落状态文件；
 #           [健康]/[故障] 仍只取判定流；丢包 = SYN 被丢（SYN 被丢弃）的采样占比
 #         · 台架：新增 T123~T127（cases/28_fast_probe_t123.sh）
+# v2.22.0：第 26 轮 —— realm 二进制「装得上、跑不起来」的护栏
+#         · 真机实测（VPS 上 Docker 起干净 Debian 12 容器，跑官方安装脚本）：
+#           GitHub 的 realm v2.9.6 需要 **glibc ≥ 2.38**，Debian 12 只有 **2.36**
+#           ⇒ 二进制装得上、跑不起来（version `GLIBC_2.38' not found）
+#           而 install 只 `cp + chmod` 就打印「✓ realm 安装成功」，
+#           后面服务起不来也照样一路打印「=== 安装完成！ ===」
+#           ⇒ 用户看到「装好了」，实际一个转发都没跑，且没有一条报错指向真因
+#         · lib/realm.sh：新增 realm_binary_exec_check（纯函数，可单测）
+#           装完当场执行一次；跑不起来就明确报错 + 点名 glibc/架构/损坏 + 中止安装
+#         · 台架：新增 T131~T132（cases/30_realm_exec_check_t131.sh）
+#           T131 判据本体（含注入式退化：判据被改成「永远放行」必须被抓到）
+#           T132 端到端（喂一个含「坏解释器 realm」的 tar.gz 给 install_realm）
+#           负向对照用修复前的真实实现（历史对象 realm-exec-pre = 7f6ee54）
+#         · 跨平台注意：MSYS2 用「有没有 shebang」模拟执行位
+#           ⇒ 「没执行权限」「非 ELF 垃圾文件」两档在 Windows 上表现不同
+#           ⇒ 断言只钉两个平台一致的三档（可执行 / 坏解释器 / 文件不存在）
 # v2.21.0：第 25 轮 —— 安装完整性与「静默失效」护栏（真机踩出来的三个缺陷）
 #         · lib/realm.sh：install_realm 的「二进制已是最新」分支原先直接 return 0
 #           （start_empty_service 只挂在「下载安装」那条路径上）
@@ -290,7 +306,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #         · 负向对照：helper 层用注入式退化（helper 是新引入的，修复前没有等价形态，
 #           如实标注）；入口层用**真实修复前实现**（d0366b3 的 lib/）复现忙循环，
 #           断言的是「坏情况确实发生」（124 + 输出膨胀），不是「坏情况没发生」
-HARNESS_VERSION="v2.21.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive + negctl-selfcheck + t45-portable-equiv + t45-win-mv-truth + t32-locale-pin + t53-menu-eof + t32-copy-form-2 + t32-anchor-guard + t32-clause-exempt + t53-helper-count + t53-neg-floor + history-preflight + preflight-empty-guard + preflight-exit-passthrough + t54-ui-eof-closure-invariants + t54-judge-selfcheck + t53-rel-threshold + only-unregistered-exit4 + registry-selfcheck + t40-case-count-contract + probe-budget-10s + install-list-from-product + t63-t67-quality-observation + t68-t76-switch-reliability + t77-t84-weight10-exclusive + t85-t88-n4-probe-regen + run-lock-done-marker + t114-readend-collapse + expect-fail-exit5 + t54-affirm-default-7b + t115-t116-claim-gate-identity + t117-t118-legacy-failover-guard + t119-t121-standby-target-parity + t122-shared-core-guard + pgrep-shim + t123-t127-fast-probe + t128-t130-install-completeness)"
+HARNESS_VERSION="v2.22.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive + negctl-selfcheck + t45-portable-equiv + t45-win-mv-truth + t32-locale-pin + t53-menu-eof + t32-copy-form-2 + t32-anchor-guard + t32-clause-exempt + t53-helper-count + t53-neg-floor + history-preflight + preflight-empty-guard + preflight-exit-passthrough + t54-ui-eof-closure-invariants + t54-judge-selfcheck + t53-rel-threshold + only-unregistered-exit4 + registry-selfcheck + t40-case-count-contract + probe-budget-10s + install-list-from-product + t63-t67-quality-observation + t68-t76-switch-reliability + t77-t84-weight10-exclusive + t85-t88-n4-probe-regen + run-lock-done-marker + t114-readend-collapse + expect-fail-exit5 + t54-affirm-default-7b + t115-t116-claim-gate-identity + t117-t118-legacy-failover-guard + t119-t121-standby-target-parity + t122-shared-core-guard + pgrep-shim + t123-t127-fast-probe + t128-t130-install-completeness + t131-t132-realm-exec-check)"
 
 # shellcheck source=lib/harness.sh
 . "$SCRIPT_DIR/lib/harness.sh"
@@ -545,6 +561,11 @@ CASES=(
     "T128:case_T128_install_completeness"
     "T129:case_T129_rule_write_guard"
     "T130:case_T130_empty_target_states_no_integer_error"
+    # realm 二进制「装得上、跑不起来」的护栏（T131~T132 · cases/30_realm_exec_check_t131.sh）
+    #   真机实测（干净 Debian 12 容器）：realm v2.9.6 需要 glibc ≥ 2.38，Debian 12 只有 2.36
+    #   ⇒ 二进制装上了却根本跑不起来，而 install 照样报「安装完成」
+    "T131:case_T131_realm_exec_check_judge"
+    "T132:case_T132_install_rejects_unrunnable_binary"
 )
 
 

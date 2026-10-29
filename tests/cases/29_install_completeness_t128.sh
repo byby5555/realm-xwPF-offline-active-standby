@@ -201,6 +201,10 @@ case_T128_install_completeness() {
     fi
 
     rm -rf "$site" "$pre_tree" 2>/dev/null
+    # ★ 桩必须清掉：它落在沙箱的 REALM_PATH 上（$SBX_ROOT/usr.local.bin/realm），
+    #   留着会让**后面的用例**以为「realm 已安装」⇒ 走不到下载路径
+    #   （实测：T132 在 Linux 上就因为这个桩而走了「已安装」分支，断言全红）。
+    rm -f "$stub" 2>/dev/null
 }
 
 # ══════════════════════════════════════════════════════════════
