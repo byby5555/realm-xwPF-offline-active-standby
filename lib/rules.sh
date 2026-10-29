@@ -1877,39 +1877,31 @@ load_balance_management_menu() {
                         port_weights[$port_key]="$WEIGHTS"
                     fi
 
-                    if [[ "$REMOTE_HOST" == *","* ]]; then
-                        IFS=',' read -ra host_array <<< "$REMOTE_HOST"
-                        for host in "${host_array[@]}"; do
-                            local target="$host:$REMOTE_PORT"
-                            if [[ "${port_groups[$port_key]:-}" != *"$target"* ]]; then
-                                if [ -z "${port_groups[$port_key]:-}" ]; then
-                                    port_groups[$port_key]="$target"
-                                else
-                                    port_groups[$port_key]="${port_groups[$port_key]:-},$target"
-                                fi
-                            fi
+                    # ★ 目标清单走**唯一真源**（rule_target_endpoints，lib/core.sh）：
+                    #   探测端（判定流 / 快探测）与路由端（realm 的 endpoint 生成）都用它，
+                    #   菜单以前只认 REMOTE_HOST × REMOTE_PORT
+                    #   ⇒ 主备模式下 TARGET_STATES 形态（**每个目标自带端口**）在菜单里看不见，
+                    #     而时延/健康/质量指标的查表键就是「目标(host:port)」
+                    #     ⇒ 菜单列的目标与观测文件里的目标对不上 ⇒ **查不到时延**。
+                    #   ★ 端口组的权重与顺序都按**合并后的列表**算（与路由端同口径），
+                    #     去重也必须是**精确匹配**（port_group_add_target）。
+                    local _tg_list _tg _tg_trim
+                    _tg_list="$(rule_target_endpoints)"
+                    if [ -n "$_tg_list" ]; then
+                        IFS=',' read -ra _tg_arr <<< "$_tg_list"
+                        for _tg in "${_tg_arr[@]}"; do
+                            _tg_trim="$(echo "$_tg" | xargs)"
+                            [ -z "$_tg_trim" ] && continue
+                            port_groups[$port_key]="$(port_group_add_target "${port_groups[$port_key]:-}" "$_tg_trim")"
                             # ★ 归属规则 = 该目标在本端口组里归属的那条规则（**先声明者为准**）
                             #   —— 与读端（lib/realm.sh 的 generate_endpoints_from_rules）同口径。
                             #   质量观测指标的键是 (RULE_ID, 目标) 组合键 ⇒ 展示端必须带 RULE_ID 查，
                             #   否则同后端被两条规则共用时会显示成另一条规则的指标。
-                            local _own_key="${port_key}|${target}"
+                            local _own_key="${port_key}|${_tg_trim}"
                             if [ -z "${port_target_owner[$_own_key]:-}" ]; then
                                 port_target_owner[$_own_key]="$RULE_ID"
                             fi
                         done
-                    else
-                        local target="$REMOTE_HOST:$REMOTE_PORT"
-                        if [[ "${port_groups[$port_key]:-}" != *"$target"* ]]; then
-                            if [ -z "${port_groups[$port_key]:-}" ]; then
-                                port_groups[$port_key]="$target"
-                            else
-                                port_groups[$port_key]="${port_groups[$port_key]:-},$target"
-                            fi
-                        fi
-                        local _own_key="${port_key}|${target}"
-                        if [ -z "${port_target_owner[$_own_key]:-}" ]; then
-                            port_target_owner[$_own_key]="$RULE_ID"
-                        fi
                     fi
                 fi
             fi
@@ -2102,52 +2094,135 @@ load_balance_management_menu() {
 
 # 立即测试所有端口组目标的连通性与时延
 # 现场探测一轮，只显示结果、不写健康状态文件（避免和后台健康检查抢写同一文件）
+#
+# ★ 本轮改动（用户反馈「菜单卡住」）：
+#   ① **并发**：每个目标一个后台子进程 ⇒ 总耗时 ≈ 单个目标的耗时
+#      （原来串行：N 个目标 × 单次超时 ⇒ 4 个目标最坏 40 秒，菜单像卡死）
+#   ② **短超时**：单次探测超时用 MENU_PROBE_TIMEOUT（默认 2s，与快探测同档），
+#      不再拿规则的 CONNECTION_TIMEOUT（10s）当探测预算
+#   ③ **多采样**：每个目标连采 MENU_PROBE_SAMPLES 次（默认 3）
+#      ⇒ 报「成功次数/采样次数」+ 成功样本的平均/最小时延
+#      （单次采样看不出抖动；成功率还能区分「偶发失败」和「彻底不通」）
+#   ④ 目标枚举走**唯一真源**（rule_target_endpoints，lib/core.sh）
+#      ⇒ TARGET_STATES 形态（每个目标自带端口）的目标也测得到
 probe_all_targets_latency() {
-    echo -e "${BLUE}正在探测所有目标的连通性与时延（TCP 握手耗时）...${NC}"
-    echo ""
+    local timeout="${MENU_PROBE_TIMEOUT:-2}"
+    local samples="${MENU_PROBE_SAMPLES:-3}"
+    local rule_file _list _t _arr _t_host _t_port
 
-    local total=0 ok=0 failed=0
-    local rule_file target probe_target probe_port
-    local -a tlist=()
+    case "$timeout" in
+        ''|*[!0-9]*) timeout=2 ;;
+    esac
+    [ "$timeout" -lt 1 ] && timeout=2
+    case "$samples" in
+        ''|*[!0-9]*) samples=3 ;;
+    esac
+    [ "$samples" -lt 1 ] && samples=1
 
+    # ── 目标枚举（唯一真源 + 精确去重）──
+    local -a tgt_list=()
+    declare -A _seen_tgt=()
     for rule_file in "${RULES_DIR}"/rule-*.conf; do
         [ -f "$rule_file" ] || continue
         read_rule_file "$rule_file" || continue
         [ "$RULE_ROLE" = "1" ] || continue
         [ "$ENABLED" = "true" ] || continue
 
-        IFS=',' read -ra tlist <<< "$REMOTE_HOST"
-        for target in "${tlist[@]}"; do
-            target=$(echo "$target" | xargs)  # 去除空格
-            [ -z "$target" ] && continue
-
-            probe_target="$target"
-            probe_port="$REMOTE_PORT"
-            case "$target" in
-                *:*)
-                    probe_target="${target%:*}"
-                    probe_port="${target##*:}"
-                    ;;
-            esac
-
-            total=$((total + 1))
-            if probe_with_latency "$probe_target" "$probe_port" "${CONNECTION_TIMEOUT:-10}"; then
-                ok=$((ok + 1))
-                printf "  %s  %-30s %s\n" "${GREEN}可达${NC}" "${probe_target}:${probe_port}"                     "$(format_latency_display "$PROBE_LATENCY_MS" "")"
-            else
-                failed=$((failed + 1))
-                printf "  %s  %-30s %s\n" "${RED}不可达${NC}" "${probe_target}:${probe_port}" "超时/连接失败"
+        _list="$(rule_target_endpoints)"
+        [ -n "$_list" ] || continue
+        IFS=',' read -ra _arr <<< "$_list"
+        for _t in "${_arr[@]}"; do
+            _t="$(echo "$_t" | xargs)"  # 去除空格
+            [ -z "$_t" ] && continue
+            # 目标里没带端口（脏数据）⇒ 回落规则里的 REMOTE_PORT
+            #   —— 与探测端（lib/health.sh 的探测脚本）同一口径。
+            _t_host="${_t%:*}"; _t_port="${_t##*:}"
+            if [ -z "$_t_port" ] || [ "$_t_port" = "$_t" ]; then
+                _t_port="${REMOTE_PORT:-}"
+                _t="${_t_host}:${_t_port}"
             fi
+            [ -n "${_seen_tgt[$_t]:-}" ] && continue
+            _seen_tgt[$_t]=1
+            tgt_list+=("$_t")
         done
     done
 
-    echo ""
+    local total=${#tgt_list[@]}
     if [ "$total" -eq 0 ]; then
         echo -e "${YELLOW}没有可测试的中转目标${NC}"
         return
     fi
-    echo -e "  合计 ${total} 个目标：${GREEN}可达 ${ok}${NC} / ${RED}不可达 ${failed}${NC}"
-    echo -e "${BLUE}（本次为现场探测，不写健康状态文件；页面上的时延仍以后台健康检查为准）${NC}"
+
+    echo -e "${BLUE}正在探测所有目标的连通性与时延（TCP 握手耗时；每目标 ${samples} 次采样，单次超时 ${timeout}s，并发进行）...${NC}"
+    echo ""
+
+    # ── 并发探测：每个目标一个后台子进程，结果写各自的文件 ──
+    local _tmpd
+    _tmpd="$(mktemp -d "${TMPDIR:-/tmp}/xw-menu-probe.XXXXXX" 2>/dev/null)" || _tmpd=""
+    if [ -z "$_tmpd" ]; then
+        echo -e "${RED}✗ 建临时目录失败，无法并发探测${NC}"
+        return 1
+    fi
+
+    local i=0
+    for _t in "${tgt_list[@]}"; do
+        (
+            # ★ 结果文件名必须带**各自的序号**：
+            #   写和读都要用同一个序号变量，否则四个子进程会写进**同一个文件**
+            #   ⇒ 汇总时四行显示同一份结果（看起来「全可达」，实际每个目标的结果都丢了）。
+            local _idx="$i"
+            local _host="${_t%:*}" _port="${_t##*:}"
+            local _ok=0 _sum=0 _min="" _n=0 _lat=""
+            while [ "$_n" -lt "$samples" ]; do
+                if probe_with_latency "$_host" "$_port" "$timeout"; then
+                    _ok=$((_ok + 1))
+                    _lat="${PROBE_LATENCY_MS:-0}"
+                    _sum=$((_sum + _lat))
+                    if [ -z "$_min" ] || [ "$_lat" -lt "$_min" ]; then _min="$_lat"; fi
+                fi
+                _n=$((_n + 1))
+            done
+            printf '%s %s %s\n' "$_ok" "$_sum" "$_min" > "$_tmpd/$_idx.res"
+        ) &
+        i=$((i + 1))
+    done
+    wait
+
+    # ── 汇总展示 ──
+    local ok=0 partial=0 failed=0
+    i=0
+    for _t in "${tgt_list[@]}"; do
+        _ok=0; _sum=0; _min=""
+        if [ -f "$_tmpd/$i.res" ]; then
+            read -r _ok _sum _min < "$_tmpd/$i.res"
+        fi
+        case "${_ok:-0}" in
+            ''|*[!0-9]*) _ok=0 ;;
+        esac
+        case "${_sum:-0}" in
+            ''|*[!0-9]*) _sum=0 ;;
+        esac
+        local _avg=""
+        [ "$_ok" -gt 0 ] && _avg=$((_sum / _ok))
+
+        if [ "$_ok" -ge "$samples" ]; then
+            ok=$((ok + 1))
+            printf "  %s  %-30s %s\n" "${GREEN}可达${NC}" "$_t" "${_ok}/${samples} 次成功  平均 ${_avg}ms（最小 ${_min:-0}ms）"
+        elif [ "$_ok" -gt 0 ]; then
+            partial=$((partial + 1))
+            printf "  %s  %-30s %s\n" "${YELLOW}部分可达${NC}" "$_t" "${_ok}/${samples} 次成功  成功样本平均 ${_avg}ms"
+        else
+            failed=$((failed + 1))
+            printf "  %s  %-30s %s\n" "${RED}不可达${NC}" "$_t" "0/${samples} 次成功"
+        fi
+        i=$((i + 1))
+    done
+    rm -rf "$_tmpd"
+
+    echo ""
+    echo -e "  合计 ${total} 个目标：${GREEN}全可达 ${ok}${NC} / ${YELLOW}部分可达 ${partial}${NC} / ${RED}不可达 ${failed}${NC}"
+    echo -e "${BLUE}（本次为现场探测，不写健康状态文件；每目标 ${samples} 次采样、单次超时 ${timeout}s、并发进行）${NC}"
+    echo -e "${BLUE}（页面上的时延仍以后台健康检查为准）${NC}"
 }
 
 # 切换负载均衡模式（按端口分组管理）
@@ -2176,32 +2251,18 @@ switch_balance_mode() {
                         port_balance_modes[$port_key]="${BALANCE_MODE:-off}"
                     fi
 
-                    # 正确处理REMOTE_HOST中可能包含多个地址的情况
-                    if [[ "$REMOTE_HOST" == *","* ]]; then
-                        # REMOTE_HOST包含多个地址，分别添加
-                        IFS=',' read -ra host_array <<< "$REMOTE_HOST"
-                        for host in "${host_array[@]}"; do
-                            local target="$host:$REMOTE_PORT"
-                            # 检查是否已存在，避免重复添加
-                            if [[ "${port_groups[$port_key]:-}" != *"$target"* ]]; then
-                                if [ -z "${port_groups[$port_key]:-}" ]; then
-                                    port_groups[$port_key]="$target"
-                                else
-                                    port_groups[$port_key]="${port_groups[$port_key]:-},$target"
-                                fi
-                            fi
+                    # ★ 目标清单走**唯一真源**（rule_target_endpoints，lib/core.sh）
+                    #   —— 与负载均衡管理菜单、探测端、路由端同一份口径
+                    #   （TARGET_STATES 形态：每个目标自带端口）
+                    local _tg_list _tg _tg_trim
+                    _tg_list="$(rule_target_endpoints)"
+                    if [ -n "$_tg_list" ]; then
+                        IFS=',' read -ra _tg_arr <<< "$_tg_list"
+                        for _tg in "${_tg_arr[@]}"; do
+                            _tg_trim="$(echo "$_tg" | xargs)"
+                            [ -z "$_tg_trim" ] && continue
+                            port_groups[$port_key]="$(port_group_add_target "${port_groups[$port_key]:-}" "$_tg_trim")"
                         done
-                    else
-                        # REMOTE_HOST是单个地址
-                        local target="$REMOTE_HOST:$REMOTE_PORT"
-                        # 检查是否已存在，避免重复添加
-                        if [[ "${port_groups[$port_key]:-}" != *"$target"* ]]; then
-                            if [ -z "${port_groups[$port_key]:-}" ]; then
-                                port_groups[$port_key]="$target"
-                            else
-                                port_groups[$port_key]="${port_groups[$port_key]:-},$target"
-                            fi
-                        fi
                     fi
                 fi
             fi
@@ -2440,32 +2501,18 @@ weight_management_menu() {
                         port_weights[$port_key]="$WEIGHTS"
                     fi
 
-                    # 正确处理REMOTE_HOST中可能包含多个地址的情况
-                    if [[ "$REMOTE_HOST" == *","* ]]; then
-                        # REMOTE_HOST包含多个地址，分别添加
-                        IFS=',' read -ra host_array <<< "$REMOTE_HOST"
-                        for host in "${host_array[@]}"; do
-                            local target="$host:$REMOTE_PORT"
-                            # 检查是否已存在，避免重复添加
-                            if [[ "${port_groups[$port_key]:-}" != *"$target"* ]]; then
-                                if [ -z "${port_groups[$port_key]:-}" ]; then
-                                    port_groups[$port_key]="$target"
-                                else
-                                    port_groups[$port_key]="${port_groups[$port_key]:-},$target"
-                                fi
-                            fi
+                    # ★ 目标清单走**唯一真源**（rule_target_endpoints，lib/core.sh）
+                    #   —— 与负载均衡管理菜单、探测端、路由端同一份口径
+                    #   （TARGET_STATES 形态：每个目标自带端口）
+                    local _tg_list _tg _tg_trim
+                    _tg_list="$(rule_target_endpoints)"
+                    if [ -n "$_tg_list" ]; then
+                        IFS=',' read -ra _tg_arr <<< "$_tg_list"
+                        for _tg in "${_tg_arr[@]}"; do
+                            _tg_trim="$(echo "$_tg" | xargs)"
+                            [ -z "$_tg_trim" ] && continue
+                            port_groups[$port_key]="$(port_group_add_target "${port_groups[$port_key]:-}" "$_tg_trim")"
                         done
-                    else
-                        # REMOTE_HOST是单个地址
-                        local target="$REMOTE_HOST:$REMOTE_PORT"
-                        # 检查是否已存在，避免重复添加
-                        if [[ "${port_groups[$port_key]:-}" != *"$target"* ]]; then
-                            if [ -z "${port_groups[$port_key]:-}" ]; then
-                                port_groups[$port_key]="$target"
-                            else
-                                port_groups[$port_key]="${port_groups[$port_key]:-},$target"
-                            fi
-                        fi
                     fi
                 fi
             fi

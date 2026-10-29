@@ -538,13 +538,13 @@ generate_endpoints_from_rules() {
                     IFS=',' read -ra target_list <<< "$targets_to_add"
                     for target in "${target_list[@]}"; do
                         target=$(echo "$target" | xargs)  # 去除空格
-                        if [[ "${port_groups[$port_key]:-}" != *"$target"* ]]; then
-                            if [ -z "${port_groups[$port_key]:-}" ]; then
-                                port_groups[$port_key]="$target"
-                            else
-                                port_groups[$port_key]="${port_groups[$port_key]:-},$target"
-                            fi
-                        fi
+                        [ -z "$target" ] && continue
+                        # ★ 去重必须**精确匹配**（port_group_add_target，lib/core.sh）：
+                        #   老的「字符串包含」判断会把 `a:80` 当成 `a:8080` 的重复 ⇒
+                        #   先声明长端口时，短端口那个目标被**整个丢掉**
+                        #   ⇒ 组里少了这个目标 ⇒ 主备切换静默失效。
+                        #   菜单端用同一个助手 ⇒ 两端口径一致。
+                        port_groups[$port_key]="$(port_group_add_target "${port_groups[$port_key]:-}" "$target")"
                         # ★ 记录「这个目标在本端口组里归哪条规则」——读状态时用它拼组合键。
                         #   端口组的目标列表是**跨规则合并**的（同一个目标只留一份），
                         #   但状态文件里**每条规则各自有一行**（写端按 RULE_ID|目标 各写一行）。
