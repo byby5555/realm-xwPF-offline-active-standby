@@ -208,6 +208,44 @@ safe_stop_realm_service() {
     echo "$service_was_running"
 }
 
+# 校验 realm 二进制**能不能在本机执行**
+#
+# ★ 为什么必须有这个检查（真机实测：干净 Debian 12 容器里跑官方安装脚本）：
+#   GitHub 上的 realm v2.9.6 需要 **glibc ≥ 2.38**，而 Debian 12 只有 **2.36**
+#   （Ubuntu 22.04 是 2.35）⇒ 二进制**装得上、跑不起来**：
+#     /usr/local/bin/realm: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.38' not found
+#   ★ 原实现只 `cp + chmod` 就打印「✓ realm 安装成功」，
+#     后面服务启动失败也照样一路打印「=== 安装完成！ ===」
+#     ⇒ 用户看到「装好了」，实际**一个转发都没跑**；
+#       而且**没有任何一条报错指向真因**（只有一句「服务启动失败」）。
+#   ⇒ 这里当场执行一次；跑不起来就**明确报错 + 给出方向**并中止安装。
+#
+# 用法：realm_binary_exec_check <realm 路径>
+#   rc=0 → 能执行
+#   rc=1 → 不能执行（诊断信息已写到 stderr）
+# ★ 抽成独立函数（不依赖全局状态）⇒ 台架可以直接单测这条判据。
+realm_binary_exec_check() {
+    local bin="$1"
+    local out="" rc=0
+
+    if [ ! -f "$bin" ]; then
+        echo "文件不存在: $bin" >&2
+        return 1
+    fi
+    if [ ! -x "$bin" ]; then
+        echo "没有执行权限: $bin" >&2
+        return 1
+    fi
+
+    out="$("$bin" --help 2>&1)" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        # 真实报错（典型：`version 'GLIBC_2.38' not found` / `bad interpreter` / `Exec format error`）
+        printf '%s\n' "$out" >&2
+        return 1
+    fi
+    return 0
+}
+
 # 安装 realm - 虚拟化适配
 install_realm() {
     echo -e "${GREEN}正在检查 realm 安装状态...${NC}"
@@ -221,8 +259,12 @@ install_realm() {
     # 检查是否已安装realm
     if [ -f "${REALM_PATH}" ] && [ -x "${REALM_PATH}" ]; then
         # 检查程序完整性（基本可执行性测试）
-        if ! ${REALM_PATH} --help >/dev/null 2>&1; then
-            echo -e "${YELLOW}检测到 realm 文件存在但可能已损坏，将重新安装...${NC}"
+        # ★ 用 realm_binary_exec_check（而不是裸的 `--help`）：
+        #   「文件存在但跑不起来」的原因不止损坏 —— glibc 过低 / 架构不匹配同样如此，
+        #   而这两种在**全新安装**的机器上很常见（realm 新版对 glibc 有要求）。
+        #   ⇒ 这里先把真实原因说清楚，再决定要不要重装。
+        if ! realm_binary_exec_check "${REALM_PATH}" >/dev/null 2>&1; then
+            echo -e "${YELLOW}检测到 realm 文件存在但**无法在本机执行**（可能损坏 / glibc 过低 / 架构不匹配），将重新安装...${NC}"
         else
             # 尝试获取版本信息
             local current_version=""
@@ -325,6 +367,27 @@ install_realm() {
     local archive_name=$(basename "$download_file")
 
     if (cd "$work_dir" && tar -xzf "$archive_name" && cp realm ${REALM_PATH} && chmod +x ${REALM_PATH}); then
+        # ★★ 自检：装进去的二进制**必须能在本机执行**（当场执行一次，不是等服务起不来才发现）
+        #   真机实测（干净 Debian 12 容器）：realm v2.9.6 需要 glibc ≥ 2.38，
+        #   Debian 12 只有 2.36 ⇒ 二进制装上了但**根本跑不起来**。
+        #   原实现在这里直接打印「✓ realm 安装成功」，
+        #   后面服务启动失败也照样一路打印「=== 安装完成！ ===」
+        #   ⇒ 用户看到「装好了」，实际一个转发都没跑，而且没有一条报错指向真因。
+        local _realm_exec_diag=""
+        _realm_exec_diag="$(realm_binary_exec_check "${REALM_PATH}" 2>&1)" || {
+            echo -e "${RED}✗ realm 二进制已安装，但**无法在本机执行** —— 安装中止${NC}"
+            echo -e "  路径: ${REALM_PATH}"
+            echo -e "  真实报错: ${_realm_exec_diag}"
+            echo -e "${YELLOW}  常见原因：${NC}"
+            echo -e "    ① glibc 版本过低（realm 新版对 glibc 有要求；实测 v2.9.6 需要 glibc ≥ 2.38）"
+            echo -e "       ⇒ 换 Debian 13+ / Ubuntu 24.04+，或手动装一个与本机兼容的 realm 二进制"
+            echo -e "    ② CPU 架构不匹配（下载的资产与本机架构不符）"
+            echo -e "    ③ 文件损坏（下载不完整）"
+            echo -e "${YELLOW}  本机 glibc：${NC}$(ldd --version 2>/dev/null | head -1)"
+            echo -e "${YELLOW}  自行复查：${NC}${REALM_PATH} --help"
+            exit 1
+        }
+
         echo -e "${GREEN}✓ realm 安装成功${NC}"
         
         # 只删除自动下载的文件，保留用户提供的本地文件
