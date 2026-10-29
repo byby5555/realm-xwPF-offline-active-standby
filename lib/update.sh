@@ -93,6 +93,79 @@ update_sha256_of() {
     fi
 }
 
+# 计算 **stdin** 的 sha256（内容指纹要用）
+update_sha256_stdin() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum 2>/dev/null | awk '{print $1}'
+    elif command -v openssl >/dev/null 2>&1; then
+        openssl dgst -sha256 2>/dev/null | awk '{print $NF}'
+    else
+        echo ""
+    fi
+}
+
+# ── 脚本包**内容指纹**（判定「是否已是最新」的唯一依据）───────────────
+#
+# ★ 为什么不能用版本号判定（这是真机踩出来的，不是理论推演）：
+#   SCRIPT_VERSION 是**人工维护**的字符串，历史上长期**没有跟着代码变**
+#   （从 2026-02 起就冻结在 v2.2.1，而 lib/*.sh 之后改过几十次）。
+#   ⇒ 更新中心每次都判「版本号相同 ⇒ 已是最新」⇒ 直接 return，**一个字节都不更新**
+#   ⇒ 用户在机器上跑「更新中心」，被告知「脚本包已是最新版本」，
+#     拿到的还是**旧代码**（本轮症状：菜单项 4 仍是旧的串行 + 10s 超时）。
+#   ⇒ 「是否最新」必须落到**文件内容**上，版本号只能给人看。
+#
+# 口径：入口 xwPF.sh + 全部 lib 文件（用产品自己声明的 UPDATE_LIB_FILES），
+#   逐个 sha256，按「sha + 相对路径」排序后再算一次 sha256
+#   ⇒ 任何一个文件的内容变了（哪怕版本号没变）⇒ 指纹就变了
+#   ⇒ 两边用**同一份清单 + 同一套相对路径**，指纹才可比。
+update_scripts_digest_of_paths() {
+    local xwpf="$1" libdir="$2" f out="" sha
+    [ -n "$xwpf" ] && [ -n "$libdir" ] || return 1
+
+    if [ -f "$xwpf" ]; then
+        sha="$(update_sha256_of "$xwpf")"
+        [ -n "$sha" ] && out="${sha}  xwPF.sh"$'\n'
+    fi
+    for f in "${UPDATE_LIB_FILES[@]}"; do
+        [ -f "$libdir/$f" ] || continue
+        sha="$(update_sha256_of "$libdir/$f")"
+        [ -n "$sha" ] || continue
+        out="${out}${sha}  lib/${f}"$'\n'
+    done
+
+    [ -n "$out" ] || return 1
+    printf '%s' "$out" | LC_ALL=C sort | update_sha256_stdin
+}
+
+# 已装脚本包的内容指纹（入口在 INSTALL_DIR，lib 在 LIB_DIR）
+update_scripts_local_digest() {
+    update_scripts_digest_of_paths "${INSTALL_DIR:-}/xwPF.sh" "${LIB_DIR:-}"
+}
+
+# 远端脚本包的内容指纹（下载一份到临时目录再算；取不到返回非 0）
+update_scripts_remote_digest() {
+    local tmp="${UPDATE_STAGING_ROOT}/.digest.$$" f d
+    rm -rf "$tmp" 2>/dev/null
+    mkdir -p "$tmp/lib" 2>/dev/null || return 1
+    update_tmp_register "$tmp"
+
+    if ! update_download_to "${UPDATE_REPO_RAW_URL}/xwPF.sh" "${tmp}/xwPF.sh"; then
+        rm -rf "$tmp" 2>/dev/null
+        return 1
+    fi
+    for f in "${UPDATE_LIB_FILES[@]}"; do
+        if ! update_download_to "${UPDATE_REPO_RAW_URL}/lib/$f" "${tmp}/lib/$f"; then
+            rm -rf "$tmp" 2>/dev/null
+            return 1
+        fi
+    done
+
+    d="$(update_scripts_digest_of_paths "${tmp}/xwPF.sh" "${tmp}/lib")"
+    rm -rf "$tmp" 2>/dev/null
+    [ -n "$d" ] || return 1
+    printf '%s' "$d"
+}
+
 # 归一化版本号：去掉前导 v/V
 #
 # 为什么必须有这一步：
@@ -540,18 +613,31 @@ safe_update_scripts() {
         fi
     done
 
-    # 3) 版本比对
-    local remote_ver local_ver
+    # 3) 版本比对（**只用于显示**）+ **内容比对**（判定「是否已是最新」的唯一依据）
+    local remote_ver local_ver remote_digest local_digest
     remote_ver=$(grep -oE '^SCRIPT_VERSION="[^"]+"' "${staging}/lib/core.sh" 2>/dev/null | head -1 | sed 's/.*="//; s/"$//')
     local_ver=$(grep -oE '^SCRIPT_VERSION="[^"]+"' "${LIB_DIR}/core.sh" 2>/dev/null | head -1 | sed 's/.*="//; s/"$//')
     echo -e "  当前脚本版本: ${GREEN}${local_ver:-未知}${NC}"
     echo -e "  最新脚本版本: ${GREEN}${remote_ver:-未知}${NC}"
 
-    if [ -n "$remote_ver" ] && [ "$(update_norm_version "$remote_ver")" = "$(update_norm_version "$local_ver")" ]; then
-        echo -e "${GREEN}✓ 脚本包已是最新版本${NC}"
+    # ★ 内容指纹（staging 里已经是刚下载好的远端文件 ⇒ 这里**零额外网络开销**）
+    remote_digest="$(update_scripts_digest_of_paths "${staging}/xwPF.sh" "${staging}/lib")"
+    local_digest="$(update_scripts_digest_of_paths "${INSTALL_DIR}/xwPF.sh" "$LIB_DIR")"
+    echo -e "  当前内容指纹: ${local_digest:0:12}"
+    echo -e "  最新内容指纹: ${remote_digest:0:12}"
+
+    # ★ 判定只看**内容**：版本号相同但内容不同 ⇒ 必须继续更新
+    #   （老实现只看版本号 ⇒ SCRIPT_VERSION 一冻结，脚本包就永远更新不了）
+    if [ -n "$remote_digest" ] && [ "$remote_digest" = "$local_digest" ]; then
+        echo -e "${GREEN}✓ 脚本包已是最新版本（内容一致）${NC}"
         rm -rf "$staging" 2>/dev/null
         update_lock_release
         return 0
+    fi
+
+    if [ -n "$remote_ver" ] && [ -n "$local_ver" ] \
+       && [ "$(update_norm_version "$remote_ver")" = "$(update_norm_version "$local_ver")" ]; then
+        echo -e "${YELLOW}  ★ 版本号相同但**文件内容不同** ⇒ 按内容更新（版本号已不能作为判据）${NC}"
     fi
 
     local ans=""
@@ -689,16 +775,22 @@ update_status_display() {
     fi
     [ -n "$asset" ] && echo -e "    ${BLUE}架构型号: ${asset}${NC}"
 
-    # 脚本包
+    # 脚本包（★ 判定按**内容指纹**，版本号只用于显示）
     local_ver=$(grep -oE '^SCRIPT_VERSION="[^"]+"' "${LIB_DIR}/core.sh" 2>/dev/null | head -1 | sed 's/.*="//; s/"$//')
     remote_ver=$(update_scripts_latest_version)
     local local_n remote_n
     local_n=$(update_norm_version "$local_ver")
     remote_n=$(update_norm_version "$remote_ver")
-    if [ -n "$remote_n" ] && [ "$remote_n" = "$local_n" ]; then
+    local local_digest remote_digest
+    local_digest="$(update_scripts_local_digest)"
+    remote_digest="$(update_scripts_remote_digest)"
+    if [ -z "$remote_digest" ]; then
+        echo -e "  ${YELLOW}脚本包${NC}       ${local_n:-未知}  ${YELLOW}(没取到远端内容，未能比对)${NC}"
+    elif [ "$remote_digest" = "$local_digest" ]; then
         echo -e "  ${GREEN}脚本包${NC}       ${local_n:-未知}  ${GREEN}(已是最新)${NC}"
     else
-        echo -e "  ${GREEN}脚本包${NC}       ${local_n:-未知} → ${remote_n:-未知}"
+        # ★ 版本号一样也算「内容不同」⇒ 否则会显示成「已是最新」，用户以为不用更新
+        echo -e "  ${YELLOW}脚本包${NC}       ${local_n:-未知} → ${remote_n:-未知}  ${YELLOW}(内容不同，建议更新)${NC}"
     fi
 
     return 0

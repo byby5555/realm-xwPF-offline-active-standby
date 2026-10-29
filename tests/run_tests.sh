@@ -310,7 +310,10 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #           T133 菜单端口组：TARGET_STATES 形态（每目标自带端口）的目标要**看得见 + 查得到时延**
 #           T134 菜单项 4「立即测试所有目标时延」：**并发 + 短超时 + 多采样**
 #             （并发度用「在飞标记目录」直接数，不靠耗时猜 ⇒ 确定性）
-HARNESS_VERSION="v2.23.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive + negctl-selfcheck + t45-portable-equiv + t45-win-mv-truth + t32-locale-pin + t53-menu-eof + t32-copy-form-2 + t32-anchor-guard + t32-clause-exempt + t53-helper-count + t53-neg-floor + history-preflight + preflight-empty-guard + preflight-exit-passthrough + t54-ui-eof-closure-invariants + t54-judge-selfcheck + t53-rel-threshold + only-unregistered-exit4 + registry-selfcheck + t40-case-count-contract + probe-budget-10s + install-list-from-product + t63-t67-quality-observation + t68-t76-switch-reliability + t77-t84-weight10-exclusive + t85-t88-n4-probe-regen + run-lock-done-marker + t114-readend-collapse + expect-fail-exit5 + t54-affirm-default-7b + t115-t116-claim-gate-identity + t117-t118-legacy-failover-guard + t119-t121-standby-target-parity + t122-shared-core-guard + pgrep-shim + t123-t127-fast-probe + t128-t130-install-completeness + t131-t132-realm-exec-check + t133-t134-menu-target-states)"
+#         · 第 28 轮：新增 T135（cases/32_update_content_digest_t135.sh）
+#           T135 更新中心的「是否已是最新」必须按**内容指纹**判定，不按版本号
+#             （版本号冻结 ⇒ 更新中心永远「已是最新」⇒ 脚本包永远更新不了）
+HARNESS_VERSION="v2.24.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive + negctl-selfcheck + t45-portable-equiv + t45-win-mv-truth + t32-locale-pin + t53-menu-eof + t32-copy-form-2 + t32-anchor-guard + t32-clause-exempt + t53-helper-count + t53-neg-floor + history-preflight + preflight-empty-guard + preflight-exit-passthrough + t54-ui-eof-closure-invariants + t54-judge-selfcheck + t53-rel-threshold + only-unregistered-exit4 + registry-selfcheck + t40-case-count-contract + probe-budget-10s + install-list-from-product + t63-t67-quality-observation + t68-t76-switch-reliability + t77-t84-weight10-exclusive + t85-t88-n4-probe-regen + run-lock-done-marker + t114-readend-collapse + expect-fail-exit5 + t54-affirm-default-7b + t115-t116-claim-gate-identity + t117-t118-legacy-failover-guard + t119-t121-standby-target-parity + t122-shared-core-guard + pgrep-shim + t123-t127-fast-probe + t128-t130-install-completeness + t131-t132-realm-exec-check + t133-t134-menu-target-states + t135-update-content-digest)"
 
 # shellcheck source=lib/harness.sh
 . "$SCRIPT_DIR/lib/harness.sh"
@@ -576,6 +579,11 @@ CASES=(
     #   ② 菜单项 4「立即测试所有目标时延」：串行 + 10s 超时 ⇒ 4 个目标最坏 40 秒，菜单像卡死
     "T133:case_T133_menu_shows_target_states_targets_with_latency"
     "T134:case_T134_menu_probe_is_concurrent_short_timeout_multisample"
+    # 更新中心的「是否已是最新」判定：必须按**内容指纹**，不能按版本号（T135 · cases/32_update_content_digest_t135.sh）
+    #   真机踩出来的：SCRIPT_VERSION 从 2026-02 起冻结在 v2.2.1，而 lib/*.sh 改过几十次
+    #   ⇒ 更新中心永远判「版本相同 ⇒ 已是最新」⇒ 脚本包**永远更新不了**
+    #   ⇒ 用户跑更新中心拿到的是旧代码（症状：菜单项 4 仍是旧的串行 + 10s 超时）
+    "T135:case_T135_update_center_judges_by_content_not_version"
 )
 
 

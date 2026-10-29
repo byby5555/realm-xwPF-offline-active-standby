@@ -261,7 +261,7 @@ bash /usr/local/bin/xwPF.sh
 === 版本对照 ===
   realm 主程序  v2.9.3  → v2.9.6
     架构型号: realm-x86_64-unknown-linux-gnu.tar.gz
-  脚本包       v2.2.1  → v2.2.1
+  脚本包       v2.3.0  → v2.3.0  (内容不同，建议更新)
 ```
 
 能查能升的东西：
@@ -269,8 +269,20 @@ bash /usr/local/bin/xwPF.sh
 | 对象 | 当前版本从哪来 | 最新版本从哪来 | 更新动作 |
 |------|----------------|----------------|----------|
 | realm 主程序 | `realm --version` | GitHub `releases/latest` 的 `tag_name` | `safe_update_realm`（`lib/update.sh`） |
-| 脚本包 | `lib/core.sh` 的 `SCRIPT_VERSION` | 远端 `lib/core.sh` 的 `SCRIPT_VERSION` | `safe_update_scripts`（`lib/update.sh`） |
+| 脚本包 | `lib/core.sh` 的 `SCRIPT_VERSION`（**仅用于显示**） | 远端 `lib/core.sh` 的 `SCRIPT_VERSION`（**仅用于显示**） | `safe_update_scripts`（`lib/update.sh`） |
 | 架构型号 | `detect_realm_asset_name`（`lib/core.sh`） | 同左 | CPU 架构 + libc（gnu/musl）→ 官方资产名 |
+
+> ★ **脚本包「是否已是最新」按「内容指纹」判定，不按版本号。**
+> `SCRIPT_VERSION` 是人工维护的字符串，历史上长期没有跟着代码变
+> （从 2026-02 起冻结在 `v2.2.1`，而 `lib/*.sh` 之后改过几十次）。
+> 只比版本号的话，更新中心每次都会判「版本相同 ⇒ 已是最新」而**一个字节都不更新**，
+> 用户看到的却是「脚本包已是最新版本」—— 拿到的还是旧代码。
+>
+> 现在的口径（`update_scripts_digest_of_paths`，`lib/update.sh`）：
+> 入口 `xwPF.sh` + 全部 `lib/*.sh`（用产品自己声明的 `UPDATE_LIB_FILES`）逐个 sha256，
+> 按「sha + 相对路径」排序后再算一次 sha256 ⇒ **内容指纹**。
+> 指纹一致 ⇒ 才是「已是最新」；指纹不同 ⇒ 一律走更新流程（哪怕版本号一样）。
+> 版本号只用来给人看，改不改版本号都不影响能不能更新。
 
 **安全更新的五条纪律**（`lib/update.sh`）：
 
