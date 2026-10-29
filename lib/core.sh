@@ -86,6 +86,41 @@ rule_target_endpoints() {
     printf '%s' "$out"
 }
 
+# 端口组目标列表：并入一个目标（**精确去重**）
+#
+# ★ 为什么不能用「字符串包含」判断去重：
+#   `a:80` 是 `a:8080` 的**子串** ⇒ 先声明长端口那个目标时，
+#   短端口那个目标会被判成「重复」⇒ **整个丢掉**
+#   ⇒ 组里少了这个目标 ⇒ 主备切换**静默失效**（该切不切，且界面看不出来）。
+#   端口组的目标列表在**菜单**与**路由端**都要用 ⇒ 去重口径必须同源（放这里）。
+#
+# 用法：port_group_add_target <当前列表> <目标> → 打印合并后的列表
+port_group_add_target() {
+    local list="$1" target="$2" item
+    local _old_ifs="$IFS"
+
+    target="$(echo "$target" | xargs)"   # 去除空格（与目标枚举口径一致）
+    [ -n "$target" ] || { printf '%s' "$list"; return 0; }
+
+    IFS=','
+    for item in $list; do
+        item="$(echo "$item" | xargs)"
+        if [ "$item" = "$target" ]; then
+            IFS="$_old_ifs"
+            printf '%s' "$list"
+            return 0
+        fi
+    done
+    IFS="$_old_ifs"
+
+    if [ -z "$list" ]; then
+        printf '%s' "$target"
+    else
+        printf '%s' "$list,$target"
+    fi
+    return 0
+}
+
 # 通用的服务重启函数
 restart_and_confirm() {
     local operation_name="$1"
