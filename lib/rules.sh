@@ -652,7 +652,14 @@ sync_target_states_for_port() {
         if [ -f "$rf" ]; then
             if read_rule_file "$rf" && [ "$LISTEN_PORT" = "$port" ] && [ "$BALANCE_MODE" != "off" ]; then
                 sed -i "s|^TARGET_STATES=.*|TARGET_STATES=\"$new_target_states\"|" "$rf"
-                sed -i "s|^WEIGHTS=.*|WEIGHTS=\"$new_weights\"|" "$rf"
+                # ★ 不许把整组权重抹空：
+                #   目标变更/删除时如果算不出新的权重串（new_weights 为空），
+                #   就**保留原有组权重串**。
+                #   老实现无条件写 WEIGHTS="" ⇒ 主备优先级（10,0）被清空
+                #   ⇒ 菜单显示「未配置」、路由端不再按 10/0 排主备。
+                if [ -n "$new_weights" ]; then
+                    sed -i "s|^WEIGHTS=.*|WEIGHTS=\"$new_weights\"|" "$rf"
+                fi
                 updated_count=$((updated_count + 1))
             fi
         fi
@@ -2273,7 +2280,10 @@ switch_balance_mode() {
         declare -a rule_ports
         declare -a rule_names
 
-        for port_key in "${!port_groups[@]}"; do
+        # ★ 端口组按**端口号排序**再编号（同「权重配置管理」菜单）：
+        #   哈希序会让同一台机器两次进菜单的编号不同，
+        #   而端口组常常同名（两个端口组都叫「中转」）⇒ 极易选错组。
+        for port_key in $(printf '%s\n' "${!port_groups[@]}" | sort -n); do
             # 计算目标服务器总数
             IFS=',' read -ra targets <<< "${port_groups[$port_key]:-}"
             local target_count=${#targets[@]}
@@ -2403,13 +2413,57 @@ switch_balance_mode() {
         done
         unset _i _tc_arr
 
+        # ★ 主备优先级权重（"10,0"）是**用户资产**：切出主备不能丢。
+        #
+        #   老实现在切出主备时把 WEIGHTS 直接重置成 1,1，切回来也不恢复
+        #   ⇒ 用户设的 10/0 被抹成 1,1：
+        #       · 菜单显示「当前权重 1、1」（用户以为界面算错了，其实是真值被抹了）
+        #       · 路由端读到 1,1 ⇒ 不含 0 ⇒ 不再按 10/0 排主备优先级
+        #         （主备退化成「第一个健康的当主」，用户设的优先级失效）
+        #   ⇒ 现在：切出时把权重串存进 PREV_WEIGHTS，切回主备时原样恢复。
+        local standby_weights_before=""
+        if [ "$current_balance_mode" = "active-standby" ]; then
+            standby_weights_before="$(port_group_weights_string "$selected_port")"
+        fi
+
         # 是否从 active-standby 切换到其他模式？
-        # active-standby 运行时 WEIGHTS 会被主备逻辑翻成 0/1 列表；
-        # 直接切到 roundrobin/iphash/off 会让这个 0/1 列表被当成普通权重使用，
-        # 造成"健康节点 weight=0"。这里统一重置 WEIGHTS，避免泄漏。
+        # 切出主备时 WEIGHTS 要换成比例分摊的默认权重（1,1,1...）：
+        #   否则 "10,0" 会被当成普通分流权重（备机权重 0 ⇒ 永远不承载流量）。
+        #   ★ 原注释说「主备逻辑会把 WEIGHTS 翻成 0/1 列表」——那是**读端内存里**算的
+        #   （lib/realm.sh 生成 endpoint 时翻转），**不会写回规则文件**；
+        #   要重置的是「用户填的优先级权重」，所以切回时必须还原（见上）。
         local reset_stale_weights=false
         if [ "$current_balance_mode" = "active-standby" ] && [ "$new_mode" != "active-standby" ]; then
             reset_stale_weights=true
+        fi
+
+        # 切回主备时要恢复的权重串（只在**真的从别的模式切进来**时才恢复，
+        #   否则「已经在主备里又点了一次主备」会把当前权重覆盖成旧值）
+        local restore_weights=""
+        if [ "$new_mode" = "active-standby" ] && [ "$current_balance_mode" != "active-standby" ]; then
+            local _saved_w="" _sw_arr
+            for _srf in "${RULES_DIR}"/rule-*.conf; do
+                [ -f "$_srf" ] || continue
+                read_rule_file "$_srf" || continue
+                [ "$RULE_ROLE" = "1" ] || continue
+                [ "$LISTEN_PORT" = "$selected_port" ] || continue
+                _saved_w="${PREV_WEIGHTS:-}"
+                break
+            done
+            if [ -n "$_saved_w" ]; then
+                IFS=',' read -ra _sw_arr <<< "$_saved_w"
+                if [ "${#_sw_arr[@]}" -eq "$target_count_for_reset" ]; then
+                    restore_weights="$_saved_w"
+                fi
+            fi
+            if [ -z "$restore_weights" ] && [ "$target_count_for_reset" -gt 0 ]; then
+                # 没有保存值（或条数与目标数对不上）：按「第一个 10、其余 0」生成
+                #   （严格主备的默认形态：一条主、其余待命）
+                restore_weights="10"
+                for ((_i=1; _i<target_count_for_reset; _i++)); do
+                    restore_weights="$restore_weights,0"
+                done
+            fi
         fi
 
         for rule_file in "${RULES_DIR}"/rule-*.conf; do
@@ -2429,6 +2483,11 @@ switch_balance_mode() {
                         _rule_set_field "$rule_file" "PREV_BALANCE_MODE" "$_prev_mode"
                     else
                         _rule_set_field "$rule_file" "PREV_BALANCE_MODE" "$new_mode"
+                    fi
+
+                    # ★ 切出主备时，把主备优先级权重**存起来**（切回时还原）
+                    if [ "$reset_stale_weights" = true ] && [ -n "$standby_weights_before" ]; then
+                        _rule_set_field "$rule_file" "PREV_WEIGHTS" "$standby_weights_before"
                     fi
 
                     # 切出 active-standby 时重置 WEIGHTS / TARGET_STATES
@@ -2452,6 +2511,17 @@ switch_balance_mode() {
                 fi
             fi
         done
+
+        # ★ 切回主备：把切出前保存的优先级权重**原样写回**（10,0 回来）
+        #   —— 不恢复的话，用户设的主备优先级就永久丢了。
+        if [ -n "$restore_weights" ]; then
+            local _restored
+            _restored="$(_write_port_group_weights "$selected_port" "$restore_weights")"
+            case "$_restored" in ''|*[!0-9]*) _restored=0 ;; esac
+            if [ "$_restored" -gt 0 ]; then
+                echo -e "${GREEN}✓ 已恢复该端口组的主备优先级权重: $restore_weights${NC}"
+            fi
+        fi
 
         if [ $updated_count -gt 0 ]; then
             echo -e "${GREEN}✓ 已将端口 $selected_port 的 $updated_count 个规则的负载均衡模式更新为: $mode_display${NC}"
@@ -2491,14 +2561,10 @@ weight_management_menu() {
                 if read_rule_file "$rule_file" && [ "$RULE_ROLE" = "1" ]; then
                     local port_key="$LISTEN_PORT"
 
-                    # 存储端口配置（优先使用包含完整权重的规则）
+                    # 存储端口配置
                     if [ -z "${port_configs[$port_key]:-}" ]; then
                         port_configs[$port_key]="$RULE_NAME"
-                        port_weights[$port_key]="$WEIGHTS"
                         port_balance_modes[$port_key]="${BALANCE_MODE:-off}"
-                    elif [[ "$WEIGHTS" == *","* ]] && [[ "${port_weights[$port_key]:-}" != *","* ]]; then
-                        # 如果当前规则有完整权重而已存储的没有，更新为完整权重
-                        port_weights[$port_key]="$WEIGHTS"
                     fi
 
                     # ★ 目标清单走**唯一真源**（rule_target_endpoints，lib/core.sh）
@@ -2518,12 +2584,23 @@ weight_management_menu() {
             fi
         done
 
+        # ★ 组权重串走**唯一真源**（port_group_weights_string，lib/core.sh）
+        #   —— 界面显示的权重必须与路由端真正用的权重是同一份，
+        #     否则会出现「界面显示 1、1，实际跑的是 10、0」这种对不上的状态。
+        for port_key in "${!port_groups[@]}"; do
+            port_weights[$port_key]="$(port_group_weights_string "$port_key")"
+        done
+
         # 检查是否有需要权重配置的端口组（多目标服务器）
         local has_balance_rules=false
         local rule_ports=()
         local rule_names=()
 
-        for port_key in "${!port_groups[@]}"; do
+        # ★ 端口组按**端口号排序**再编号：
+        #   关联数组的键遍历顺序是哈希序（同一台机器两次进菜单可能不同），
+        #   而本菜单常出现「多个组同名」（例：两个端口组都叫「中转」），
+        #   编号漂移 + 同名 ⇒ 用户很容易选错组，把权重改到另一个端口上。
+        for port_key in $(printf '%s\n' "${!port_groups[@]}" | sort -n); do
             # 计算目标服务器总数
             IFS=',' read -ra targets <<< "${port_groups[$port_key]:-}"
             local target_count=${#targets[@]}
@@ -2605,21 +2682,35 @@ configure_port_group_weights() {
     echo "目标服务器列表:"
 
     # 解析当前权重
-    local current_weights
+    #
+    # ★ 显示必须**忠实于落盘真值**：
+    #   老实现在没有权重串时填「默认相等权重 1,1」——
+    #   于是「磁盘上压根没有权重配置」被显示成「每个目标权重都是 1」，
+    #   用户分不清「我设的就是 1」和「没设」，还以为是菜单算错了。
+    #   （真机上就出现过：权重被别处清空后，菜单一直显示 1、1。）
+    #   ⇒ 没有配置就如实显示「未配置」，并说清楚是怎么来的。
+    local current_weights=()
+    local weights_configured=false
     if [ -n "$current_weights_str" ]; then
         IFS=',' read -ra current_weights <<< "$current_weights_str"
-    else
-        # 默认相等权重
-        for ((i=0; i<target_count; i++)); do
-            current_weights[i]=1
-        done
+        weights_configured=true
     fi
 
     # 显示当前配置
     for ((i=0; i<target_count; i++)); do
-        local weight="${current_weights[i]:-1}"
+        local weight="未配置"
+        if [ "$weights_configured" = true ]; then
+            weight="${current_weights[i]:-未配置}"
+        fi
         echo -e "  $((i+1)). ${targets[i]} [当前权重: $weight]"
     done
+
+    if [ "$weights_configured" != true ]; then
+        echo ""
+        echo -e "${YELLOW}该规则组当前没有保存的权重配置（磁盘上 WEIGHTS 为空）${NC}"
+        echo -e "${BLUE}· 常见原因：切换过负载均衡模式 / 改过端口 / 删过目标 ⇒ 权重被清空${NC}"
+        echo -e "${BLUE}· 直接输入下面的权重序列即可重新保存（10,0 = 主备；5,5 = 按比例分流）${NC}"
+    fi
 
     echo ""
     echo "请输入权重序列 (用逗号分隔):"
@@ -2628,7 +2719,7 @@ configure_port_group_weights() {
     echo -e "${GREEN}含 0 即自动主备: 如 \"10,0\" → 自动进入主备模式并开启主备路由${NC}"
     echo -e "${GREEN}权重 10 是独占权重: 只能给一个目标, 给了 10 其余必须全是 0${NC}"
     echo -e "${BLUE}  主备模式下：权重数值大的排在前，同一时刻只有一个主承接流量；权重表示优先级，不是分流比例${NC}"
-    echo -e "${BLUE}  权重 0 的目标不参与主备；主故障自动切备，主恢复自动切回${NC}"
+    echo -e "${BLUE}  权重 0 = 平时不承载流量（备用链路）；主故障时自动接管，主恢复后自动切回${NC}"
     echo ""
 
     ui_read_into "权重序列: " weight_input
@@ -2748,47 +2839,19 @@ preview_port_group_weight_config() {
     echo "规则组: $rule_name (端口: $port)"
     echo "权重配置变更:"
 
-    # 获取当前权重（从第一个相关规则文件读取）
-    local current_weights
-    local first_rule_file=""
-    for rule_file in "${RULES_DIR}"/rule-*.conf; do
-        if [ -f "$rule_file" ]; then
-            if read_rule_file "$rule_file" && [ "$RULE_ROLE" = "1" ] && [ "$LISTEN_PORT" = "$port" ]; then
-                first_rule_file="$rule_file"
-                if [ -n "$WEIGHTS" ]; then
-                    if [[ "$WEIGHTS" == *","* ]]; then
-                        # 完整权重字符串
-                        IFS=',' read -ra current_weights <<< "$WEIGHTS"
-                    else
-                        # 单个权重值，需要查找完整权重
-                        local found_full_weights=false
-                        for check_rule_file in "${RULES_DIR}"/rule-*.conf; do
-                            if [ -f "$check_rule_file" ]; then
-                                if read_rule_file "$check_rule_file" && [ "$RULE_ROLE" = "1" ] && [ "$LISTEN_PORT" = "$port" ] && [[ "$WEIGHTS" == *","* ]]; then
-                                    IFS=',' read -ra current_weights <<< "$WEIGHTS"
-                                    found_full_weights=true
-                                    break
-                                fi
-                            fi
-                        done
-
-                        if [ "$found_full_weights" = false ]; then
-                            # 默认相等权重
-                            for ((i=0; i<${#targets[@]}; i++)); do
-                                current_weights[i]=1
-                            done
-                        fi
-                    fi
-                else
-                    # 默认相等权重
-                    for ((i=0; i<${#targets[@]}; i++)); do
-                        current_weights[i]=1
-                    done
-                fi
-                break
-            fi
-        fi
-    done
+    # 获取当前权重
+    #
+    # ★ 走**唯一真源**（port_group_weights_string，lib/core.sh）：
+    #   老实现在这里自己又枚举了一遍规则文件，和菜单、路由端各写一份口径
+    #   ⇒ 三处漂移时，预览里显示的「旧权重」会和实际落盘的对不上。
+    #   没有权重配置时如实显示「未配置」，不拿 1 去糊弄。
+    local current_weights=()
+    local current_weights_str="$(port_group_weights_string "$port")"
+    local current_configured=false
+    if [ -n "$current_weights_str" ]; then
+        IFS=',' read -ra current_weights <<< "$current_weights_str"
+        current_configured=true
+    fi
 
     # 解析新权重
     IFS=',' read -ra new_weights <<< "$weight_input"
@@ -2801,7 +2864,10 @@ preview_port_group_weight_config() {
 
     # 显示变更详情
     for ((i=0; i<${#targets[@]}; i++)); do
-        local old_weight="${current_weights[i]:-1}"
+        local old_weight="未配置"
+        if [ "$current_configured" = true ]; then
+            old_weight="${current_weights[i]:-未配置}"
+        fi
         local new_weight="${new_weights[i]}"
         local percentage
         if command -v bc >/dev/null 2>&1; then
@@ -2822,7 +2888,7 @@ preview_port_group_weight_config() {
     # 权重含 0 → 预览里明确告知会自动进入主备模式
     if weights_contain_zero "$weight_input"; then
         echo -e "${GREEN}检测到权重 0，将自动启用主备模式 (active-standby):${NC}"
-        echo -e "  ${BLUE}· 权重数值大的排在前，同一时刻只有一个主承接流量；权重 0 的目标不参与主备（权重是优先级，不是分流比例）${NC}"
+        echo -e "  ${BLUE}· 权重数值大的排在前，同一时刻只有一个主承接流量；权重 0 = 平时不承载流量的备用链路（权重是优先级，不是分流比例）${NC}"
         echo -e "  ${BLUE}· 自动开启故障转移与健康检查：主故障自动切到备，主恢复后切回主${NC}"
         echo -e "  ${BLUE}· 健康检查探测方式: TCP 连接探测 (目标端口)，不是 ping${NC}"
         echo -e "  ${YELLOW}· 会拉起常驻健康检查服务（systemd timer，周期性探测目标端口，直到用故障转移菜单关闭）${NC}"
@@ -2850,76 +2916,12 @@ apply_port_group_weight_config() {
     local updated_count=0
 
     # 更新该端口的所有相关规则文件
-    for rule_file in "${RULES_DIR}"/rule-*.conf; do
-        if [ -f "$rule_file" ]; then
-            if read_rule_file "$rule_file" && [ "$RULE_ROLE" = "1" ] && [ "$LISTEN_PORT" = "$port" ]; then
-                # 更新规则文件中的权重配置
-                #
-                # ★ 索引口径：用户填的权重序列是按**目标序号**编号的 ——
-                #   展示侧把每条规则的 REMOTE_HOST 按逗号展开成目标序列，
-                #   validate_weight_input 也是按目标数校验个数。
-                #   旧实现却按**规则序号**去取 weight_array[rule_index]，
-                #   两套口径不一致 → 一条规则含多个地址时，后续规则会拿到
-                #   别的目标的权重（串位）。这里改成按目标序号取。
-                #
-                #   落盘约定不变：
-                #     · 组内第一条规则存**完整**权重串（组权重串的落点）
-                #     · 其余规则存**自己那个目标**对应的单个权重（不含逗号，
-                #       因此不会覆盖组权重串 —— 读取侧取「含逗号的那份」）
-                local rule_index=0
-                local target_offset=0
-                local target_weight="$weight_input"
-
-                # 计算当前规则在同端口规则中的序号，
-                # 以及它在**目标序列**里的起始下标（前面的规则各占多少个目标）
-                for check_rule_file in "${RULES_DIR}"/rule-*.conf; do
-                    if [ -f "$check_rule_file" ]; then
-                        if read_rule_file "$check_rule_file" && [ "$RULE_ROLE" = "1" ] && [ "$LISTEN_PORT" = "$port" ]; then
-                            if [ "$check_rule_file" = "$rule_file" ]; then
-                                break
-                            fi
-                            rule_index=$((rule_index + 1))
-                            # 该规则展开后占用的目标数（REMOTE_HOST 可能含多个地址）
-                            local n_targets=1
-                            if [[ "$REMOTE_HOST" == *","* ]]; then
-                                local -a _wi_hosts
-                                IFS=',' read -ra _wi_hosts <<< "$REMOTE_HOST"
-                                n_targets=${#_wi_hosts[@]}
-                            fi
-                            target_offset=$((target_offset + n_targets))
-                        fi
-                    fi
-                done
-
-                # 按目标序号取权重（不再按规则序号）
-                if [ $rule_index -eq 0 ]; then
-                    # 第一个规则存储完整权重
-                    target_weight="$weight_input"
-                else
-                    # 其他规则存储自己第一个目标对应的单个权重
-                    IFS=',' read -ra weight_array <<< "$weight_input"
-                    target_weight="${weight_array[$target_offset]:-1}"
-                fi
-
-                if grep -q "^WEIGHTS=" "$rule_file"; then
-                    # 更新现有的WEIGHTS字段
-                    if command -v sed >/dev/null 2>&1; then
-                        sed -i.bak "s/^WEIGHTS=.*/WEIGHTS=\"$target_weight\"/" "$rule_file" && rm -f "$rule_file.bak"
-                    else
-                        # 如果没有sed，使用awk替代
-                        awk -v new_weights="WEIGHTS=\"$target_weight\"" '
-                            /^WEIGHTS=/ { print new_weights; next }
-                            { print }
-                        ' "$rule_file" > "$rule_file.tmp" && mv "$rule_file.tmp" "$rule_file"
-                    fi
-                else
-                    # 如果没有WEIGHTS字段，在文件末尾添加
-                    echo "WEIGHTS=\"$target_weight\"" >> "$rule_file"
-                fi
-                updated_count=$((updated_count + 1))
-            fi
-        fi
-    done
+    #
+    # ★ 权重 → 规则的分配与写盘只有一份实现（_write_port_group_weights）：
+    #   「组内第一条规则存完整权重串，其余规则各存自己那个目标的单个权重」
+    #   是落盘约定；菜单写盘、模式切换还原权重都走它 ⇒ 两处口径不会不一致。
+    updated_count="$(_write_port_group_weights "$port" "$weight_input")"
+    case "$updated_count" in ''|*[!0-9]*) updated_count=0 ;; esac
 
     if [ $updated_count -gt 0 ]; then
         echo -e "${GREEN}✓ 已更新 $updated_count 个规则文件的权重配置${NC}"
@@ -3036,6 +3038,65 @@ _rule_set_field() {
     fi
 }
 
+# 把一组权重写回端口组的规则文件（**唯一实现**）
+#
+# 落盘约定：
+#   · 组内**第一条**规则存完整权重串（例："10,0"）= 组权重串的落点
+#   · 其余规则各存**自己那个目标**对应的单个权重（例："0"，不含逗号）
+#     （读取侧取「含逗号的那份」⇒ 单个值不会覆盖组权重串）
+#
+# 索引口径：用户填的权重序列按**目标序号**编号
+#   （展示侧把每条规则的 REMOTE_HOST 按逗号展开成目标序列，
+#     validate_weight_input 也按目标数校验个数）。
+#   早期实现按**规则序号**取 ⇒ 一条规则含多个地址时后续规则串位，已修正。
+#
+# 用法：_write_port_group_weights <端口> <权重串> → 打印写了几条规则
+#
+# ★ 为什么「算分配」与「写盘」合成一个函数：
+#   分成两个函数就得把结果按行传回调用方 ⇒ 要么用 `while read` 循环拆行
+#   （**循环外的读入在静态检查里是违规形态**：stdin 来自重定向时循环体内
+#     仍可能被判成「交互读入」），要么改用进程替换等更绕的写法。
+#   ⇒ 直接在同一个函数里算完就写，零中间态。
+_write_port_group_weights() {
+    local port="$1"
+    local weights_str="$2"
+    local rule_file rule_index=0 target_offset=0 updated=0
+    local -a _pga_w
+
+    IFS=',' read -ra _pga_w <<< "$weights_str"
+
+    for rule_file in "${RULES_DIR}"/rule-*.conf; do
+        [ -f "$rule_file" ] || continue
+        read_rule_file "$rule_file" || continue
+        [ "$RULE_ROLE" = "1" ] || continue
+        [ "$LISTEN_PORT" = "$port" ] || continue
+
+        local target_weight
+        if [ "$rule_index" -eq 0 ]; then
+            # 第一条规则：存完整权重串
+            target_weight="$weights_str"
+        else
+            # 其余规则：存自己那个目标对应的单个权重
+            target_weight="${_pga_w[$target_offset]:-1}"
+        fi
+        _rule_set_field "$rule_file" "WEIGHTS" "$target_weight"
+        updated=$((updated + 1))
+
+        # 下一条规则的起始目标下标 = 本规则展开后占用的目标数
+        #   （REMOTE_HOST 可能含多个地址）
+        local n_targets=1
+        if [[ "$REMOTE_HOST" == *","* ]]; then
+            local -a _pga_hosts
+            IFS=',' read -ra _pga_hosts <<< "$REMOTE_HOST"
+            n_targets=${#_pga_hosts[@]}
+        fi
+        target_offset=$((target_offset + n_targets))
+        rule_index=$((rule_index + 1))
+    done
+    printf '%s\n' "$updated"
+    return 0
+}
+
 # 端口组模式状态快照（用于失败回滚）
 _REALM_PORT_STATE_FILES=()
 _REALM_PORT_STATE_VALUES=()
@@ -3050,7 +3111,10 @@ _capture_port_mode_state() {
     for rule_file in "${RULES_DIR}"/rule-*.conf; do
         if [ -f "$rule_file" ] && read_rule_file "$rule_file" && [ "$RULE_ROLE" = "1" ] && [ "$LISTEN_PORT" = "$port" ]; then
             _REALM_PORT_STATE_FILES+=("$rule_file")
-            _REALM_PORT_STATE_VALUES+=("${BALANCE_MODE:-off}|${FAILOVER_ENABLED:-false}|${TARGET_STATES:-}")
+            # 快照里带上 WEIGHTS：健康检查起不来时回滚模式，
+            #   权重也必须一起回滚 —— 否则会留下「模式回滚了、权重还是主备值」的半吊子状态
+            #   （切到比例分流时那个权重串会被当成普通分流权重用）。
+            _REALM_PORT_STATE_VALUES+=("${BALANCE_MODE:-off}|${FAILOVER_ENABLED:-false}|${TARGET_STATES:-}|${WEIGHTS:-}")
         fi
     done
 }
@@ -3063,10 +3127,13 @@ _restore_port_mode_state() {
         local mode="${value%%|*}"
         local rest="${value#*|}"
         local failover="${rest%%|*}"
-        local target_states="${rest#*|}"
+        local rest2="${rest#*|}"
+        local target_states="${rest2%%|*}"
+        local weights="${rest2#*|}"
         _rule_set_field "$rule_file" "BALANCE_MODE" "$mode"
         _rule_set_field "$rule_file" "FAILOVER_ENABLED" "$failover"
         _rule_set_field "$rule_file" "TARGET_STATES" "$target_states"
+        _rule_set_field "$rule_file" "WEIGHTS" "$weights"
     done
 }
 

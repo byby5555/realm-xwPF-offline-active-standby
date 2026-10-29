@@ -313,7 +313,12 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #         · 第 28 轮：新增 T135（cases/32_update_content_digest_t135.sh）
 #           T135 更新中心的「是否已是最新」必须按**内容指纹**判定，不按版本号
 #             （版本号冻结 ⇒ 更新中心永远「已是最新」⇒ 脚本包永远更新不了）
-HARNESS_VERSION="v2.24.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive + negctl-selfcheck + t45-portable-equiv + t45-win-mv-truth + t32-locale-pin + t53-menu-eof + t32-copy-form-2 + t32-anchor-guard + t32-clause-exempt + t53-helper-count + t53-neg-floor + history-preflight + preflight-empty-guard + preflight-exit-passthrough + t54-ui-eof-closure-invariants + t54-judge-selfcheck + t53-rel-threshold + only-unregistered-exit4 + registry-selfcheck + t40-case-count-contract + probe-budget-10s + install-list-from-product + t63-t67-quality-observation + t68-t76-switch-reliability + t77-t84-weight10-exclusive + t85-t88-n4-probe-regen + run-lock-done-marker + t114-readend-collapse + expect-fail-exit5 + t54-affirm-default-7b + t115-t116-claim-gate-identity + t117-t118-legacy-failover-guard + t119-t121-standby-target-parity + t122-shared-core-guard + pgrep-shim + t123-t127-fast-probe + t128-t130-install-completeness + t131-t132-realm-exec-check + t133-t134-menu-target-states + t135-update-content-digest)"
+#         · 第 29 轮：新增 T136（cases/33_weight_display_truth_t136.sh）
+#           T136 权重菜单：显示必须**忠实于落盘真值**；主备优先级权重（10,0）不能被切模式抹掉
+#             （切出主备把 WEIGHTS 抹成 1,1、切回主备不恢复 ⇒ 菜单显示 1、1，
+#               路由端也不再按 10/0 排主备优先级）
+#             负向对照用**真实旧实现**（历史对象 weight-display-pre），不是文本匹配注入
+HARNESS_VERSION="v2.25.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive + negctl-selfcheck + t45-portable-equiv + t45-win-mv-truth + t32-locale-pin + t53-menu-eof + t32-copy-form-2 + t32-anchor-guard + t32-clause-exempt + t53-helper-count + t53-neg-floor + history-preflight + preflight-empty-guard + preflight-exit-passthrough + t54-ui-eof-closure-invariants + t54-judge-selfcheck + t53-rel-threshold + only-unregistered-exit4 + registry-selfcheck + t40-case-count-contract + probe-budget-10s + install-list-from-product + t63-t67-quality-observation + t68-t76-switch-reliability + t77-t84-weight10-exclusive + t85-t88-n4-probe-regen + run-lock-done-marker + t114-readend-collapse + expect-fail-exit5 + t54-affirm-default-7b + t115-t116-claim-gate-identity + t117-t118-legacy-failover-guard + t119-t121-standby-target-parity + t122-shared-core-guard + pgrep-shim + t123-t127-fast-probe + t128-t130-install-completeness + t131-t132-realm-exec-check + t133-t134-menu-target-states + t135-update-content-digest + t136-weight-display-truth)"
 
 # shellcheck source=lib/harness.sh
 . "$SCRIPT_DIR/lib/harness.sh"
@@ -584,6 +589,12 @@ CASES=(
     #   ⇒ 更新中心永远判「版本相同 ⇒ 已是最新」⇒ 脚本包**永远更新不了**
     #   ⇒ 用户跑更新中心拿到的是旧代码（症状：菜单项 4 仍是旧的串行 + 10s 超时）
     "T135:case_T135_update_center_judges_by_content_not_version"
+    # 权重菜单：显示必须忠实于落盘真值 + 主备优先级权重（10,0）不能被切模式抹掉
+    # （T136 · cases/33_weight_display_truth_t136.sh）
+    #   真机踩出来的：切出主备时 WEIGHTS 被重置成 1,1，切回主备**不恢复**
+    #   ⇒ 用户设的 10/0 永久丢失（菜单显示「当前权重 1、1」，
+    #     路由端也不再按 10/0 排主备优先级 ⇒ 主备退化成「第一个健康的当主」）
+    "T136:case_T136_weight_display_matches_disk_and_standby_priority_survives_mode_switch"
 )
 
 

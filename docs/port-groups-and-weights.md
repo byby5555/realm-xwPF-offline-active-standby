@@ -72,14 +72,25 @@ REMOTE_PORT="8080"
 
 `switch_balance_mode`（`lib/rules.sh` 的 `switch_balance_mode`）在写新模式时会**重置 `WEIGHTS`**：
 
-| 从 → 到 | `WEIGHTS` 处理 | `TARGET_STATES` | 源码位置 |
-|---------|-----------------|-----------------|----------|
-| `active-standby` → `off` | 清空 | 清空 | `lib/rules.sh` 的 `switch_balance_mode` |
-| `active-standby` → `roundrobin` / `iphash` | 重置为 `1,1,1,...`（按目标数） | 清空 | `lib/rules.sh` 的 `switch_balance_mode` |
-| `active-standby` → 其它（未列出的） | 清空 | 不变 | `lib/rules.sh` 的 `switch_balance_mode` |
+| 从 → 到 | `WEIGHTS` 处理 | `PREV_WEIGHTS` | `TARGET_STATES` | 源码位置 |
+|---------|-----------------|-----------------|-----------------|----------|
+| `active-standby` → `off` | 清空 | 保留（切回主备时恢复） | 清空 | `lib/rules.sh` 的 `switch_balance_mode` |
+| `active-standby` → `roundrobin` / `iphash` | 重置为 `1,1,1,...`（按目标数） | **保留切出前的权重串**（如 `10,0`） | 清空 | `lib/rules.sh` 的 `switch_balance_mode` |
+| `roundrobin` / `iphash` → `active-standby` | **恢复 `PREV_WEIGHTS`**（没有则按「第一个 10、其余 0」生成） | 保留 | 按需 | `lib/rules.sh` 的 `switch_balance_mode` |
+| `active-standby` → 其它（未列出的） | 清空 | 保留 | 不变 | `lib/rules.sh` 的 `switch_balance_mode` |
 
-> 原因写在 `lib/rules.sh` 的 `switch_balance_mode`：主备运行时 `WEIGHTS` 会被主备逻辑翻成 0/1 列表，
-> 直接切到别的模式会留下「健康节点 weight=0」的脏状态。
+> **为什么要暂存（`PREV_WEIGHTS`）**：
+> 切到轮询 / IP 哈希时，`WEIGHTS` 会被换成比例分摊的默认值 `1,1,1,...`；
+> 但**主备优先级**（`10,0` 这种）是用户资产，不能被一次模式切换抹掉 ——
+> 抹掉之后：① 权重菜单显示的「当前权重」变成 `1,1`；
+> ② 路由端读到 `1,1`（不含 0）⇒ **不再按 10/0 排主备优先级**，
+> 主备退化成「原始顺序里第一个健康目标当主」。
+> ⇒ 切出时把权重串存进 `PREV_WEIGHTS`，**切回主备时原样恢复**。
+>
+> 顺带纠正一条老注释：主备运行时 `WEIGHTS` **不会**被翻成 0/1 列表 ——
+> 那份 0/1 列表是**读端内存里**算的（`lib/realm.sh` 生成 endpoint 时翻转），
+> **从不写回规则文件**。所以要重置的是「用户填的优先级权重」，
+> 而切回时必须把它还回去。
 
 ---
 
@@ -126,13 +137,18 @@ REMOTE_PORT="8080"
 - 端口组里**第一条**规则存**完整权重列表**（如 `WEIGHTS="1,0,0"`）
 - 其余规则**各存自己那一个值**（如 `WEIGHTS="0"`）
 
-（`lib/rules.sh` 的 `apply_port_group_weight_config`：`rule_index -eq 0` 存完整串，否则存 `weight_array[rule_index]`。）
+（`lib/rules.sh` 的 `apply_port_group_weight_config`：`rule_index -eq 0` 存完整串，否则存 `weight_array[target_offset]`。）
 
-读取端口组权重时，**带逗号的那份优先**（`lib/rules.sh` 的 `load_balance_management_menu`、`lib/rules.sh` 的 `weight_management_menu`、
-`lib/realm.sh` 的 `generate_endpoints_from_rules`）。所以手工编辑时，请确保**第一条**规则的 `WEIGHTS` 是完整列表。
+读取端口组权重时**只有一份真源**：`port_group_weights_string`
+（`lib/core.sh`）—— 「带逗号的那份优先，否则取组内第一条规则的值」。
+菜单三处（`load_balance_management_menu`、`switch_balance_mode`、`weight_management_menu`）
+与配置预览都走它 ⇒ **界面显示的权重 ≡ 路由端真正用的权重**。
+（路由端 `lib/realm.sh` 的 `generate_endpoints_from_rules` 用同一套口径。）
 
-> 字段不存在时按 `1` 处理（`lib/rules.sh` 的 `preview_port_group_weight_config`、`lib/rules.sh` 的 `configure_port_group_weights`），
-> 也就是「没配权重 = 等权分配」。
+> **磁盘上没有权重配置时，菜单显示「未配置」**，并提示是怎么来的
+> （切换模式 / 改端口 / 删目标会清空权重）。
+> 老实现会拿「默认相等权重 1,1」显示 ⇒ 用户分不清「我设的就是 1」和「压根没配」，
+> 还以为菜单算错了。
 
 ---
 
@@ -204,6 +220,24 @@ REMOTE_PORT="8080"
 | 目标 3 | `0` | 备 2 |
 
 等价的写法还有 `10,0,0`（主备语义只看「是不是 0」，不看主的具体数值）。
+
+> **`10` 与 `0` 的确切语义**（用户最常问的两个值）：
+>
+> | 写法 | 含义 |
+> |------|------|
+> | `10,0` | **10 = 主（全部流量走这条）**，**0 = 备（平时这条链路不承载任何数据）** |
+> | `10,0,0` | 一主两备 |
+> | `5,5` | 没有 0 ⇒ **不是**主备，是按比例分流（50% / 50%） |
+> | `7,3` | 按比例分流（70% / 30%） |
+> | `10,5` | **会被拒绝**（`10` 是独占权重，给了它其余必须全是 0） |
+> | `0,0` | **会被拒绝**（全 0 ⇒ 整个端口组没有出口） |
+>
+> 「主故障自动切到 0 权重的备用线路」是这样实现的：
+> 读端按权重**从高到低**排优先级，再在排好的顺序里挑第一个**健康**目标当主
+> ⇒ 10 权重的主判故障后，0 权重的备自动顶上并承接全部流量；
+> 主恢复后按同样的优先级切回主。
+> realm 配置也跟着变：主备模式下 `balance` 写的是 0/1 列表
+> （当前主 = 1，其余 = 0），realm 用 `roundrobin` 就能实现「只有主收流量」。
 
 步骤：
 
@@ -309,7 +343,9 @@ WEIGHTS="10,0"
 | 权重主备没切换（IP 明明通） | 探测的是 **TCP 端口**不是 ping；IP 通不代表端口通，也不代表业务正常 |
 | 所有目标都被判故障 | 探测日志里看报错；`nc` 与 `timeout` 至少要有一个（见[排查手册](troubleshooting.md)） |
 | 菜单里看不到端口组 | 该端口目标数必须 > 1，且必须是中转规则（`RULE_ROLE=1`） |
-| 权重显示成 `1` | `WEIGHTS` 字段不存在 → 按 1 处理 |
+| 菜单显示「当前权重」和实际跑的不一样 | 菜单显示的就是磁盘真值（唯一真源 `port_group_weights_string`）。先 `grep '^WEIGHTS=' /etc/realm/rules/rule-*.conf` 对一下：<br>① 磁盘是 `1,1` ⇒ 权重被**切模式**抹过（老版本切出主备会抹成 1,1 且切回不恢复）→ 重新填一次 `10,0` 即可；<br>② 磁盘是空的 ⇒ 菜单会显示「未配置」（老版本会假装显示 1,1）→ 重新填一次 |
+| 权重显示成 `1` | 老版本行为：磁盘上没有权重配置时拿「默认相等权重 1,1」显示。新版本显示「未配置」 |
+| 权重主备优先级莫名失效（主备退化成「第一个健康的当主」） | 权重串里**不含 0** ⇒ 读端不按权重排优先级。检查 `WEIGHTS` 是不是被切模式重置成 `1,1` 了 |
 | 菜单里时延显示 `-` | 目标还没被探测过，或系统不支持 `%N` 计时（busybox date）。用菜单项 `4. 立即测试所有目标时延` 现场测一轮 |
 | 菜单里时延不刷新 | 时延优先取**快探测**（每秒一轮）；快探测没在跑时回落判定流的状态文件（默认 4 秒一轮）。查 `systemctl status realm-fast-probe.timer` 与 `journalctl -t realm-fast-probe -n 50` |
 | 菜单里出现 `[丢包: N% (x/y)]` | 端口层的丢包 = **SYN 被丢弃**（超时）的采样占比；目标主动回 RST（`[探测: 拒绝]`）不算丢包。详见 [健康检查与故障转移 §3.5](health-check-and-failover.md#35-快探测流只观测每秒一轮的时延与丢包) |
