@@ -244,6 +244,14 @@ install_realm() {
 
             # 比较版本并询问更新
             if ! compare_and_ask_update "$current_version" "$LATEST_VERSION"; then
+                # ★ 二进制已是最新 ⇒ **不下载**；但**不等于「装好了」**：
+                #   机器上可能只有 realm 二进制，没有 service / config.json / rules 目录
+                #   （典型：先手工装了二进制，或换了脚本版本后重装）。
+                #   ★ 原来的写法在这里直接 return 0，而 start_empty_service 只挂在
+                #     「下载安装」那条路径上 ⇒ `pf install` 一路报「安装完成」，
+                #     但 **realm.service 根本没装**（无 unit、无监听）—— 用户以为装好了。
+                #   ⇒ 这里把「装完该有的东西」独立出来，按缺什么补什么。
+                ensure_realm_service_installed
                 return 0
             fi
         fi
@@ -1111,6 +1119,64 @@ EOF
 
     svc_enable
     svc_start >/dev/null 2>&1
+}
+
+# 确保「装完该有的东西」都在：service 文件 + config.json + rules 目录
+#
+# ★ 为什么要有这个函数（真机踩到，非理论推导）：
+#   `pf install` 在「realm 二进制已存在且版本已是最新」时**提前返回**，
+#   而 start_empty_service 只挂在「下载安装」那条路径上
+#   ⇒ 机器上只有二进制、没有 service / config.json / rules 目录时，
+#     install 一路报「安装完成」，但 **realm.service 根本没装**（无 unit、无监听）。
+#   ⇒ 机器看起来装好了，其实转发一个都没跑 —— 静默失效。
+#
+#   ★ 与 start_empty_service 的区别：**不覆盖已有的 config.json**
+#     （start_empty_service 会把 config 写成空 endpoints ⇒ 会抹掉已有规则生成的配置）。
+ensure_realm_service_installed() {
+    local _need_service=0 _need_config=0
+
+    [ -f "$SYSTEMD_PATH" ] || _need_service=1
+    [ -f "$CONFIG_PATH" ] || _need_config=1
+
+    # rules 目录：缺了就建（规则文件写不进去 ⇒ 规则「创建成功」但没落盘）
+    if [ ! -d "$RULES_DIR" ]; then
+        init_rules_dir
+    fi
+
+    if [ "$_need_service" = "0" ] && [ "$_need_config" = "0" ]; then
+        return 0
+    fi
+
+    echo -e "${YELLOW}检测到 realm 二进制已就绪，但服务/配置缺失，正在补齐安装...${NC}"
+
+    if [ "$_need_config" = "1" ]; then
+        mkdir -p "$CONFIG_DIR"
+        tr -d '\r' > "$CONFIG_PATH" <<EOF
+{
+    "endpoints": []
+}
+EOF
+        echo -e "${GREEN}✓${NC} 已生成初始配置: $CONFIG_PATH"
+    else
+        echo -e "${GREEN}✓${NC} 已有配置，保持不变: $CONFIG_PATH"
+    fi
+
+    if [ "$_need_service" = "1" ]; then
+        generate_service_file
+        svc_enable
+    else
+        echo -e "${GREEN}✓${NC} 服务文件已存在: $SYSTEMD_PATH"
+    fi
+
+    # ★ 启动失败**不算安装失败**：空规则时 realm 没有 endpoint 可转发，本来就起不来；
+    #   等用户配好规则后 service_restart 会把它拉起来。
+    if svc_start >/dev/null 2>&1; then
+        echo -e "${GREEN}✓${NC} realm 服务已启动"
+    else
+        echo -e "${YELLOW}提示: ${NC}realm 服务暂未运行（还没有可转发的规则，配好规则后会自动启动）"
+    fi
+
+    return 0
 }
 
 # 安装和配置流程
