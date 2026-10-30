@@ -616,7 +616,7 @@ CASES=(
     "T137:case_T137_menu_probe_settings_persisted_and_priority_order"
     # 安装下载齐全可见 + 卸载干净完整（T138 · cases/35_install_uninstall_audit_t138.sh）
     #   真机踩出来的：卸载只靠 /etc/realm/xwFailover.sh 停两个 timer
-    #   ⇒ 新装的机器上那个文件压根不存在（主备池已下线，安装不再生成）
+    #   ⇒ 新装的机器上那个文件压根不存在（安装流程不生成它：它是「故障转移管理」菜单里另外下载的独立脚本）
     #   ⇒ timer 停不掉、unit 还在、systemd 继续触发已被删掉的探测脚本
     #   ⇒ /var/lib/realm、锁文件、日志目录、更新备份目录也都不清
     "T138:case_T138_install_downloads_and_uninstall_cleanliness"
