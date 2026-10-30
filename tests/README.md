@@ -623,7 +623,7 @@ export PATH="$PWD/tests/shims:$PATH"
   - ★ **两个 timer 的 unit 停不掉、也删不掉**：
     卸载只靠 `/etc/realm/xwFailover.sh stop` 去停 `realm-health-check.timer` /
     `realm-fast-probe.timer`，而**新装机器上这个文件根本不存在**
-    （主备池已下线，安装不再生成它）⇒ timer 停不了、`disable` 不了，
+    （安装流程**不生成**它：它是「故障转移管理」菜单里**另外下载**的一份独立脚本，只有打开过那个菜单的机器才有 ⇒ **新装机器一律没有**）⇒ timer 停不了、`disable` 不了，
     unit 留在 `/etc/systemd/system` ⇒ **卸载后 systemd 还在按残留 unit
     触发已被删掉的探测脚本**；
   - 另漏清 4 处：**观测数据**（`/var/lib/realm`）、**锁**（`/var/lock/realm-*.lock`）、
