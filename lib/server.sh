@@ -111,6 +111,8 @@ CREATED_TIME="$(get_gmt8_time '+%Y-%m-%d %H:%M:%S')"
 BALANCE_MODE="off"
 # 切出主备模式后要恢复的负载均衡模式（进主备时记下原模式）
 PREV_BALANCE_MODE=""
+# 切出主备模式时暂存的主备优先级权重（切回主备时原样恢复）
+PREV_WEIGHTS=""
 TARGET_STATES=""
 WEIGHTS=""
 
@@ -167,6 +169,8 @@ CREATED_TIME="$(get_gmt8_time '+%Y-%m-%d %H:%M:%S')"
 BALANCE_MODE="off"
 # 切出主备模式后要恢复的负载均衡模式（进主备时记下原模式）
 PREV_BALANCE_MODE=""
+# 切出主备模式时暂存的主备优先级权重（切回主备时原样恢复）
+PREV_WEIGHTS=""
 TARGET_STATES=""
 WEIGHTS=""
 

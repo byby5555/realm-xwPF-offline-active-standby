@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SCRIPT_VERSION="v2.3.0"
+SCRIPT_VERSION="v2.4.0"
 REALM_VERSION="v2.9.3"
 
 NAT_LISTEN_PORT=""
@@ -121,6 +121,62 @@ port_group_add_target() {
     return 0
 }
 
+# 端口组的权重串（**唯一真源**）：菜单与路由端都用它读「这个组的权重是什么」
+#
+# ★ 为什么必须是唯一真源：
+#   组权重是**跨规则**的：一个端口组有多条规则，落盘约定是
+#     · 组内**第一条**规则存完整权重串（例："10,0"）
+#     · 其余规则各存**自己那个目标**的单个权重（例："0"，不含逗号）
+#   ⇒ 「这个组的权重串是什么」只有一个答案。
+#     菜单、路由端、模式切换各枚举一遍 → 口径一漂移就会出现
+#     **界面显示的权重 ≠ 路由端真正用的权重**（用户看到的和实际跑的不是一回事）。
+#
+# 口径（与落盘约定严格对齐）：
+#   ① 优先「带完整逗号」的那条规则的 WEIGHTS（= 组权重串的落点）
+#   ② 否则取组内第一条规则的 WEIGHTS（可能是单个值，也可能为空）
+#   ③ 都没有 → 空串 = **该组没有权重配置**（调用方必须如实显示「未配置」，
+#      不许拿默认值 1 之类的去糊弄 —— 糊弄出来用户就分不清
+#      「我设的就是 1」和「压根没设」）
+#
+# 用法：port_group_weights_string <端口> [only_enabled]
+#   only_enabled=1 → 只看 ENABLED=true 的规则（路由端口径）
+# 依赖：read_rule_file（lib/health.sh）—— 调用前须已加载。
+port_group_weights_string() {
+    local port="$1"
+    local only_enabled="${2:-0}"
+    local first="" full="" seen="" rf
+
+    for rf in "${RULES_DIR}"/rule-*.conf; do
+        [ -f "$rf" ] || continue
+        read_rule_file "$rf" || continue
+        [ "$LISTEN_PORT" = "$port" ] || continue
+        [ "$RULE_ROLE" = "1" ] || continue
+        if [ "$only_enabled" = "1" ] && [ "${ENABLED:-true}" != "true" ]; then
+            continue
+        fi
+        # ★ 「第一条规则的值」要按**位置**取，不是按「第一个非空值」：
+        #   第一条规则的 WEIGHTS 是空（= 组权重串没落在这儿）时，
+        #   若按「第一个非空」取，就会把**别的规则的单个权重**当成组权重串
+        #   （例：组内第二条规则存着 "0" ⇒ 取到 "0" ⇒ 界面显示第一个目标权重 0，
+        #     而磁盘上其实**压根没有组权重配置**）。
+        if [ -z "$seen" ]; then
+            seen=1
+            first="${WEIGHTS:-}"
+        fi
+        if [[ "${WEIGHTS:-}" == *","* ]]; then
+            full="${WEIGHTS}"
+            break
+        fi
+    done
+
+    if [ -n "$full" ]; then
+        printf '%s' "$full"
+    else
+        printf '%s' "$first"
+    fi
+    return 0
+}
+
 # 通用的服务重启函数
 restart_and_confirm() {
     local operation_name="$1"
@@ -144,6 +200,11 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 WHITE='\033[1;37m'
+# ★ GRAY 之前**从未定义过**，但 lib/ui.sh 与 lib/rules.sh 都在用 ${GRAY}
+#   ⇒ 界面上的「提示/次要信息」颜色一直是空的（内容对，样式丢）。
+#   顺带一提：set -u 下 ${GRAY} 会直接让菜单崩掉（unbound variable），
+#   所以这里必须定义，而不是把引用点都删掉。
+GRAY='\033[0;90m'
 NC='\033[0m'
 
 REALM_PATH="${REALM_PATH:-/usr/local/bin/realm}"
