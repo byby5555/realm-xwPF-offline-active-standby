@@ -448,6 +448,27 @@ uninstall_realm_stage_one() {
     # 停止服务
     svc_is_active && svc_stop
     [ "$(svc_enabled_text)" = "enabled" ] && svc_disable
+
+    # ★ 健康检查 / 快探测的 timer **必须在这里停**：
+    #   原来只靠 `/etc/realm/xwFailover.sh stop` ⇒ **新装的机器上那个文件根本不存在**
+    #   （主备池功能已下线，安装流程不再生成它；只有打开过「故障转移管理」菜单的机器才有）
+    #   ⇒ 那台机器上两个 timer 不会被停、不会被 disable，unit 文件还留在 /etc/systemd/system
+    #   ⇒ 卸载后 systemd 仍按残留 unit 周期触发**已经被删掉**的探测脚本（每次都报错）。
+    #   ⇒ 这里直接调产品自己的停止函数（唯一真源），再对 unit 文件与 enable 状态兜底。
+    if declare -F stop_health_check_service >/dev/null 2>&1; then
+        stop_health_check_service >/dev/null 2>&1 || true
+    fi
+    if declare -F stop_fast_probe_service >/dev/null 2>&1; then
+        stop_fast_probe_service >/dev/null 2>&1 || true
+    fi
+    local _unit
+    for _unit in realm-health-check.timer realm-health-check.service \
+                 realm-fast-probe.timer realm-fast-probe.service; do
+        systemctl stop "$_unit" >/dev/null 2>&1
+        systemctl disable "$_unit" >/dev/null 2>&1
+        rm -f "/etc/systemd/system/$_unit"
+    done
+
     # 停止健康检查服务（通过xwFailover.sh）
     if [ -f "/etc/realm/xwFailover.sh" ]; then
         bash "/etc/realm/xwFailover.sh" stop >/dev/null 2>&1
@@ -466,6 +487,15 @@ uninstall_realm_stage_one() {
     [ -f "/etc/systemd/system/realm-web.service" ] && rm -f "/etc/systemd/system/realm-web.service"
         cleanup_files_by_pattern "realm" "/var/log /tmp /var/tmp"
 
+    # ★ 安装留下、卸载必须带走的东西（少清一项都算「卸载不干净」）：
+    #   /var/lib/realm            —— 质量指标 + 快探测观测
+    #   /var/log/xwPF             —— 探测端重生成失败日志（产品自己的日志目录）
+    #   /usr/local/bin/.xwpf-backup —— 更新中心留下的旧版本备份
+    #   /tmp/xwpf-update          —— 更新中心的 staging 目录
+    cleanup_files_by_paths "/var/lib/realm" "/var/log/xwPF" \
+                           "/usr/local/bin/.xwpf-backup" "/tmp/xwpf-update"
+    rm -f /var/lock/realm-health-check.lock /var/lock/realm-fast-probe.lock \
+          /var/lock/xwpf-update.lock
 
     # 清理系统配置
     [ -f "/etc/sysctl.d/90-enable-MPTCP.conf" ] && rm -f "/etc/sysctl.d/90-enable-MPTCP.conf"
