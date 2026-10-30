@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SCRIPT_VERSION="v2.4.0"
+SCRIPT_VERSION="v2.5.0"
 REALM_VERSION="v2.9.3"
 
 NAT_LISTEN_PORT=""
@@ -177,6 +177,154 @@ port_group_weights_string() {
     return 0
 }
 
+# ── 主备优先级顺序（**唯一实现**：菜单显示与路由端切换共用）────────────
+#
+# 用法：port_group_priority_order <权重串> <目标个数>
+#   → 打印「显示位置 → 合并索引」的映射（空格分隔），例："1 0 2"
+#     调用方按这个映射把「合并顺序的目标列表」重排成「优先级顺序」。
+#
+# 规则（与主备语义的落盘约定严格对齐）：
+#   ① 权重串为空 / 权重个数与目标数不一致 / 权重里有非数字
+#      → **保持原序**（打印 "0 1 2 ..."）
+#   ② 权重里**没有 0** → 保持原序
+#      （主备语义下「含 0」才是主备的标志；没有 0 时权重只是分流比例，不表达优先级）
+#   ③ 否则按权重**从高到低稳定排序**（权重大的 = 优先级高的 = 主）
+#
+# ★ 为什么必须是**一个**实现：
+#   菜单显示的序号顺序（用户看到的「谁是主」）与路由端挑主的顺序（实际谁承接流量）
+#   必须一致 —— 两边各排一次，早晚漂移 ⇒ 菜单里 1 号是备、实际主是 2 号，
+#   用户按菜单判断故障就会判错。菜单端与读端都调这里 ⇒ 漂移无处可生。
+port_group_priority_order() {
+    local weights_str="$1"
+    local count="$2"
+    local i pi pj tw tt
+    local -a order=()
+    local -a w=()
+
+    case "$count" in
+        ''|*[!0-9]*) count=0 ;;
+    esac
+    for ((i = 0; i < count; i++)); do
+        order+=("$i")
+    done
+
+    if [ "$count" -le 1 ] || [ -z "$weights_str" ]; then
+        printf '%s' "${order[*]}"
+        return 0
+    fi
+
+    IFS=',' read -ra w <<< "$weights_str"
+    if [ "${#w[@]}" -ne "$count" ]; then
+        printf '%s' "${order[*]}"
+        return 0
+    fi
+
+    # 权重必须全是数字，且至少有一个 0（主备语义的标志）
+    local has_zero=false
+    for i in "${w[@]}"; do
+        case "$i" in
+            ''|*[!0-9]*)
+                printf '%s' "${order[*]}"
+                return 0
+                ;;
+        esac
+        [ "$i" -eq 0 ] && has_zero=true
+    done
+
+    if [ "$has_zero" = true ]; then
+        # 稳定降序（相等时保持原顺序）
+        for ((pi = 0; pi < count; pi++)); do
+            for ((pj = pi + 1; pj < count; pj++)); do
+                if [ "${w[$pj]}" -gt "${w[$pi]}" ]; then
+                    tw="${w[$pi]}"; w[$pi]="${w[$pj]}"; w[$pj]="$tw"
+                    tt="${order[$pi]}"; order[$pi]="${order[$pj]}"; order[$pj]="$tt"
+                fi
+            done
+        done
+    fi
+
+    printf '%s' "${order[*]}"
+    return 0
+}
+
+# ── 菜单探测参数（单次超时 / 每目标采样次数）的读写 ───────────────────
+#
+# 口径（优先级从高到低）：
+#   ① 环境变量 MENU_PROBE_TIMEOUT / MENU_PROBE_SAMPLES
+#      —— 临时/调试覆盖（台架也用它注入），保持最高优先级
+#   ② 配置文件 ${MENU_PROBE_CONF}（菜单项 5 写入 ⇒ **持久化生效**）
+#   ③ 内置默认（超时 2s / 采样 3 次）
+#
+# ★ 为什么要配置文件：
+#   菜单项 4「立即测试所有目标时延」原先只认环境变量 ⇒ 用户在菜单里没法调，
+#   只能改 shell 环境 ⇒ 换个终端/重登就丢（等于没有）。
+menu_probe_conf_value() {
+    local key="$1"
+    local file="${MENU_PROBE_CONF}"
+    local line="" val=""
+
+    [ -f "$file" ] || return 0
+    while IFS= read -r line || [ -n "$line" ]; do   # xwpf:noninteractive-io（输入来自菜单参数配置文件）
+        case "$line" in
+            "$key"=*)
+                # ★ 去掉所有空白（手改文件时很容易带上尾随空格 / CRLF）：
+                #   "5 " / "5\r" 会被后面的数字校验判成非法 ⇒ **静默退回默认值**
+                #   （用户看到的是「保存了却没生效」）。
+                val="${line#*=}"
+                val="${val//[[:space:]]/}"
+                ;;
+        esac
+    done < "$file"
+
+    printf '%s' "$val"
+    return 0
+}
+
+# 写探测参数（两个值一起写：只写一半会让另一个退回默认，用户以为没保存）
+menu_probe_conf_write() {
+    local timeout="$1" samples="$2"
+    local file="${MENU_PROBE_CONF}"
+    local dir tmp
+
+    dir="${file%/*}"
+    [ "$dir" = "$file" ] && dir="."
+    [ -d "$dir" ] || mkdir -p "$dir" 2>/dev/null || return 1
+
+    tmp="${file}.tmp.$$"
+    {
+        echo "# 菜单探测参数（菜单项 5 写入；可直接手改，改完立即生效）"
+        echo "PROBE_TIMEOUT=${timeout}"
+        echo "PROBE_SAMPLES=${samples}"
+    } > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
+
+    mv -f "$tmp" "$file" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
+    return 0
+}
+
+# 生效的单次探测超时（秒）
+menu_probe_timeout() {
+    local v="${MENU_PROBE_TIMEOUT:-}"
+    [ -z "$v" ] && v="$(menu_probe_conf_value PROBE_TIMEOUT)"
+    case "$v" in
+        ''|*[!0-9]*) v=2 ;;
+    esac
+    [ "$v" -lt 1 ] && v=2
+    [ "$v" -gt 60 ] && v=60
+    printf '%s' "$v"
+}
+
+# 生效的每目标采样次数
+menu_probe_samples() {
+    local v="${MENU_PROBE_SAMPLES:-}"
+    [ -z "$v" ] && v="$(menu_probe_conf_value PROBE_SAMPLES)"
+    case "$v" in
+        ''|*[!0-9]*) v=3 ;;
+    esac
+    [ "$v" -lt 1 ] && v=1
+    [ "$v" -gt 50 ] && v=50
+    printf '%s' "$v"
+}
+
 # 通用的服务重启函数
 restart_and_confirm() {
     local operation_name="$1"
@@ -218,6 +366,12 @@ LIB_DIR="${LIB_DIR:-${INSTALL_DIR}/lib}"
 # 健康状态文件：故障转移的探测结果落盘处（主备切换据此翻转权重）
 # 用变量统一，避免各处硬编码路径不一致（lib/rules.sh 之前引用过未定义的 $HEALTH_STATUS_FILE）
 HEALTH_STATUS_FILE="${HEALTH_STATUS_FILE:-${CONFIG_DIR}/health/health_status.conf}"
+# 菜单探测参数配置文件（菜单项 5「探测参数设置」的持久化落点）
+#   格式：KEY=VALUE（PROBE_TIMEOUT / PROBE_SAMPLES）
+#   ★ 单独一个文件，不塞进 config.json ——
+#     config.json 是「规则/安装配置」的账本，菜单参数是「探测口径」，
+#     混在一起 ⇒ 两边各写各的会把对方的字段冲掉。
+MENU_PROBE_CONF="${MENU_PROBE_CONF:-${CONFIG_DIR}/menu_probe.conf}"
 
 # 默认tls和host域名（加密解密需要相同SNI）
 DEFAULT_SNI_DOMAIN="www.tesla.com"

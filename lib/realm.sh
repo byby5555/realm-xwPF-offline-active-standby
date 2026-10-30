@@ -598,32 +598,23 @@ generate_endpoints_from_rules() {
                 #       "0,10" → 第二个是主
                 # 权重相同则保持原始顺序（稳定排序）。
                 # 没有有效权重信息时退化为原始顺序。
-                local priority_targets=("${all_targets[@]}")
-
+                #
+                # ★ 顺序走**唯一实现**（port_group_priority_order，lib/core.sh）：
+                #   菜单显示的序号顺序（用户看到的「谁是主」）与这里挑主的顺序
+                #   （实际谁承接流量）必须一致 ⇒ 同一份实现，不各排一次。
+                local priority_targets=()
                 local user_weights="${port_weights[$port_key]:-}"
-                if [ -n "$user_weights" ]; then
-                    IFS=',' read -ra _prio_w <<< "$user_weights"
-                    if [ "${#_prio_w[@]}" -eq "${#all_targets[@]}" ]; then
-                        local _has_zero=false
-                        for _w in "${_prio_w[@]}"; do
-                            if [ "$_w" -eq 0 ]; then
-                                _has_zero=true
-                            fi
-                        done
-
-                        if [ "$_has_zero" = true ]; then
-                            # 稳定降序：权重大的排前面
-                            for ((_pi=0; _pi<${#all_targets[@]}; _pi++)); do
-                                for ((_pj=_pi+1; _pj<${#all_targets[@]}; _pj++)); do
-                                    if [ "${_prio_w[$_pj]}" -gt "${_prio_w[$_pi]}" ]; then
-                                        _tw="${_prio_w[$_pi]}"; _prio_w[$_pi]="${_prio_w[$_pj]}"; _prio_w[$_pj]="$_tw"
-                                        _tt="${priority_targets[$_pi]}"; priority_targets[$_pi]="${priority_targets[$_pj]}"; priority_targets[$_pj]="$_tt"
-                                    fi
-                                done
-                            done
-                        fi
-                    fi
-                    unset _prio_w
+                local _prio_order _po_idx
+                local _po_arr=()
+                _prio_order="$(port_group_priority_order "$user_weights" "${#all_targets[@]}")"
+                if [ -n "$_prio_order" ]; then
+                    IFS=' ' read -ra _po_arr <<< "$_prio_order"
+                    for _po_idx in "${_po_arr[@]}"; do
+                        priority_targets+=("${all_targets[$_po_idx]}")
+                    done
+                fi
+                if [ "${#priority_targets[@]}" -eq 0 ]; then
+                    priority_targets=("${all_targets[@]}")
                 fi
 
                 # 按优先级找第一个健康目标作为主

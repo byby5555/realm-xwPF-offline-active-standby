@@ -318,7 +318,12 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 #             （切出主备把 WEIGHTS 抹成 1,1、切回主备不恢复 ⇒ 菜单显示 1、1，
 #               路由端也不再按 10/0 排主备优先级）
 #             负向对照用**真实旧实现**（历史对象 weight-display-pre），不是文本匹配注入
-HARNESS_VERSION="v2.25.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive + negctl-selfcheck + t45-portable-equiv + t45-win-mv-truth + t32-locale-pin + t53-menu-eof + t32-copy-form-2 + t32-anchor-guard + t32-clause-exempt + t53-helper-count + t53-neg-floor + history-preflight + preflight-empty-guard + preflight-exit-passthrough + t54-ui-eof-closure-invariants + t54-judge-selfcheck + t53-rel-threshold + only-unregistered-exit4 + registry-selfcheck + t40-case-count-contract + probe-budget-10s + install-list-from-product + t63-t67-quality-observation + t68-t76-switch-reliability + t77-t84-weight10-exclusive + t85-t88-n4-probe-regen + run-lock-done-marker + t114-readend-collapse + expect-fail-exit5 + t54-affirm-default-7b + t115-t116-claim-gate-identity + t117-t118-legacy-failover-guard + t119-t121-standby-target-parity + t122-shared-core-guard + pgrep-shim + t123-t127-fast-probe + t128-t130-install-completeness + t131-t132-realm-exec-check + t133-t134-menu-target-states + t135-update-content-digest + t136-weight-display-truth)"
+#         · 第 30 轮：新增 T137（cases/34_menu_probe_priority_t137.sh）
+#           T137 菜单项 5「探测参数设置」：超时/采样**可配 + 落盘生效**（env > 文件 > 默认）
+#             + 菜单里的目标序号按**主备优先级**排（与路由端挑主同一实现，权重不串位）
+#             + 备注与参数**弱化**（暗色）、探测结果行不再吐字面 ANSI 转义序列
+#             负向对照用**真实旧实现**（历史对象 menu-probe-pre），不是文本匹配注入
+HARNESS_VERSION="v2.26.0 (frozen-base + probe-unique + M1/M2/M5/M7/M8 + commit-msg-contract + T32-form-agnostic + T43-T52-coverage + health-target-hostport + n1r1-no-wide-key + t34-hard-lineref + t34-en-possessive + negctl-selfcheck + t45-portable-equiv + t45-win-mv-truth + t32-locale-pin + t53-menu-eof + t32-copy-form-2 + t32-anchor-guard + t32-clause-exempt + t53-helper-count + t53-neg-floor + history-preflight + preflight-empty-guard + preflight-exit-passthrough + t54-ui-eof-closure-invariants + t54-judge-selfcheck + t53-rel-threshold + only-unregistered-exit4 + registry-selfcheck + t40-case-count-contract + probe-budget-10s + install-list-from-product + t63-t67-quality-observation + t68-t76-switch-reliability + t77-t84-weight10-exclusive + t85-t88-n4-probe-regen + run-lock-done-marker + t114-readend-collapse + expect-fail-exit5 + t54-affirm-default-7b + t115-t116-claim-gate-identity + t117-t118-legacy-failover-guard + t119-t121-standby-target-parity + t122-shared-core-guard + pgrep-shim + t123-t127-fast-probe + t128-t130-install-completeness + t131-t132-realm-exec-check + t133-t134-menu-target-states + t135-update-content-digest + t136-weight-display-truth + t137-menu-probe-settings)"
 
 # shellcheck source=lib/harness.sh
 . "$SCRIPT_DIR/lib/harness.sh"
@@ -595,6 +600,11 @@ CASES=(
     #   ⇒ 用户设的 10/0 永久丢失（菜单显示「当前权重 1、1」，
     #     路由端也不再按 10/0 排主备优先级 ⇒ 主备退化成「第一个健康的当主」）
     "T136:case_T136_weight_display_matches_disk_and_standby_priority_survives_mode_switch"
+    # 菜单项 5「探测参数设置」+ 主备优先级排序 + 备注/参数弱化（T137 · cases/34_menu_probe_priority_t137.sh）
+    #   真机反馈：探测超时/采样次数只认环境变量 ⇒ 菜单里没法配（换终端就丢）
+    #   菜单里目标序号不按主备优先级排 ⇒ 用户看到的「1 号」不一定是主
+    #   菜单里的备注/参数太重 ⇒ 弱化成暗色；探测结果行还会把 ANSI 转义当字面文本吐出来
+    "T137:case_T137_menu_probe_settings_persisted_and_priority_order"
 )
 
 

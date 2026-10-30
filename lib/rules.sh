@@ -1930,9 +1930,30 @@ load_balance_management_menu() {
                 # 显示端口组标题
                 echo -e "  ${BLUE}端口 $port_key${NC}: ${GREEN}${port_configs[$port_key]:-}${NC} [$balance_info] - $target_count个服务器"
 
+                # ★ 显示顺序：主备模式按**优先级**（权重降序）排；其余模式保持合并顺序。
+                #   菜单里的「1.」必须与路由端挑主的顺序一致 ⇒ 用户看到的谁是主，就是真的主。
+                #   顺序由 port_group_priority_order 给出（与 lib/realm.sh 读端**同一实现**）
+                #   ⇒ 两边不会各排一次、漂移成「菜单说 1 号是主、实际主是 2 号」。
+                local -a disp_order=()
+                local _didx _dmidx _porder=""
+                if [ "$balance_mode" = "active-standby" ]; then
+                    _porder="$(port_group_priority_order "${port_weights[$port_key]:-}" "$target_count")"
+                fi
+                if [ -n "$_porder" ]; then
+                    IFS=' ' read -ra disp_order <<< "$_porder"
+                else
+                    for ((_didx = 0; _didx < target_count; _didx++)); do
+                        disp_order+=("$_didx")
+                    done
+                fi
+
                 # 显示每个服务器及其权重
                 for ((i=0; i<target_count; i++)); do
-                    local target="${targets[i]}"
+                    # ★ 目标与权重都按**合并索引**取（_dmidx），不是按显示序号 i：
+                    #   排序后显示序号 ≠ 合并序号 ⇒ 按 i 取会把权重串到别的目标头上
+                    #   （界面上看着像「10 权重的目标排在第 2 位」，实际是权重取错了）。
+                    _dmidx="${disp_order[i]:-$i}"
+                    local target="${targets[$_dmidx]}"
 
                     # 获取权重信息
                     local current_weight=1
@@ -1940,7 +1961,7 @@ load_balance_management_menu() {
 
                     if [ -n "$weights_str" ] && [[ "$weights_str" == *","* ]]; then
                         IFS=',' read -ra weight_array <<< "$weights_str"
-                        current_weight="${weight_array[i]:-1}"
+                        current_weight="${weight_array[$_dmidx]:-1}"
                     elif [ -n "$weights_str" ] && [[ "$weights_str" != *","* ]]; then
                         current_weight="$weights_str"
                     fi
@@ -2008,12 +2029,13 @@ load_balance_management_menu() {
                                 # 丢包（SYN 被丢的采样占比）与失败分型（**只观测**，不影响 [健康]/[故障]）
                                 local _fp_loss _fp_kind
                                 _fp_loss="$(fast_probe_loss_display "$target" "$_own_rule")"
-                                [ -n "$_fp_loss" ] && loss_info=" ${BLUE}${_fp_loss}${NC}"
+                                [ -n "$_fp_loss" ] && loss_info=" ${GRAY}${_fp_loss}${NC}"
                                 _fp_kind="$(fast_probe_result_display "$target" "$_own_rule")"
-                                [ -n "$_fp_kind" ] && loss_info="${loss_info} ${BLUE}${_fp_kind}${NC}"
+                                [ -n "$_fp_kind" ] && loss_info="${loss_info} ${GRAY}${_fp_kind}${NC}"
                             fi
                         fi
-                        latency_info=" ${BLUE}[时延: $(format_latency_display "$lat_ms" "$lat_hist")]${NC}"
+                        # ★ 参数（时延）用**暗色**显示：它是参考值，不该跟状态抢眼
+                        latency_info=" ${GRAY}[时延: $(format_latency_display "$lat_ms" "$lat_hist")]${NC}"
 
                         # ── N5 阶段 1 · 质量观测指标（**只显示，不做任何自动切换**）────
                         #   ★ 独立文件（quality_metrics.conf），不碰 health_status.conf。
@@ -2022,7 +2044,7 @@ load_balance_management_menu() {
                         #   ★ 老机器没这个文件 / 窗口还没采样 ⇒ 显示 "-"（向后兼容，缺字段不报错）。
                         local quality_info=""
                         if [ -n "$_own_rule" ] && declare -F quality_window_display >/dev/null 2>&1; then
-                            quality_info=" ${BLUE}$(quality_window_display "$target" "$_own_rule")${NC}"
+                            quality_info=" ${GRAY}$(quality_window_display "$target" "$_own_rule")${NC}"
                         fi
                         # ───────────────────────────────────────────────────
 
@@ -2033,16 +2055,18 @@ load_balance_management_menu() {
                     fi
 
                     # 显示服务器信息（只在负载均衡模式下显示权重）
+                    # ★ 权重/百分比是**参考参数**，用暗色；状态（[健康]/[故障]）才保留醒目色。
                     if [ "$balance_mode" != "off" ]; then
-                        echo -e "    ${BLUE}$((i+1)).${NC} $target ${GREEN}[权重: $current_weight]${NC} ${BLUE}($percentage%)${NC}$failover_info$latency_info$quality_info$loss_info"
+                        echo -e "    ${BLUE}$((i+1)).${NC} $target ${GRAY}[权重: $current_weight] ($percentage%)${NC}$failover_info$latency_info$quality_info$loss_info"
                     else
                         echo -e "    ${BLUE}$((i+1)).${NC} $target$failover_info$latency_info$quality_info$loss_info"
                     fi
                 done
                 echo ""
                 # ★ N5 阶段 1 · 观测模式说明（**只显示指标，不做任何自动切换**）
-                #   写明「30ms·10% 仅参考不作为判据」⇒ 避免有人把窗口指标当阈值用。
-                echo -e "  ${BLUE}注：窗口指标为只观测（不影响切换/权重）；30ms·10% 仅参考，不作为判据${NC}"
+                #   备注一律**暗色 + 短句** —— 备注是给「要细看的人」看的，
+                #   不该比状态信息还抢眼（用户反馈：菜单里的备注/参数太重）。
+                echo -e "  ${GRAY}注: 窗口指标仅观测，不影响切换/权重${NC}"
                 echo ""
             fi
         done
@@ -2056,17 +2080,18 @@ load_balance_management_menu() {
         fi
 
         echo ""
-        echo -e "${BLUE}提示: [时延] 由后台健康检查持续更新（TCP 握手耗时，判定轮次每 $(get_effective_health_check_interval)s 一轮；快探测每 ${FAST_PROBE_INTERVAL:-1}s 一轮，只刷新显示，不参与切换）${NC}"
+        echo -e "${GRAY}提示: [时延] 由后台健康检查持续更新（判定每 $(get_effective_health_check_interval)s / 快探测每 ${FAST_PROBE_INTERVAL:-1}s），不参与切换${NC}"
         echo ""
         echo "请选择操作:"
         echo -e "${GREEN}1.${NC} 切换负载均衡模式"
         echo -e "${BLUE}2.${NC} 权重配置管理"
         echo -e "${YELLOW}3.${NC} 开启/关闭故障转移"
         echo -e "${BLUE}4.${NC} 立即测试所有目标时延"
+        echo -e "${BLUE}5.${NC} 探测参数设置${GRAY}（超时 / 采样次数）${NC}"
         echo -e "${RED}0.${NC} 返回上级菜单"
         echo ""
 
-        ui_read_into "请输入选择 [0-4]: " choice
+        ui_read_into "请输入选择 [0-5]: " choice
         echo ""
 
         case $choice in
@@ -2087,12 +2112,110 @@ load_balance_management_menu() {
                 probe_all_targets_latency
                 ui_pause "按回车键返回..."
                 ;;
+            5)
+                # 探测参数设置（单次超时 / 每目标采样次数）
+                menu_probe_settings_menu
+                ;;
             0)
                 # 返回上级菜单
                 break
                 ;;
             *)
-                echo -e "${RED}无效选择，请输入 0-4${NC}"
+                echo -e "${RED}无效选择，请输入 0-5${NC}"
+                ui_pause "按回车键继续..."
+                ;;
+        esac
+    done
+}
+
+# 探测参数设置（菜单项 5）
+#   改的是「菜单项 4（现场测时延）」的探测口径：
+#     · 单次探测超时（秒）—— 目标慢/丢包时调大；目标不可达时调小（菜单不被拖住）
+#     · 每目标采样次数    —— 1 = 只看通不通；多采几次能看出抖动
+#
+# ★ 为什么要落盘（用户诉求）：
+#   这两个参数原先只认环境变量 MENU_PROBE_TIMEOUT / MENU_PROBE_SAMPLES
+#   ⇒ 用户在菜单里**没法调**，只能改 shell 环境 ⇒ 换个终端/重登就丢（等于没有）。
+#   现在写进 ${MENU_PROBE_CONF}（默认 /etc/realm/menu_probe.conf）⇒ 持久生效。
+#   生效口径：环境变量 > 配置文件 > 内置默认（env 留给临时覆盖/台架注入）。
+menu_probe_settings_menu() {
+    local timeout samples choice new_value
+
+    while true; do
+        sleep 0.2
+        ui_clear
+        timeout="$(menu_probe_timeout)"
+        samples="$(menu_probe_samples)"
+
+        echo -e "${GREEN}=== 探测参数设置 ===${NC}"
+        echo ""
+        echo -e "  单次探测超时: ${GREEN}${timeout}s${NC}  ${GRAY}(每个目标每次探测的预算)${NC}"
+        echo -e "  每目标采样次数: ${GREEN}${samples}${NC}  ${GRAY}(采多次能看出抖动)${NC}"
+        echo -e "${GRAY}  作用于菜单项 4（现场测时延）；保存于 ${MENU_PROBE_CONF}${NC}"
+        echo ""
+        echo -e "${BLUE}1.${NC} 设置单次探测超时${GRAY}（1-60 秒）${NC}"
+        echo -e "${BLUE}2.${NC} 设置每目标采样次数${GRAY}（1-50 次）${NC}"
+        echo -e "${BLUE}3.${NC} 恢复默认${GRAY}（超时 2s / 采样 3 次）${NC}"
+        echo -e "${RED}0.${NC} 返回上级菜单"
+        echo ""
+
+        ui_read_into "请输入选择 [0-3]: " choice
+        echo ""
+
+        case "$choice" in
+            1|2)
+                if [ "$choice" = "1" ]; then
+                    ui_read_into "单次探测超时（1-60 秒，当前 ${timeout}）: " new_value
+                else
+                    ui_read_into "每目标采样次数（1-50 次，当前 ${samples}）: " new_value
+                fi
+
+                case "$new_value" in
+                    ''|*[!0-9]*)
+                        echo -e "${RED}请输入整数${NC}"
+                        ui_pause "按回车键继续..."
+                        continue
+                        ;;
+                esac
+
+                if [ "$choice" = "1" ]; then
+                    if [ "$new_value" -lt 1 ] || [ "$new_value" -gt 60 ]; then
+                        echo -e "${RED}超时需在 1-60 秒之间${NC}"
+                        ui_pause "按回车键继续..."
+                        continue
+                    fi
+                    if menu_probe_conf_write "$new_value" "$samples"; then
+                        echo -e "${GREEN}✓ 已保存：单次探测超时 ${new_value}s（每目标采样 ${samples} 次）${NC}"
+                    else
+                        echo -e "${RED}✗ 保存失败（${MENU_PROBE_CONF} 不可写）${NC}"
+                    fi
+                else
+                    if [ "$new_value" -lt 1 ] || [ "$new_value" -gt 50 ]; then
+                        echo -e "${RED}采样次数需在 1-50 次之间${NC}"
+                        ui_pause "按回车键继续..."
+                        continue
+                    fi
+                    if menu_probe_conf_write "$timeout" "$new_value"; then
+                        echo -e "${GREEN}✓ 已保存：每目标采样 ${new_value} 次（单次超时 ${timeout}s）${NC}"
+                    else
+                        echo -e "${RED}✗ 保存失败（${MENU_PROBE_CONF} 不可写）${NC}"
+                    fi
+                fi
+                ui_pause "按回车键继续..."
+                ;;
+            3)
+                if menu_probe_conf_write 2 3; then
+                    echo -e "${GREEN}✓ 已恢复默认：单次超时 2s / 每目标采样 3 次${NC}"
+                else
+                    echo -e "${RED}✗ 保存失败（${MENU_PROBE_CONF} 不可写）${NC}"
+                fi
+                ui_pause "按回车键继续..."
+                ;;
+            0)
+                return
+                ;;
+            *)
+                echo -e "${RED}无效选择，请输入 0-3${NC}"
                 ui_pause "按回车键继续..."
                 ;;
         esac
@@ -2105,26 +2228,21 @@ load_balance_management_menu() {
 # ★ 本轮改动（用户反馈「菜单卡住」）：
 #   ① **并发**：每个目标一个后台子进程 ⇒ 总耗时 ≈ 单个目标的耗时
 #      （原来串行：N 个目标 × 单次超时 ⇒ 4 个目标最坏 40 秒，菜单像卡死）
-#   ② **短超时**：单次探测超时用 MENU_PROBE_TIMEOUT（默认 2s，与快探测同档），
+#   ② **短超时**：单次探测超时用「菜单的探测预算」（默认 2s，与快探测同档），
 #      不再拿规则的 CONNECTION_TIMEOUT（10s）当探测预算
-#   ③ **多采样**：每个目标连采 MENU_PROBE_SAMPLES 次（默认 3）
+#      —— 预算口径：环境变量 MENU_PROBE_TIMEOUT > 配置文件 ${MENU_PROBE_CONF}
+#         （菜单项 5「探测参数设置」写入，持久生效）> 内置默认 2s
+#   ③ **多采样**：每个目标连采「菜单的采样次数」次（默认 3）
 #      ⇒ 报「成功次数/采样次数」+ 成功样本的平均/最小时延
 #      （单次采样看不出抖动；成功率还能区分「偶发失败」和「彻底不通」）
 #   ④ 目标枚举走**唯一真源**（rule_target_endpoints，lib/core.sh）
 #      ⇒ TARGET_STATES 形态（每个目标自带端口）的目标也测得到
 probe_all_targets_latency() {
-    local timeout="${MENU_PROBE_TIMEOUT:-2}"
-    local samples="${MENU_PROBE_SAMPLES:-3}"
+    # ★ 探测预算/采样次数走**唯一实现**（lib/core.sh）：
+    #   环境变量 > 配置文件（菜单项 5 写入，持久生效）> 内置默认
+    local timeout="$(menu_probe_timeout)"
+    local samples="$(menu_probe_samples)"
     local rule_file _list _t _arr _t_host _t_port
-
-    case "$timeout" in
-        ''|*[!0-9]*) timeout=2 ;;
-    esac
-    [ "$timeout" -lt 1 ] && timeout=2
-    case "$samples" in
-        ''|*[!0-9]*) samples=3 ;;
-    esac
-    [ "$samples" -lt 1 ] && samples=1
 
     # ── 目标枚举（唯一真源 + 精确去重）──
     local -a tgt_list=()
@@ -2160,7 +2278,7 @@ probe_all_targets_latency() {
         return
     fi
 
-    echo -e "${BLUE}正在探测所有目标的连通性与时延（TCP 握手耗时；每目标 ${samples} 次采样，单次超时 ${timeout}s，并发进行）...${NC}"
+    echo -e "${GRAY}正在探测 ${total} 个目标（每目标 ${samples} 次采样 / 单次超时 ${timeout}s，并发）...${NC}"
     echo ""
 
     # ── 并发探测：每个目标一个后台子进程，结果写各自的文件 ──
@@ -2214,13 +2332,16 @@ probe_all_targets_latency() {
 
         if [ "$_ok" -ge "$samples" ]; then
             ok=$((ok + 1))
-            printf "  %s  %-30s %s\n" "${GREEN}可达${NC}" "$_t" "${_ok}/${samples} 次成功  平均 ${_avg}ms（最小 ${_min:-0}ms）"
+            # ★ 颜色用 %b 打印：颜色变量里存的是**字面的** "\033[0;32m"，
+            #   用 %s 打印会把转义序列当普通文本吐到屏幕上
+            #   （菜单里出现一串 \033[0;32m可达\033[0m 的乱码，还把行撑得很宽）。
+            printf "  %b  %-30s %s\n" "${GREEN}可达${NC}" "$_t" "${_ok}/${samples} 次成功  平均 ${_avg}ms（最小 ${_min:-0}ms）"
         elif [ "$_ok" -gt 0 ]; then
             partial=$((partial + 1))
-            printf "  %s  %-30s %s\n" "${YELLOW}部分可达${NC}" "$_t" "${_ok}/${samples} 次成功  成功样本平均 ${_avg}ms"
+            printf "  %b  %-30s %s\n" "${YELLOW}部分可达${NC}" "$_t" "${_ok}/${samples} 次成功  成功样本平均 ${_avg}ms"
         else
             failed=$((failed + 1))
-            printf "  %s  %-30s %s\n" "${RED}不可达${NC}" "$_t" "0/${samples} 次成功"
+            printf "  %b  %-30s %s\n" "${RED}不可达${NC}" "$_t" "0/${samples} 次成功"
         fi
         i=$((i + 1))
     done
@@ -2228,8 +2349,7 @@ probe_all_targets_latency() {
 
     echo ""
     echo -e "  合计 ${total} 个目标：${GREEN}全可达 ${ok}${NC} / ${YELLOW}部分可达 ${partial}${NC} / ${RED}不可达 ${failed}${NC}"
-    echo -e "${BLUE}（本次为现场探测，不写健康状态文件；每目标 ${samples} 次采样、单次超时 ${timeout}s、并发进行）${NC}"
-    echo -e "${BLUE}（页面上的时延仍以后台健康检查为准）${NC}"
+    echo -e "${GRAY}（现场探测，不写健康状态文件；页面时延仍以后台健康检查为准）${NC}"
 }
 
 # 切换负载均衡模式（按端口分组管理）
@@ -2719,12 +2839,11 @@ configure_port_group_weights() {
 
     echo ""
     echo "请输入权重序列 (用逗号分隔):"
-    echo -e "${WHITE}格式说明: 按服务器顺序输入权重值，如 \"2,1,3\"${NC}"
-    echo -e "${WHITE}权重范围: 0-10；普通负载均衡下数值越大分配流量越多${NC}"
-    echo -e "${GREEN}含 0 即自动主备: 如 \"10,0\" → 自动进入主备模式并开启主备路由${NC}"
-    echo -e "${GREEN}权重 10 是独占权重: 只能给一个目标, 给了 10 其余必须全是 0${NC}"
-    echo -e "${BLUE}  主备模式下：权重数值大的排在前，同一时刻只有一个主承接流量；权重表示优先级，不是分流比例${NC}"
-    echo -e "${BLUE}  权重 0 = 平时不承载流量（备用链路）；主故障时自动接管，主恢复后自动切回${NC}"
+    # ★ 备注一律**暗色 + 短句**（用户反馈：菜单里的说明/参数太重，抢状态的眼）
+    echo -e "${GRAY}格式: 按服务器顺序输入逗号分隔的权重（0-10），如 2,1,3${NC}"
+    echo -e "${GRAY}含 0 即自动主备: 10,0 → 进入主备模式；10 独占（给了 10 其余必须全 0）${NC}"
+    echo -e "${GRAY}主备下权重大的排在前，同时只有一个主承接流量（权重=优先级，不是比例）${NC}"
+    echo -e "${GRAY}权重 0 = 备用链路：平时不承载流量，主故障时接管，主恢复后切回${NC}"
     echo ""
 
     ui_read_into "权重序列: " weight_input
