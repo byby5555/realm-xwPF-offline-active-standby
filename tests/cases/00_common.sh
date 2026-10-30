@@ -32,6 +32,7 @@ readend-pre   63b6ec9  T114 负向对照：读端 generate_endpoints_from_rules 
 install-guard-pre e4ac5eb  T128/T129/T130 负向对照：安装完整性与「静默失效」修复之前的那一版（install 不补齐 service/config/rules；create_single_nat_rule 不检查规则目录；空 TARGET_STATES 触发整数比较错误）
 realm-exec-pre  7f6ee54  T131/T132 负向对照：加「realm 二进制可执行性校验」之前的那一版（装上跑不起来的 realm 也报「✓ realm 安装成功」）
 weight-display-pre c6d1a39  T136 负向对照：权重显示/主备优先级修复之前的那一版（切出主备把 WEIGHTS 抹成 1,1、切回主备不恢复 ⇒ 菜单显示 1、1）
+menu-probe-pre 7a5b425  T137 负向对照：菜单项 5「探测参数设置」/主备优先级排序之前的那一版（探测参数只认环境变量 ⇒ 菜单里改不动；菜单序号按合并顺序 ⇒ 1 号不一定是主；探测结果行把 ANSI 转义当字面文本吐出来）
 EOF
 }
 

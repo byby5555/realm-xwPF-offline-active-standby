@@ -294,6 +294,42 @@ TARGET|RULE_ID|SAMPLE_SEQ|LAT_SEQ|WINDOW|FAIL_LAT_SEQ
 
 实现：`lib/rules.sh` 的 `load_balance_management_menu` 与 `probe_all_targets_latency`。
 
+#### 4.1 探测参数在菜单里可配（`5. 探测参数设置`）
+
+菜单项 4 的两个探测口径参数**可以在菜单里改**（`lib/rules.sh` 的 `menu_probe_settings_menu`）：
+
+| 参数 | 含义 | 取值范围 | 默认 |
+|------|------|----------|------|
+| 单次探测超时 | 每个目标**每次**探测的预算（秒） | 1-60 | 2 |
+| 每目标采样次数 | 每个目标连采几次（报「成功次数/采样次数」） | 1-50 | 3 |
+
+改完**落盘**到 `${CONFIG_DIR}/menu_probe.conf`（默认 `/etc/realm/menu_probe.conf`）：
+
+```bash
+# 菜单探测参数（菜单项 5 写入；可直接手改，改完立即生效）
+PROBE_TIMEOUT=2
+PROBE_SAMPLES=3
+```
+
+生效口径（`lib/core.sh` 的 `menu_probe_timeout` / `menu_probe_samples`）：
+
+```
+环境变量 MENU_PROBE_TIMEOUT / MENU_PROBE_SAMPLES   ← 最高（临时覆盖 / 台架注入）
+  ↓ 没设
+配置文件 ${MENU_PROBE_CONF}                        ← 菜单项 5 写入，持久生效
+  ↓ 没有
+内置默认（2s / 3 次）
+```
+
+> ⚠️ 改这两个参数只影响**菜单项 4 的现场探测**，不影响后台健康检查的判定节奏
+> （那个由规则里的 `HEALTH_CHECK_INTERVAL` / `CONNECTION_TIMEOUT` 决定）。
+
+### 4.2 菜单显示的优先级顺序
+
+菜单里的目标序号在**主备模式**下按主备优先级排（`1.` = 权重最大的那个目标），
+与路由端挑主的顺序**同一份实现**（`lib/core.sh` 的 `port_group_priority_order`）——
+详见 [port-groups-and-weights.md §5.3.1](port-groups-and-weights.md#531-菜单里的目标序号也按这个优先级排)。
+
 ---
 
 ## 3.5 快探测流（**只观测**：每秒一轮的时延与丢包）
