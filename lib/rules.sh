@@ -2277,8 +2277,13 @@ switch_balance_mode() {
 
         # 显示端口组列表（只显示有多个目标服务器的端口组）
         local has_balance_rules=false
-        declare -a rule_ports
-        declare -a rule_names
+        # ★ 必须是 `local xxx=()` 而不是 `declare -a xxx`：
+        #   `declare -a xxx`（不带元素）在 `set -u` 下取长度会直接报
+        #   「xxx: unbound variable」⇒ **整个菜单崩在第一行**（真机 bash 5.2 实测）。
+        #   同一个仓库的「权重配置管理」菜单用的就是 `local rule_ports=()`，
+        #   这里两处必须同形（否则同一条产品路径在两个菜单里健壮性不一致）。
+        local rule_ports=()
+        local rule_names=()
 
         # ★ 端口组按**端口号排序**再编号（同「权重配置管理」菜单）：
         #   哈希序会让同一台机器两次进菜单的编号不同，
