@@ -117,6 +117,7 @@ declare -A REQUIRED_TOOLS=(
     ["hping3"]="apt:hping3"
     ["bc"]="apt:bc"
     ["nc"]="apt:netcat-openbsd"
+    ["curl"]="apt:curl"
 )
 
 # 工具状态数组
@@ -154,21 +155,43 @@ get_missing_tools() {
 }
 
 
-# 安装单个APT工具
+# 安装单个APT工具（失败原因可见 + 刷新软件源重试一次）
 install_apt_tool() {
     local tool="$1"
     local package="$2"
 
-    echo -e "${BLUE}🔧 安装 $tool...${NC}"
-    # 设置非交互模式，防止安装时等待用户确认
-    if DEBIAN_FRONTEND=noninteractive apt-get install -y "$package" >/dev/null 2>&1; then
-        echo -e "${GREEN}✅ $tool 安装成功${NC}"
-        TOOL_STATUS["$tool"]="installed"
-        return 0
-    else
-        echo -e "${RED}✗ $tool 安装失败${NC}"
+    # 非 Debian/Ubuntu 系统没有 apt-get，直接给出手动指引
+    if ! command -v apt-get >/dev/null 2>&1; then
+        echo -e "${RED}✗ 未检测到 apt-get（脚本仅支持 Debian/Ubuntu），请手动安装: $package${NC}"
         return 1
     fi
+
+    echo -e "${BLUE}🔧 安装 $tool ($package)...${NC}"
+    local err_file
+    err_file=$(mktemp)
+    # 设置非交互模式，防止安装时等待用户确认；apt 报错不吞掉
+    if DEBIAN_FRONTEND=noninteractive apt-get install -y "$package" 2>"$err_file"; then
+        echo -e "${GREEN}✅ $tool 安装成功${NC}"
+        TOOL_STATUS["$tool"]="installed"
+        rm -f "$err_file"
+        return 0
+    fi
+
+    # 首次安装失败最常见的原因是软件源缓存过旧/为空，强制刷新后重试一次
+    echo -e "${YELLOW}… 首次安装失败，刷新软件源后重试...${NC}"
+    DEBIAN_FRONTEND=noninteractive apt-get update 2>&1 | tail -3 >&2
+    if DEBIAN_FRONTEND=noninteractive apt-get install -y "$package" 2>>"$err_file"; then
+        echo -e "${GREEN}✅ $tool 安装成功${NC}"
+        TOOL_STATUS["$tool"]="installed"
+        rm -f "$err_file"
+        return 0
+    fi
+
+    echo -e "${RED}✗ $tool 安装失败，apt 报错摘要：${NC}"
+    tail -5 "$err_file" >&2
+    echo -e "${YELLOW}→ 请手动执行: apt-get update && apt-get install -y $package${NC}"
+    rm -f "$err_file"
+    return 1
 }
 
 
@@ -182,8 +205,10 @@ install_missing_tools() {
 
     echo -e "${YELLOW}📦 安装缺失工具: ${missing_tools[*]}${NC}"
 
-    # 更新包列表（非交互模式）
-    DEBIAN_FRONTEND=noninteractive apt-get update >/dev/null 2>&1
+    # 更新包列表（非交互模式；失败不中断仅提示，安装阶段失败时还会强制刷新重试）
+    if ! DEBIAN_FRONTEND=noninteractive apt-get update >/dev/null 2>&1; then
+        echo -e "${YELLOW}⚠ 软件源更新失败（镜像不可达或网络受限），继续尝试安装...${NC}"
+    fi
 
     local install_failed=false
 
@@ -1316,7 +1341,7 @@ generate_final_report() {
     echo ""
     echo -e "─────────────────────────────────────────────────────────────────"
 
-    echo -e "测试完成时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S') | 脚本开源地址：https://github.com/zywe03/realm-xwPF"
+    echo -e "测试完成时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S') | 脚本开源地址：https://github.com/byby5555/realm-xwPF-offline-active-standby"
     echo -e "${WHITE}按任意键返回主菜单...${NC}"
     read -n 1 -s
 }
@@ -1505,7 +1530,7 @@ show_main_menu() {
 manual_update_script() {
     echo -e "${YELLOW}正在更新脚本...${NC}"
 
-    local script_url="https://raw.githubusercontent.com/zywe03/realm-xwPF/main/speedtest.sh"
+    local script_url="https://raw.githubusercontent.com/byby5555/realm-xwPF-offline-active-standby/main/speedtest.sh"
     local temp_file=$(mktemp)
 
     if download_from_sources "$script_url" "$temp_file"; then
