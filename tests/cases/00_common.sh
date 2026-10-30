@@ -33,6 +33,7 @@ install-guard-pre e4ac5eb  T128/T129/T130 负向对照：安装完整性与「�
 realm-exec-pre  7f6ee54  T131/T132 负向对照：加「realm 二进制可执行性校验」之前的那一版（装上跑不起来的 realm 也报「✓ realm 安装成功」）
 weight-display-pre c6d1a39  T136 负向对照：权重显示/主备优先级修复之前的那一版（切出主备把 WEIGHTS 抹成 1,1、切回主备不恢复 ⇒ 菜单显示 1、1）
 menu-probe-pre 7a5b425  T137 负向对照：菜单项 5「探测参数设置」/主备优先级排序之前的那一版（探测参数只认环境变量 ⇒ 菜单里改不动；菜单序号按合并顺序 ⇒ 1 号不一定是主；探测结果行把 ANSI 转义当字面文本吐出来）
+install-uninstall-pre bb6e725  T138 负向对照：卸载清理补齐之前的那一版（两个 timer 的 unit 靠 /etc/realm/xwFailover.sh 停 ⇒ 新装机器上那个文件压根不存在 ⇒ 停不掉；/var/lib/realm、锁文件、日志目录、更新备份目录都不清）
 EOF
 }
 

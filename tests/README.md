@@ -604,3 +604,44 @@ export PATH="$PWD/tests/shims:$PATH"
   旧实现跑同一条腿 ⇒ 菜单里**没有第 5 项**、序号按合并顺序（1 号不是主）、
   探测结果行**吐出字面 ANSI 序列**、改了参数**存不住** ⇒ 证明这些断言**有判别力**。
 
+## 第 31 轮（台架 v2.27.0）· 2026-10-30
+- 用户需求：「**测试安装脚本的各项下载是否正常，卸载脚本的卸载是否干净完整**」。
+- 台架升到 **v2.27.0**：新增 **T138**（`cases/35_install_uninstall_audit_t138.sh`）——
+  守的是「**安装的每一项下载都到位**」+「**卸载后安装留下的每一样都不剩**」。
+- **下载部分（真机真实网络逐项验证 ⇒ 全部正常）**：
+  - 引导下载 8 项（`xwPF.sh` + 7 个 lib 模块）⇒ 全部成功，sha256 与远端**逐字节一致**；
+  - realm 主程序（`download_from_sources` 4 源）⇒ 官方源直接成功（2851589 字节），
+    `tar -tzf` 完整、包内 realm 可执行（`Realm 2.9.6 [brutal]`），
+    **sha256 与官方一致**（`b9efc8cc…`）；
+  - `xwFailover.sh` ⇒ 下载成功、`bash -n` 通过、与机器上已装那份**逐字节一致**；
+  - 更新中心通道 ⇒ 远端指纹 == 本地指纹（`2901d5772b5c7c0a`）、远端版本 v2.5.0，
+    release tag v2.9.6 的资产 digest 可取。
+  - **唯一缺口（记录，本轮未改）**：**安装路径**下载 realm 二进制**不校验 sha256**
+    （更新中心路径校验了）⇒ 官方 digest 已确认可取（jq 已装、API 可达），可补；
+    但若按「版本一致才强校验」处理，否则有**阻断安装**的风险。
+- **卸载部分（真机盘点坐实两个真缺陷）**：
+  - ★ **两个 timer 的 unit 停不掉、也删不掉**：
+    卸载只靠 `/etc/realm/xwFailover.sh stop` 去停 `realm-health-check.timer` /
+    `realm-fast-probe.timer`，而**新装机器上这个文件根本不存在**
+    （主备池已下线，安装不再生成它）⇒ timer 停不了、`disable` 不了，
+    unit 留在 `/etc/systemd/system` ⇒ **卸载后 systemd 还在按残留 unit
+    触发已被删掉的探测脚本**；
+  - 另漏清 4 处：**观测数据**（`/var/lib/realm`）、**锁**（`/var/lock/realm-*.lock`）、
+    **日志**（`/var/log/xwPF`）、**备份与 staging**
+    （`/usr/local/bin/.xwpf-backup`、`/tmp/xwpf-update`、`/var/lock/xwpf-update.lock`）。
+- 修法（`lib/ui.sh` 的 `uninstall_realm_stage_one`）：
+  - 直接调产品自己的 `stop_health_check_service` / `stop_fast_probe_service`
+    （**唯一真源**）来停两个 timer，**不再依赖可能不存在的 `xwFailover.sh`**；
+  - 对 4 个 unit 文件与 enable 状态做**兜底**（删文件 + `disable`）；
+  - 补清上述观测数据/锁/日志/备份/staging。
+- 台架 T138 的四腿（**全走产品真入口**，不手摆产物）：
+  - **下载齐全**：8 项逐字节一致 + `pf` 快捷命令在 + 下载地址**指向本 fork**（≥ 8 条）；
+  - **下载失败可见**：镜像缺文件时**点名报错**并返回**非 0**（不能静默继续）；
+  - **安装产物齐全**：service unit、两个 timer 的 unit、探测端两个脚本、规则目录…
+    （`generate_service_file` / `ensure_realm_service_installed` /
+    `health_check_script_regenerate` / `fast_probe_script_regenerate` / `start_health_check_service`）；
+  - **卸载干净**：16 项产物**全部消失**，且**不误删**无关文件
+    （`var.log/other-app.log`、`usr.local.bin/other-tool` 仍在）。
+- 负向对照用**真实旧实现**（历史对象 `install-uninstall-pre` = `bb6e725`）：
+  旧实现跑同一条腿 ⇒ 卸载后**残留 9 项**（含两个 timer 的 unit）⇒ 证明这些断言**有判别力**。
+
