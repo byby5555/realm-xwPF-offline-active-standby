@@ -68,10 +68,18 @@ _t136_make_group() {
     _t136_make_rule "$dir/rule-$((id0 + 1)).conf" "$((id0 + 1))" "$port" "$name" "$h1" "$p1" "active-standby" "0" "true"
 }
 
-# 渲染一次「权重配置管理」菜单（$1=lib 根 $2=CONFIG_DIR $3=选中的组编号）
+# 渲染一次「权重配置管理」菜单（$1=lib 根 $2=CONFIG_DIR $3=选中的组编号 [$4=nosetu]）
+#
+# ★ 一律在 **set -u** 下跑：
+#   菜单是交互入口，stdin 可能是 EOF / 非终端 ⇒ 必须扛得住 set -u。
+#   （真机实测：`switch_balance_mode` 用 `declare -a rule_ports` 声明空数组，
+#     set -u 下取长度直接报 unbound variable ⇒ 菜单崩在第一行。）
+#   `$4=nosetu` 只给**负向对照的旧实现**用：旧实现自己就带 set -u 崩溃的老毛病，
+#   让它带着那个毛病跑 ⇒ 对照证明的就不是「权重没恢复」而是「它崩了」⇒ 判别力失真。
 _t136_render_weight_menu() {
-    local libroot="$1" cfgdir="$2" pick="$3"
+    local libroot="$1" cfgdir="$2" pick="$3" mode="${4:-setu}"
     bash -c '
+        [ "$4" = "nosetu" ] || set -u
         export CONFIG_DIR="$2"
         source "$1/lib/core.sh"  >/dev/null 2>&1
         source "$1/lib/health.sh" >/dev/null 2>&1
@@ -79,13 +87,14 @@ _t136_render_weight_menu() {
         service_restart(){ return 0; }
         ensure_health_check_service(){ return 0; }
         printf "%s\n\n" "$3" | weight_management_menu
-    ' _ "$libroot" "$cfgdir" "$pick" 2>&1
+    ' _ "$libroot" "$cfgdir" "$pick" "$mode" 2>&1
 }
 
-# 渲染一次「切换负载均衡模式」菜单（$1=lib 根 $2=CONFIG_DIR $3=组编号 $4=模式选项 1..4）
+# 渲染一次「切换负载均衡模式」菜单（$1=lib 根 $2=CONFIG_DIR $3=组编号 $4=模式选项 1..4 [$5=nosetu]）
 _t136_switch_mode() {
-    local libroot="$1" cfgdir="$2" pick="$3" mode="$4"
+    local libroot="$1" cfgdir="$2" pick="$3" mode="$4" setu="${5:-setu}"
     bash -c '
+        [ "$5" = "nosetu" ] || set -u
         export CONFIG_DIR="$2"
         source "$1/lib/core.sh"  >/dev/null 2>&1
         source "$1/lib/health.sh" >/dev/null 2>&1
@@ -93,7 +102,7 @@ _t136_switch_mode() {
         service_restart(){ return 0; }
         ensure_health_check_service(){ return 0; }
         printf "%s\n%s\n\n" "$3" "$4" | switch_balance_mode
-    ' _ "$libroot" "$cfgdir" "$pick" "$mode" 2>&1
+    ' _ "$libroot" "$cfgdir" "$pick" "$mode" "$setu" 2>&1
 }
 
 # 跑一次读端（生成 realm endpoints），输出 balance 权重串
@@ -155,7 +164,7 @@ case_T136_weight_display_matches_disk_and_standby_priority_survives_mode_switch(
     h_log "--- 权重菜单片段 ---"
     printf '%s\n' "$menu" | grep -aE '当前权重|权重配置:' | head -6 | sed 's/^/    /'
 
-    h_check_not_contains "$menu" "unbound variable" "菜单在 set -u 之外也没崩（无 unbound variable）"
+    h_check_not_contains "$menu" "unbound variable" "权重菜单在 set -u 下没崩（无 unbound variable）"
     h_check_contains "$menu" "127.0.0.1:28081 [当前权重: 10]" "菜单显示的当前权重 == 落盘真值（10）"
     h_check_contains "$menu" "127.0.0.1:28082 [当前权重: 0]" "菜单显示的当前权重 == 落盘真值（0）"
     h_check_not_contains "$menu" "[当前权重: 1]" "菜单没有把权重显示成 1（老实现的 1,1 症状）"
@@ -178,6 +187,7 @@ case_T136_weight_display_matches_disk_and_standby_priority_survives_mode_switch(
     h_log "--- 切出主备 ---"
     printf '%s\n' "$out" | grep -aE '已更新|主备|轮询' | head -4 | sed 's/^/    /'
 
+    h_check_not_contains "$out" "unbound variable" "切换模式菜单在 set -u 下没崩（无 unbound variable）"
     h_check_eq "1,1" "$(_t136_field "$rules/rule-1.conf" WEIGHTS)" "切出主备后 WEIGHTS 换成比例分摊默认（1,1）"
     h_check_eq "10,0" "$(_t136_field "$rules/rule-1.conf" PREV_WEIGHTS)" "切出主备时把主备优先级权重存进 PREV_WEIGHTS（10,0）"
 
@@ -267,12 +277,12 @@ EOF
     rm -f "$rules"/rule-*.conf
     _t136_make_group "$rules" 1 18444 "中转" 127.0.0.1 28081 127.0.0.1 28082 "10,0"
 
-    _t136_switch_mode "$oldtree" "$cfg" 1 2 >/dev/null 2>&1
-    _t136_switch_mode "$oldtree" "$cfg" 1 4 >/dev/null 2>&1
+    _t136_switch_mode "$oldtree" "$cfg" 1 2 nosetu >/dev/null 2>&1
+    _t136_switch_mode "$oldtree" "$cfg" 1 4 nosetu >/dev/null 2>&1
 
     local old_weights old_menu
     old_weights=$(_t136_field "$rules/rule-1.conf" WEIGHTS)
-    old_menu=$(_t136_render_weight_menu "$oldtree" "$cfg" 1)
+    old_menu=$(_t136_render_weight_menu "$oldtree" "$cfg" 1 nosetu)
     h_log "--- 负向对照（旧实现）---"
     h_log "    切回主备后 WEIGHTS=[$old_weights]"
     printf '%s\n' "$old_menu" | grep -aE '当前权重' | head -4 | sed 's/^/    /'
